@@ -1,2 +1,5 @@
 .idea
 *.iml
+data
+.hydra
+src/__pycache__/

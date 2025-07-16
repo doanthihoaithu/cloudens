@@ -1,0 +1,43 @@
+defaults:
+  - override hydra/hydra_logging: none #colorlog
+  - override hydra/job_logging: none # colorlog
+
+hydra:
+  job:
+    chdir: true  # to save objects in a working directory
+  run:
+    dir: .  # Disable Hydra's Directory Change
+
+modeling:
+  random_seed: 42
+
+
+data_preparation_pipeline:
+  grouping_mode: 'no_group'
+  multiple_preprocessing: true
+  feature_subsets:
+    http_codes: ['5xx','4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
+    aggregations: ['count','avg','min','max']
+
+  ground_truth_labels:
+    path: "data/labels/"
+    filename: "anomaly_windows.csv"
+
+  input_file:
+    path: "data/massaged/"
+    filename: "pivoted_data_all.parquet"
+
+  features_prep:
+    filter:
+      http_codes: ['5xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
+      aggregations: ['count'] # aggregations can be ['count', 'avg', 'min', 'max',' median', 'std', 'kurtosis', 'skewness']
+
+  train_test_config:
+    anomaly_window:
+      minutes_before: 20
+      minutes_after: 0  # Use Duration column values
+    experiment_parameters:
+      start_date: '2024-01-26' # Actual Satrt 26 Jan 2024
+      train_end_date: '2024-02-29'
+      test_start_date: '2024-03-01'
+      end_date: '2024-05-31' # Actual End 31 May 2024

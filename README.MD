@@ -4,7 +4,7 @@
 ![python](https://img.shields.io/badge/python-3.12.2-blue.svg)
 
 
-This repository contains the code implementation for the paper submitted in ICSE 2026 with title **"ClouDens: A Scalable Ensemble Framework for Anomaly Detection in Large-Scale Cloud Systems"**.
+This repository contains the code implementation for the paper submitted in ICSE Research Track 2026 with title **"ClouDens: A Scalable Ensemble Framework for Anomaly Detection in Large-Scale Cloud Systems"**.
 
 The repository includes scripts and modules for anomaly detection using Spatio-Temporal Graph Neural Networks (ST-GNNs), NAB scoring, and related preprocessing tasks. 
 The pipeline is modularized for flexibility and ease of use.
@@ -232,7 +232,7 @@ python src/run_experiment__multi_models_GRU_ANN.py train_test_config.use_model=G
 
 ## Notes for Replicability
 
-- Use Python 3.11.0 to avoid compatibility issues.
+- Use Python 3.12.2 to avoid compatibility issues.
 - Keep the `requirements.txt` file up-to-date if new dependencies are added.
 - Use the exact steps mentioned above to ensure a consistent environment across different setups.
 
