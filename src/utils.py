@@ -1,6 +1,10 @@
 import json
+import random
 from pathlib import Path
 
+import torch
+from scipy.linalg import pinv
+from scipy.spatial.distance import mahalanobis
 from scipy.stats import iqr
 from tqdm import tqdm
 import numpy as np
@@ -113,3 +117,22 @@ def get_err_median_and_iqr(reconstruction_errors):
     # np_arr = np.abs(np.subtract(np.array(predicted), np.array(groundtruth)))
     #
     return np.median(reconstruction_errors), iqr(reconstruction_errors)
+
+def calculate_mahalanobis_distance(reconstruction_error_raw):
+    print('Calculating Mahalanobis Distance')
+    num_timestamps = reconstruction_error_raw.shape[0]
+    flattened = reconstruction_error_raw.reshape(num_timestamps, -1)
+    mean_vec = np.mean(flattened, axis=0)
+    cov_matrix = np.cov(flattened, rowvar=False)
+    inv_cov_matrix = pinv(cov_matrix)
+
+    # Compute Mahalanobis distance at each timestamp
+    mahalanobis_distances = np.array([
+        mahalanobis(flattened[t], mean_vec, inv_cov_matrix)
+        for t in range(num_timestamps)
+    ])
+    return  mahalanobis_distances
+def set_random_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)

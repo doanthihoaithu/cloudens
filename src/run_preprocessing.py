@@ -10,15 +10,13 @@ import torch
 from tqdm import tqdm
 
 from ibm_dataset_loader import IBMDatasetLoader
+from utils import set_random_seed
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-def set_random_seed(seed: int):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+
 
 @hydra.main(config_path="../conf", config_name="config.yaml")
 def main(cfg: DictConfig):

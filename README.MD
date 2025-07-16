@@ -263,26 +263,33 @@ evaluation:
   use_model: 'GRU' # 'A3TGCN' or 'GRU'
 ```
 
-#### 5.2.2 Configuring NAB Scoring Profile
-
-The NAB scoring profile used for evaluation can be configured in the `conf.yaml` file. Update the following parameters under the `evaluation` section:
-
-```yaml
-evaluation:  # Default parameters
-  nab_scoring_profile: "reward_fn"  # Options: "standard" or "reward_fn"
-```
-
 
 #### 5.2.3 Run the Project
-To run the project, execute the main script after setting up the required directories and input files:
+To train a single model on a single feature subset, execute the following script after setting up the required directories and input files:
 
 ```bash
-python src/run_experiment__multi_models_GRU_ANN.py
+python src/run_training_single_model.py
 ```
+This script will choose the model and the feature subset based on your configuration settings in `config.yaml`, 
+under `evaluation.use_model` and `data_preparation_pipeline.features_prep.filter`.
 
 Note that you can pass configuration parameters directly via the command line. For example:
 ```bash
-python src/run_experiment__multi_models_GRU_ANN.py train_test_config.use_model=GRU evaluation.nab_scoring_profile=reward_fn  
+python src/run_training_single_model.py evaluation.use_model=A3TGCN evaluation.retrain=true  
+```
+
+To get output of ensemble approach after training on all feature subsets (8 subsets in our paper), execute the following script:
+
+```bash
+python src/run_ensemble_approach.py
+```
+This script will choose feature subsets based on your configuration settings in `config.yaml`, 
+by iterating over 
+all combinations of `http_codes` and `aggregations` specified in `evaluation.ensembles`, 
+
+Note that you can pass configuration parameters directly via the command line. For example:
+```bash
+python src/run_training_single_model.py evaluation.use_model=A3TGCN evaluation.retrain=true  
 ```
 
 ---

@@ -22,16 +22,11 @@ from model_wrappers.GRUWrapper import GRUWrapper
 from plotting_module import plot_training_history
 from anomaly_likelihood import compute_anomaly_likelihood
 from nab_scoring import calculate_nab_score_with_window_based_tp_fn
-from utils import clear_folder, get_project_root, get_full_err_scores
+from utils import clear_folder, get_project_root, get_full_err_scores, set_random_seed, calculate_mahalanobis_distance
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
-
-def set_random_seed(seed: int):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
 
 def load_wrapper(model_name, config, static_edge_index):
     node_features = config['node_features']
@@ -189,6 +184,11 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                 with open(mse_reconstruction_error_file, 'w') as f:
                     f.write(str(mse_reconstruction_error_raw))
                     log.info(f"MSE reconstruction errors saved to {mse_reconstruction_error_file}")
+                mahalanobis_distances = calculate_mahalanobis_distance(reconstruction_error_raw)
+                mahalanobis_distances_file = os.path.join(os.path.dirname(predictions_file), 'mahalanobis.npy')
+                with open(mahalanobis_distances_file, 'wb') as f:
+                    np.save(f, mahalanobis_distances)
+                    log.info(f"Mahalanobis_distances saved to {mahalanobis_distances_file}")
         else:
             with open(predictions_file, 'rb') as f:
                 reconstruction_error_raw = np.load(f)
@@ -198,14 +198,19 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                 with open(mse_reconstruction_error_file, 'w') as f:
                     f.write(str(mse_reconstruction_error_raw))
                     log.info(f"MSE reconstruction errors saved to {mse_reconstruction_error_file}")
+                mahalanobis_distances_file = os.path.join(os.path.dirname(predictions_file), 'mahalanobis.npy')
+                with open(mahalanobis_distances_file, 'rb') as mahala_f:
+                    mahalanobis_distances = np.load(mahala_f)
+                    log.info(f'Mahalanobis_distances loaded from {mahalanobis_distances_file}, having shape: {mahalanobis_distances.shape}')
 
+        assert reconstruction_error_raw.shape[0] == mahalanobis_distances.shape[0]
         assert reconstruction_error_raw.shape[0] == len(data_loader.test_index)
 
         # is_anomalies, likelihoods, reconstruction_error = label_reconstruction_errors(reconstruction_errors, )
         # Call grid search or other functions
         log.info("Starting Grid Search for best parameters...")
         result_df, is_anomalies_df = grid_search_new(
-            data_loader, reconstruction_error_raw, experiment_config=experiment_config)
+            data_loader, reconstruction_error_raw, experiment_config=experiment_config, mahalanobis_distances=mahalanobis_distances)
 
         result_df.insert(1,'NAB_standard_rank', result_df['standard_normalized'].rank(ascending=False))
         result_df.insert(2, 'NAB_reward_fn_rank', result_df['reward_fn_normalized'].rank(ascending=False))
@@ -240,14 +245,14 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
         # autoencoder.save(model_filename)
         # print(f"Model saved: {model_filename}")
 
-def grid_search_new(data_loader, reconstruction_errors, experiment_config):
+def grid_search_new(data_loader, reconstruction_errors, experiment_config, mahalanobis_distances=None):
     # best_params_unweighted, best_unweighted_score, best_results_unweighted, result_csv_filepath
     columns = [
             'standard_normalized',
             'reward_fn_normalized',
             'detection_counters',
             'confusion_matrix',
-            'scale_prediction',
+            'post_processing_strategy',
             'anomaly_threshold',
             'topk',
             'long_window',
@@ -260,114 +265,115 @@ def grid_search_new(data_loader, reconstruction_errors, experiment_config):
             'reward_fn_raw',
             ]
     result_df = pd.DataFrame(columns=columns)
-    scale_predictions = experiment_config.scale_predictions
+    post_processing_strategies = experiment_config.post_processing_strategies
     topks = experiment_config.topks
     anomaly_thresholds = experiment_config.anomaly_thresholds
-    scale_anomaly_thresholds = experiment_config.scale_anomaly_thresholds
+    distribution_anomaly_thresholds = experiment_config.distribution_anomaly_thresholds
     long_window_values = experiment_config.long_windows
     short_window_values = experiment_config.short_windows
-    post_processing = experiment_config.post_processing if 'post_processing' in experiment_config else None
+
+    # post_processing = experiment_config.post_processing if 'post_processing' in experiment_config else None
 
 
-    if post_processing:
-        is_anomalies_df = pd.DataFrame()
-        anomaly_thresholds = post_processing.anomaly_thresholds
-        for index, anomaly_threshold in enumerate(anomaly_thresholds):
-            is_anomalies, likelihoods, reconstruction_error = label_reconstruction_errors_with_mahalanobis(data_loader.test_index,
-                                                                                          post_processing,
-                                                                                          reconstruction_errors, anomaly_threshold)
-
-
-            visualization_df = pd.DataFrame({
-                '5XX_count': data_loader.count_5xx,  # Adjust as needed for your data
-                'true_anomaly': data_loader.test_labels,  # This is what the function expects
-                'predicted_anomaly': is_anomalies.values,  # The output of the model
-                'anomaly_likelihood': likelihoods,
-                'reconstruction_error': reconstruction_error
-            })
-            visualization_df.index = data_loader.test_index
-            is_anomalies_df[f'is_anomaly_{index}'] = is_anomalies.values
-
-            print("SAMPLE RESULT DF: ", visualization_df.head())
-
-            # model_dir
-            # visualization_file = os.path.join(model_dir, f'{model}_visualization.png')
-            # plot_results(visualization_df, visualization_df['predicted_anomaly'], data_loader.anomaly_windows_test,
-            #              result_directory=visualization_file, \
-            #              model=model)
-
-            # plot_results(visualization_df, is_anomalies.values, data_loader.anomaly_windows_test, result_directory=?, model=?)
-
-            # Evaluate performance based on ground truth
-            precision, recall, f1, accuracy, conf_matrix, mcc = evaluate_performance(data_loader.test_labels,
-                                                                                     is_anomalies.values)
-
-            log.info(
-                f"Experiment results - Precision: {precision}, Recall: {recall}, F1: {f1}, Accuracy: {accuracy}, ConfusionMatrix: {conf_matrix}")
-
-            # Calculate the weighted NAB score and normalized NAB score
-            raw_nab_score_standard, normalized_nab_score_standard, false_positive_count, false_negative_count, detection_counters = calculate_nab_score_with_window_based_tp_fn(
-                visualization_df, data_loader.anomaly_windows_test, 'standard', true_col='true_anomaly',
-                pred_col='predicted_anomaly'
-            )
-
-            # Calculate the weighted NAB score and normalized NAB score
-            raw_nab_score_reward_fn, normalized_nab_score_reward_fn, false_positive_count, false_negative_count, detection_counters = calculate_nab_score_with_window_based_tp_fn(
-                visualization_df, data_loader.anomaly_windows_test, 'reward_fn', true_col='true_anomaly',
-                pred_col='predicted_anomaly'
-            )
-
-            # Return all values needed for grid_search
-
-            standard_score = raw_nab_score_standard
-            reward_fn_score = raw_nab_score_reward_fn
-            standard_score_normalized = normalized_nab_score_standard
-            reward_fn_score_normalized = normalized_nab_score_reward_fn
-
-            new_row = {
-                'confusion_matrix': conf_matrix,
-                'scale_prediction': False,
-                'topk': 1,
-                'anomaly_threshold': anomaly_threshold,
-                'long_window': 0,
-                'short_window': 0,
-                'standard_raw': standard_score,
-                'reward_fn_raw': reward_fn_score,
-                'standard_normalized': standard_score_normalized,
-                'reward_fn_normalized': reward_fn_score_normalized,
-                'precision': precision,
-                'recall': recall,
-                'f1': f1,
-                'detection_counters': detection_counters,
-                'accuracy': accuracy,
-                # conf_matrix, mcc, is_anomalies, likelihoods, results_df, raw_nab_score,
-            }
-            result_df.loc[len(result_df)] = new_row
-
-        return result_df, is_anomalies_df
+    # if post_processing:
+    #     is_anomalies_df = pd.DataFrame()
+    #     anomaly_thresholds = post_processing.anomaly_thresholds
+    #     for index, anomaly_threshold in enumerate(anomaly_thresholds):
+    #         is_anomalies, likelihoods, reconstruction_error = label_reconstruction_errors_with_mahalanobis(data_loader.test_index,
+    #                                                                                       post_processing,
+    #                                                                                       mahalanobis_distances, anomaly_threshold)
+    #
+    #
+    #         visualization_df = pd.DataFrame({
+    #             '5XX_count': data_loader.count_5xx,  # Adjust as needed for your data
+    #             'true_anomaly': data_loader.test_labels,  # This is what the function expects
+    #             'predicted_anomaly': is_anomalies.values,  # The output of the model
+    #             'anomaly_likelihood': likelihoods,
+    #             'reconstruction_error': reconstruction_error
+    #         })
+    #         visualization_df.index = data_loader.test_index
+    #         is_anomalies_df[f'is_anomaly_{index}'] = is_anomalies.values
+    #
+    #         print("SAMPLE RESULT DF: ", visualization_df.head())
+    #
+    #         # model_dir
+    #         # visualization_file = os.path.join(model_dir, f'{model}_visualization.png')
+    #         # plot_results(visualization_df, visualization_df['predicted_anomaly'], data_loader.anomaly_windows_test,
+    #         #              result_directory=visualization_file, \
+    #         #              model=model)
+    #
+    #         # plot_results(visualization_df, is_anomalies.values, data_loader.anomaly_windows_test, result_directory=?, model=?)
+    #
+    #         # Evaluate performance based on ground truth
+    #         precision, recall, f1, accuracy, conf_matrix, mcc = evaluate_performance(data_loader.test_labels,
+    #                                                                                  is_anomalies.values)
+    #
+    #         log.info(
+    #             f"Experiment results - Precision: {precision}, Recall: {recall}, F1: {f1}, Accuracy: {accuracy}, ConfusionMatrix: {conf_matrix}")
+    #
+    #         # Calculate the weighted NAB score and normalized NAB score
+    #         raw_nab_score_standard, normalized_nab_score_standard, false_positive_count, false_negative_count, detection_counters = calculate_nab_score_with_window_based_tp_fn(
+    #             visualization_df, data_loader.anomaly_windows_test, 'standard', true_col='true_anomaly',
+    #             pred_col='predicted_anomaly'
+    #         )
+    #
+    #         # Calculate the weighted NAB score and normalized NAB score
+    #         raw_nab_score_reward_fn, normalized_nab_score_reward_fn, false_positive_count, false_negative_count, detection_counters = calculate_nab_score_with_window_based_tp_fn(
+    #             visualization_df, data_loader.anomaly_windows_test, 'reward_fn', true_col='true_anomaly',
+    #             pred_col='predicted_anomaly'
+    #         )
+    #
+    #         # Return all values needed for grid_search
+    #
+    #         standard_score = raw_nab_score_standard
+    #         reward_fn_score = raw_nab_score_reward_fn
+    #         standard_score_normalized = normalized_nab_score_standard
+    #         reward_fn_score_normalized = normalized_nab_score_reward_fn
+    #
+    #         new_row = {
+    #             'confusion_matrix': conf_matrix,
+    #             'scale_prediction': False,
+    #             'topk': 1,
+    #             'anomaly_threshold': anomaly_threshold,
+    #             'long_window': 0,
+    #             'short_window': 0,
+    #             'standard_raw': standard_score,
+    #             'reward_fn_raw': reward_fn_score,
+    #             'standard_normalized': standard_score_normalized,
+    #             'reward_fn_normalized': reward_fn_score_normalized,
+    #             'precision': precision,
+    #             'recall': recall,
+    #             'f1': f1,
+    #             'detection_counters': detection_counters,
+    #             'accuracy': accuracy,
+    #             # conf_matrix, mcc, is_anomalies, likelihoods, results_df, raw_nab_score,
+    #         }
+    #         result_df.loc[len(result_df)] = new_row
+    #
+    #     return result_df, is_anomalies_df
 
     params_combinations = []
-    for scale_prediction in scale_predictions:
-        if scale_prediction == False:
-            params_combinations_new = itertools.product([scale_prediction],
+    for post_processing_strategy in post_processing_strategies:
+        if post_processing_strategy == 'likelihood':
+            params_combinations_new = itertools.product([post_processing_strategy],
                                                     topks,
                                                     anomaly_thresholds,
                                                     long_window_values,
                                                     short_window_values)
             params_combinations.extend(list(params_combinations_new))
         else:
-            params_combinations_new = itertools.product([scale_prediction],
+            params_combinations_new = itertools.product([post_processing_strategy],
                                                         topks,
-                                                        scale_anomaly_thresholds,
+                                                        distribution_anomaly_thresholds,
                                                         [0],
                                                         [0])
             params_combinations.extend(list(params_combinations_new))
     num_combinations = len(params_combinations)
     is_anomalies_df = pd.DataFrame()
-    for index, (scale_prediction, topk, anomaly_threshold, long_window, short_window) in tqdm(enumerate(params_combinations), desc='running grid search', total=num_combinations):
-        print(f'Scale prediction: {scale_prediction}')
+    for index, (post_processing_strategy, topk, anomaly_threshold, long_window, short_window) in tqdm(enumerate(params_combinations), desc='running grid search', total=num_combinations):
+        print(f'post_processing_strategy: {post_processing_strategy}')
         print(f'topk: {topk} and anomaly_threshold: {anomaly_threshold} long window: {long_window} short window: {short_window}')
-        is_anomalies, likelihoods, reconstruction_error = label_reconstruction_errors(data_loader.test_index, post_processing, reconstruction_errors, scale_prediction, topk, anomaly_threshold, long_window, short_window)
+        is_anomalies, likelihoods, reconstruction_error = label_reconstruction_errors(data_loader.test_index, reconstruction_errors, mahalanobis_distances, post_processing_strategy, topk, anomaly_threshold, long_window, short_window)
 
         # Create results DataFrame for evaluation
         visualization_df = pd.DataFrame({
@@ -419,7 +425,7 @@ def grid_search_new(data_loader, reconstruction_errors, experiment_config):
 
         new_row = {
             'confusion_matrix': conf_matrix,
-            'scale_prediction': scale_prediction,
+            'post_processing_strategy': post_processing_strategy,
             'topk': topk,
             'anomaly_threshold': anomaly_threshold,
             'long_window': long_window,
@@ -440,35 +446,35 @@ def grid_search_new(data_loader, reconstruction_errors, experiment_config):
     is_anomalies_df.index = data_loader.test_index
     return result_df, is_anomalies_df
 
-def label_reconstruction_errors_with_mahalanobis(index, post_processing, reconstruction_errors, anomaly_threshold):
+def label_reconstruction_errors_with_mahalanobis(index, post_processing, mahalanobis_distances, anomaly_threshold):
     print('Post processing', post_processing)
     if post_processing.distance == 'mahala':
-        num_timestamps, num_nodes, num_feats = reconstruction_errors.shape
-        reconstruction_error_raw = reconstruction_errors
-
-        # mahala_file = './mahala.csv'
-        # if not os.path.exists(mahala_file) or post_processing.recreate == False:
-            # num_samples, num_nodes, num_feats = reconstruction_errors.shape
-            # reconstruction_errors = reconstruction_errors.reshape((num_samples, num_nodes * num_feats))
-            # if post_processing.scale_prediction:
-            #     reconstruction_errors = get_full_err_scores(reconstruction_errors)
-            # reconstruction_errors_normalized = MinMaxScaler().fit_transform(reconstruction_errors)
-            # reconstruction_errors = reconstruction_errors.reshape((num_samples, num_nodes, num_feats))
-        flattened = reconstruction_error_raw.reshape(num_timestamps, -1)
-        mean_vec = np.mean(flattened, axis=0)
-        cov_matrix = np.cov(flattened, rowvar=False)
-        inv_cov_matrix = pinv(cov_matrix)
-
-        # Compute Mahalanobis distance at each timestamp
-        mahalanobis_distances = np.array([
-            mahalanobis(flattened[t], mean_vec, inv_cov_matrix)
-            for t in range(num_timestamps)
-        ])
-
-        #     print('Saving mahala.csv...')
-        #     pd.DataFrame(mahalanobis_distances).to_csv(mahala_file, index=False)
-        # else:
-        #     mahalanobis_distances = pd.read_csv(mahala_file).values
+        # num_timestamps, num_nodes, num_feats = reconstruction_errors.shape
+        # reconstruction_error_raw = reconstruction_errors
+        #
+        # # mahala_file = './mahala.csv'
+        # # if not os.path.exists(mahala_file) or post_processing.recreate == False:
+        #     # num_samples, num_nodes, num_feats = reconstruction_errors.shape
+        #     # reconstruction_errors = reconstruction_errors.reshape((num_samples, num_nodes * num_feats))
+        #     # if post_processing.scale_prediction:
+        #     #     reconstruction_errors = get_full_err_scores(reconstruction_errors)
+        #     # reconstruction_errors_normalized = MinMaxScaler().fit_transform(reconstruction_errors)
+        #     # reconstruction_errors = reconstruction_errors.reshape((num_samples, num_nodes, num_feats))
+        # flattened = reconstruction_error_raw.reshape(num_timestamps, -1)
+        # mean_vec = np.mean(flattened, axis=0)
+        # cov_matrix = np.cov(flattened, rowvar=False)
+        # inv_cov_matrix = pinv(cov_matrix)
+        #
+        # # Compute Mahalanobis distance at each timestamp
+        # mahalanobis_distances = np.array([
+        #     mahalanobis(flattened[t], mean_vec, inv_cov_matrix)
+        #     for t in range(num_timestamps)
+        # ])
+        #
+        # #     print('Saving mahala.csv...')
+        # #     pd.DataFrame(mahalanobis_distances).to_csv(mahala_file, index=False)
+        # # else:
+        # #     mahalanobis_distances = pd.read_csv(mahala_file).values
 
         threshold = np.percentile(mahalanobis_distances, anomaly_threshold)
         is_anomalies = (mahalanobis_distances > threshold).astype(int)
@@ -486,14 +492,30 @@ def label_reconstruction_errors_with_mahalanobis(index, post_processing, reconst
         likelihoods = MinMaxScaler().fit_transform(mahalanobis_distances.reshape(-1, 1)).reshape(-1)
         return pd.Series(is_anomalies, index=index), likelihoods, reconstruction_error_full
 
-def label_reconstruction_errors(index, post_processing, reconstruction_errors, scale_prediction, topk, anomaly_threshold, long_window, short_window):
+def label_reconstruction_errors(index, reconstruction_errors, mahalanobis_distances, post_processing_strategy, topk, anomaly_threshold, long_window, short_window):
     # reconstruction_error_full = np.mean(
     #     np.power(X_test - X_test_predictions, 2), axis=1
     # )
-    print('Post processing', post_processing)
+    # print('Post processing', post_processing)
     is_anomalies_layer_1 = None
     num_timestamps, num_nodes, num_feats = reconstruction_errors.shape
-    if scale_prediction:
+    if post_processing_strategy == 'mahalanobis':
+        # num_samples, num_nodes, num_feats = reconstruction_errors.shape
+        # reconstruction_errors = reconstruction_errors.reshape((num_samples, num_nodes * num_feats))
+        # reconstruction_errors = get_full_err_scores(reconstruction_errors)
+        # reconstruction_errors_normalized = MinMaxScaler().fit_transform(reconstruction_errors)
+        # reconstruction_errors = reconstruction_errors.reshape((num_samples, num_nodes, num_feats))
+
+        reconstruction_error_raw = mahalanobis_distances
+        reconstruction_error_raw = reconstruction_error_raw.reshape(num_timestamps, -1)
+        # reconstruction_error_full = np.sort(reconstruction_error_raw, axis=1)[:, -topk:].mean(axis=-1)
+        reconstruction_error_full = MinMaxScaler().fit_transform(np.sort(reconstruction_error_raw, axis=1)[:, -topk:].mean(axis=-1, keepdims=True)).reshape(-1)
+        # reconstruction_error_full = MinMaxScaler().fit_transform(reconstruction_error_raw.mean(axis=-1, keepdims=True)).reshape(-1)
+        threshold = np.percentile(reconstruction_error_full, anomaly_threshold)
+        is_anomalies = (reconstruction_error_full > threshold).astype(int)
+        likelihoods = reconstruction_error_full
+        return pd.Series(is_anomalies, index=index), likelihoods, reconstruction_error_full
+    if post_processing_strategy == 'max':
         # num_samples, num_nodes, num_feats = reconstruction_errors.shape
         # reconstruction_errors = reconstruction_errors.reshape((num_samples, num_nodes * num_feats))
         reconstruction_errors = get_full_err_scores(reconstruction_errors)

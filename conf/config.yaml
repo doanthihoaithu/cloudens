@@ -13,19 +13,30 @@ modeling:
 
 evaluation:
   retrain: false
-  use_model: 'GRU' # 'A3TGCN' or 'GRU'
+  use_model: 'A3TGCN' # 'A3TGCN' or 'GRU'
   train_batch_size: 16 # 16  # training batch size
   evaluation_batch_size: 32
   slide_win: 6
   nab_scoring_profiles: [ "standard", "reward_fn" ] # Options: "standard", "reward_fn"
   model_save_path: "trained_models/"
   epochs: 15
-  scale_predictions: [true, false]
+  post_processing_strategies: ['max', 'likelihood', 'mahalanobis']
   topks: [1]
-  scale_anomaly_thresholds: [99.6, 99.7, 99.8]
+  distribution_anomaly_thresholds: [99.6, 99.7, 99.8]
+#  mahalanobis_anomaly_thresholds: [99.6, 99.7, 99.8]
   anomaly_thresholds: [0.998, 0.9985, 0.9997, 0.99975]
   long_windows: [30]
   short_windows: [2]
+  ensembles:
+#    http_codes: [ '5xx','4xx' ] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
+#    aggregations: [ 'count', 'avg', 'min', 'max' ]
+    http_codes: ['5xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
+    aggregations: ['avg']
+#  post_processing:
+#    distance: 'mahala'
+#    recreate: true
+#    #    anomaly_thresholds: [99.5, 99.7, 99.8]
+#    anomaly_thresholds: [99.8]
 
 data_preparation_pipeline:
   grouping_mode: 'no_group'
@@ -45,7 +56,7 @@ data_preparation_pipeline:
   features_prep:
     filter:
       http_codes: ['5xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
-      aggregations: ['count'] # aggregations can be ['count', 'avg', 'min', 'max',' median', 'std', 'kurtosis', 'skewness']
+      aggregations: ['avg'] # aggregations can be ['count', 'avg', 'min', 'max',' median', 'std', 'kurtosis', 'skewness']
 
   train_test_config:
     anomaly_window:
@@ -67,7 +78,7 @@ model_configs:
 #    cell_cnt: 16 #16
 #    patience: 10
     loss_function: "mse"
-    data_dir: "./trained_models/gru/"
+#    data_dir: "./trained_models/gru/"
   A3TGCN:
     model_filename: 'A3TGCN_autoencoder.pt'
     slide_win: 6
