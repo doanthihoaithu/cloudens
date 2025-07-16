@@ -9,6 +9,17 @@ This repository contains the code implementation for the paper submitted in ICSE
 The repository includes scripts and modules for anomaly detection using Spatio-Temporal Graph Neural Networks (ST-GNNs), NAB scoring, and related preprocessing tasks. 
 The pipeline is modularized for flexibility and ease of use.
 
+## 🔍 Overview
+
+ClouDens builds upon the ST-GNNs architecture and introduces enhancements tailored for detecting anomalies in complex cloud environments. This repository includes:
+
+- Preprocessed datasets and feature subsets
+- ClouDens and GRU-based model implementations
+- Forecast-based anomaly scoring with multiple post-processing strategies
+- Evaluation scripts for NAB scores and other metrics
+
+---
+
 # Project Setup: Anomaly Data Preparation
 
 This guide helps you set up the environment for the "Anomaly Detection" project. Follow these steps to ensure you have the correct Python version and dependencies installed for replicability.
@@ -150,9 +161,9 @@ curl -L -o data/massaged/pivoted_data_all.parquet https://zenodo.org/records/140
 
 ### 4.2 Scripts
 
-- **`run_experiment__multi_models_GRU_ANN.py`**: The main script for coordinating anomaly detection experiments. It handles data preprocessing, model training, evaluation, and grid search for optimizing parameters.
+[//]: # (- **`run_experiment__multi_models_GRU_ANN.py`**: The main script for coordinating anomaly detection experiments. It handles data preprocessing, model training, evaluation, and grid search for optimizing parameters.)
 
-- **`preprocessing.py`**: Handles data preparation, including loading 5XX features, adding time-related features (e.g., sine/cosine transformations), and filtering training/testing anomaly windows.
+- **`preprocessing.py`**: Built-ins to handle data preparation, including loading feature subsets, and filtering training/testing anomaly windows.
 
 - **`anomaly_likelihood.py`**: Contains functions to compute anomaly likelihood using reconstruction errors and statistical analysis.
 
@@ -197,6 +208,51 @@ docker run -it anomaly-detector
 
 The workflow is configured using the [Hydra](https://github.com/facebookresearch/hydra) framework.
 
+#### Split the pivoted dataset into different feature subsets
+The selected HTTP Status Codes and Aggregations can be configurable in the `conf.yaml` file. 
+Modify the following parameters under `data_preparation_pipeline`:
+```yaml
+data_preparation_pipeline:
+  multiple_preprocessing: true # true or false
+  feature_subsets:
+    http_codes: ['5xx','4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
+    aggregations: ['count','avg','min','max']
+    
+  features_prep:
+    filter:
+      http_codes: ['5xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
+      aggregations: ['count']
+```
+If `multiple_preprocessing: false`, the preprocessing script extracts and processes a single feature subset based on the 
+specified HTTP status codes and aggregation method defined under `features_prep.filter` 
+(`http_codes` and `aggregations`).
+
+If set to `multiple_preprocessing: true`, the script generates multiple feature subsets by iterating over 
+all combinations of `http_codes` and `aggregations` specified in `data_preparation_pipeline.feature_subsets`.
+
+To extract feature subsets, preprocess them, and save the results to disk, run:
+```bash
+python src/run_preprocessing.py
+```
+This script will apply the preprocessing pipeline based on your configuration settings in `config.yaml`.
+
+After preprocessing multiple feature subsets, the project directory will be organized as follows:
+```plaintext
+icse2026_cloudens_ad/
+├── conf/                # Configuration files (e.g., config.yaml)
+├── src/                 # Source code files
+├── data/
+│   ├── massaged/        # Pivoted input data
+│   │   ├── extracted
+│   │   │   ├── no_group_4xx_avg                # Feature subset folder according to 4xx (Status Code) and avg (Aggregation)
+│   │   │   │   ├── adjacency_matrix.npy        # Adjacency matrix
+│   │   │   │   ├── filtered_raw_data.parquet   # Processed data corresponding to feature subset
+│   │   │   │   ├── meta_data.json              # Additional information about the graph representaion
+│   │   │   ├── no_group_4xx_count
+│   │   │   ├── ...  
+│   ├── labels/          # Anomaly window labels
+├── trained_models/      # Saved trained models
+```
 #### 5.2.1 Configuring the Model Type
 
 The model type (e.g., ANN or GRU) is configurable in the `conf.yaml` file. Modify the following parameters under `train_test_config`:
