@@ -67,3 +67,49 @@ def clear_folder(folder_dir):
             if os.path.isfile(f):
                 os.remove(f)
                 print(f'Removed {f}')
+
+def get_full_err_scores(reconstruction_errors_all_nodes):
+    """Get stacked array of error scores for each feature by applying the
+    `get_err_scores` function on every slice of the `test_result` tensor.
+    """
+    all_scores = [
+        get_err_scores(reconstruction_errors_all_nodes[:, :, i])
+        for i in range(reconstruction_errors_all_nodes.shape[-1])
+    ]
+    return np.stack(all_scores, axis = -1)
+def get_err_scores(reconstruction_errors):
+    """
+    Calculate the error scores, normalised by the median and interquartile range.
+
+    Parameters
+    ----------
+    test_result_list (list):
+        List containing two lists of predicted and ground truth values
+    smoothen_error (bool):
+        A boolean value indicating whether error smoothing should be applied or not
+
+    Returns
+    -------
+    err_scores (np.ndarray):
+        An array of error scores
+    """
+    # test_predict, test_ground = test_result_list
+
+    n_err_mid, n_err_iqr = get_err_median_and_iqr(reconstruction_errors)
+
+    # test_delta = np.abs(
+    #     np.subtract(
+    #         np.array(test_predict).astype(np.float64),
+    #         np.array(test_ground).astype(np.float64),
+    #     )
+    # )
+    test_delta = reconstruction_errors.astype(np.float64)
+    epsilon = 1e-2
+
+    err_scores = (test_delta - n_err_mid) / (np.abs(n_err_iqr) + epsilon)
+    return err_scores
+
+def get_err_median_and_iqr(reconstruction_errors):
+    # np_arr = np.abs(np.subtract(np.array(predicted), np.array(groundtruth)))
+    #
+    return np.median(reconstruction_errors), iqr(reconstruction_errors)

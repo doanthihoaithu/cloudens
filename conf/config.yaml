@@ -11,6 +11,21 @@ hydra:
 modeling:
   random_seed: 42
 
+evaluation:
+  retrain: false
+  use_model: 'GRU' # 'A3TGCN' or 'GRU'
+  train_batch_size: 16 # 16  # training batch size
+  evaluation_batch_size: 32
+  slide_win: 6
+  nab_scoring_profiles: [ "standard", "reward_fn" ] # Options: "standard", "reward_fn"
+  model_save_path: "trained_models/"
+  epochs: 15
+  scale_predictions: [true, false]
+  topks: [1]
+  scale_anomaly_thresholds: [99.6, 99.7, 99.8]
+  anomaly_thresholds: [0.998, 0.9985, 0.9997, 0.99975]
+  long_windows: [30]
+  short_windows: [2]
 
 data_preparation_pipeline:
   grouping_mode: 'no_group'
@@ -41,3 +56,20 @@ data_preparation_pipeline:
       train_end_date: '2024-02-29'
       test_start_date: '2024-03-01'
       end_date: '2024-05-31' # Actual End 31 May 2024
+
+model_configs:
+  GRU:
+    model_filename: 'GRU_autoencoder.h5'
+#    encoding_dim: 32
+#    learning_rate: 0.01
+#    dropout_rate: 0.3
+#    layer_cnt: 7
+#    cell_cnt: 16 #16
+#    patience: 10
+    loss_function: "mse"
+    data_dir: "./trained_models/gru/"
+  A3TGCN:
+    model_filename: 'A3TGCN_autoencoder.pt'
+    slide_win: 6
+    shuffle_train: false
+    data_dir: "./trained_models/a3tgcn/"

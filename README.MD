@@ -209,7 +209,7 @@ docker run -it anomaly-detector
 The workflow is configured using the [Hydra](https://github.com/facebookresearch/hydra) framework.
 
 #### Split the pivoted dataset into different feature subsets
-The selected HTTP Status Codes and Aggregations can be configurable in the `conf.yaml` file. 
+The selected HTTP Status Codes and Aggregations can be configurable in the `config.yaml` file. 
 Modify the following parameters under `data_preparation_pipeline`:
 ```yaml
 data_preparation_pipeline:
@@ -253,13 +253,14 @@ icse2026_cloudens_ad/
 │   ├── labels/          # Anomaly window labels
 ├── trained_models/      # Saved trained models
 ```
-#### 5.2.1 Configuring the Model Type
+#### 5.2.1 Configuring the Base Model Architecture
 
-The model type (e.g., ANN or GRU) is configurable in the `conf.yaml` file. Modify the following parameters under `train_test_config`:
+The model type (e.g., A3T-GCN or GRU) is configurable in the `config.yaml` file. Modify the following parameters under `evaluation`:
 
 ```yaml
-train_test_config:
-  use_model: ANN                 # Options: ANN or GRU
+evaluation:
+  retrain: false
+  use_model: 'GRU' # 'A3TGCN' or 'GRU'
 ```
 
 #### 5.2.2 Configuring NAB Scoring Profile
