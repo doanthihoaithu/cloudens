@@ -22,7 +22,7 @@ evaluation:
   epochs: 15
   post_processing_strategies: ['max', 'likelihood', 'mahalanobis']
   topks: [1]
-  distribution_anomaly_thresholds: [99.6, 99.7, 99.8]
+  distribution_anomaly_thresholds: [99.7, 99.8, 99.9]
 #  mahalanobis_anomaly_thresholds: [99.6, 99.7, 99.8]
   anomaly_thresholds: [0.998, 0.9985, 0.9997, 0.99975]
   long_windows: [30]
@@ -30,8 +30,8 @@ evaluation:
   ensembles:
 #    http_codes: [ '5xx','4xx' ] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
 #    aggregations: [ 'count', 'avg', 'min', 'max' ]
-    http_codes: ['5xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
-    aggregations: ['avg']
+    http_codes: ['5xx','4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
+    aggregations: ['count','avg','min', 'max']
 #  post_processing:
 #    distance: 'mahala'
 #    recreate: true
@@ -55,8 +55,8 @@ data_preparation_pipeline:
 
   features_prep:
     filter:
-      http_codes: ['5xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
-      aggregations: ['avg'] # aggregations can be ['count', 'avg', 'min', 'max',' median', 'std', 'kurtosis', 'skewness']
+      http_codes: ['4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
+      aggregations: ['max'] # aggregations can be ['count', 'avg', 'min', 'max',' median', 'std', 'kurtosis', 'skewness']
 
   train_test_config:
     anomaly_window:

@@ -36,7 +36,7 @@ def analyze_reconstruction_errors_essembles(ensembles_config, data_preparation_c
 
     selected_models_list = list(itertools.product(http_codes, aggregations))
     print('Selected_model_list length', len(selected_models_list))
-    for i in range(1,2):
+    for i in range(2,3):
         if i > len(selected_models_list):
             return
 
@@ -190,6 +190,18 @@ def analyze_reconstruction_errors_essembles(ensembles_config, data_preparation_c
 
                         top1_NAB_standard_index = grid_search_df['NAB_standard_rank'].idxmin()
                         top1_NAB_reward_fn_index = grid_search_df['NAB_reward_fn_rank'].idxmin()
+                        top1_NAB_reward_fn_max_index = grid_search_df[grid_search_df['post_processing_strategy'] == 'max']['NAB_reward_fn_rank'].idxmin()
+                        top1_NAB_reward_fn_likelihood_index = \
+                        grid_search_df[grid_search_df['post_processing_strategy'] == 'likelihood'][
+                            'NAB_reward_fn_rank'].idxmin()
+                        top1_NAB_reward_fn_mahalanobis_index = \
+                        grid_search_df[grid_search_df['post_processing_strategy'] == 'mahalanobis'][
+                            'NAB_reward_fn_rank'].idxmin()
+
+                        print('Top1 NAB according to strategy',
+                              top1_NAB_reward_fn_likelihood_index,
+                              top1_NAB_reward_fn_max_index,
+                              top1_NAB_reward_fn_mahalanobis_index)
 
                         # if grid_search_params == None:
                         #     grid_search_params = grid_search_df.to_dict(orient='records')
@@ -198,8 +210,19 @@ def analyze_reconstruction_errors_essembles(ensembles_config, data_preparation_c
                     assert label_essemble_df.shape[1] == grid_search_df.shape[0]
 
                     # label_dictionary[selected_group_mode] = label_essemble_df.values
-                    grid_search_params[selected_group_mode] = grid_search_df.iloc[[top1_NAB_standard_index, top1_NAB_reward_fn_index],:].to_dict(orient='records')
-                    label_dictionary[selected_group_mode] = label_essemble_df.values[:,[top1_NAB_standard_index, top1_NAB_reward_fn_index]]
+                    grid_search_params[selected_group_mode] = grid_search_df.iloc[[top1_NAB_standard_index,
+                                                                                   top1_NAB_reward_fn_index,
+                                                                                   top1_NAB_reward_fn_likelihood_index,
+                                                                                   top1_NAB_reward_fn_max_index,
+                                                                                   top1_NAB_reward_fn_mahalanobis_index
+                                                                                   ],:].to_dict(orient='records')
+                    combined_three_strategies_labels = label_essemble_df.values[:,[
+                                                                                    top1_NAB_reward_fn_likelihood_index,
+                                                                                    top1_NAB_reward_fn_max_index,
+                                                                                    top1_NAB_reward_fn_mahalanobis_index
+                                                                                    ]].any(axis=-1, keepdims=True).astype(int)
+                    label_dictionary[selected_group_mode] = np.concatenate([label_essemble_df.values[:, [top1_NAB_standard_index,top1_NAB_reward_fn_index]],
+                                                                     combined_three_strategies_labels],axis=-1)
 
                     # is_anomalies, likelihoods, reconstruction_error = label_reconstruction_errors(reconstruction_errors, )
                     # Call grid search or other functions
@@ -230,7 +253,7 @@ def analyze_reconstruction_errors_essembles(ensembles_config, data_preparation_c
                     'reward_fn_normalized',
                     'detection_counters',
                     'confusion_matrix',
-                    'scale_prediction',
+                    'post_processing_strategy',
                     'anomaly_threshold',
                     'topk',
                     'long_window',
@@ -279,7 +302,7 @@ def analyze_reconstruction_errors_essembles(ensembles_config, data_preparation_c
 
                     new_row = {
                         'confusion_matrix': conf_matrix,
-                        'scale_prediction': None,
+                        'post_processing_strategy': None,
                         'topk': None,
                         'anomaly_threshold': None,
                         'long_window': None,
@@ -297,27 +320,53 @@ def analyze_reconstruction_errors_essembles(ensembles_config, data_preparation_c
                     }
                     ensemble_result_df.loc[len(ensemble_result_df)] = new_row
 
-                    for model_id, grid_search_param in grid_search_params.items():
-                        grid_search_param = grid_search_param[i]
-                        new_row = {
-                            'confusion_matrix': grid_search_param['confusion_matrix'],
-                            'scale_prediction': grid_search_param['scale_prediction'],
-                            'topk': grid_search_param['topk'],
-                            'anomaly_threshold': grid_search_param['anomaly_threshold'],
-                            'long_window': grid_search_param['long_window'],
-                            'short_window': grid_search_param['short_window'],
-                            'standard_raw': grid_search_param['standard_raw'],
-                            'reward_fn_raw': grid_search_param['reward_fn_raw'],
-                            'standard_normalized': standard_score_normalized,
-                            'reward_fn_normalized': reward_fn_score_normalized,
-                            'precision': grid_search_param['precision'],
-                            'recall': grid_search_param['recall'],
-                            'f1': grid_search_param['f1'],
-                            'detection_counters': grid_search_param['detection_counters'],
-                            'accuracy': grid_search_param['accuracy'],
-                            # conf_matrix, mcc, is_anomalies, likelihoods, results_df, raw_nab_score,
-                        }
-                        ensemble_result_df.loc[len(ensemble_result_df)] = new_row
+                    if i == 0 or i == 1:
+                        for model_id, grid_search_param in grid_search_params.items():
+                            grid_search_param = grid_search_param[i]
+                            new_row = {
+                                'confusion_matrix': grid_search_param['confusion_matrix'],
+                                'post_processing_strategy': grid_search_param['post_processing_strategy'],
+                                'topk': grid_search_param['topk'],
+                                'anomaly_threshold': grid_search_param['anomaly_threshold'],
+                                'long_window': grid_search_param['long_window'],
+                                'short_window': grid_search_param['short_window'],
+                                'standard_raw': grid_search_param['standard_raw'],
+                                'reward_fn_raw': grid_search_param['reward_fn_raw'],
+                                'standard_normalized': standard_score_normalized,
+                                'reward_fn_normalized': reward_fn_score_normalized,
+                                'precision': grid_search_param['precision'],
+                                'recall': grid_search_param['recall'],
+                                'f1': grid_search_param['f1'],
+                                'detection_counters': grid_search_param['detection_counters'],
+                                'accuracy': grid_search_param['accuracy'],
+                                # conf_matrix, mcc, is_anomalies, likelihoods, results_df, raw_nab_score,
+                            }
+                            ensemble_result_df.loc[len(ensemble_result_df)] = new_row
+                    # elif i == 2:
+                    #     for model_id, grid_search_param in grid_search_params.items():
+                    #         for j in range(i, i+3):
+                    #             grid_search_param_tmp = grid_search_param[j]
+                    #             new_row = {
+                    #                 'confusion_matrix': grid_search_param_tmp['confusion_matrix'],
+                    #                 'post_processing_strategy': grid_search_param_tmp['post_processing_strategy'],
+                    #                 'topk': grid_search_param_tmp['topk'],
+                    #                 'anomaly_threshold': grid_search_param_tmp['anomaly_threshold'],
+                    #                 'long_window': grid_search_param_tmp['long_window'],
+                    #                 'short_window': grid_search_param_tmp['short_window'],
+                    #                 'standard_raw': grid_search_param_tmp['standard_raw'],
+                    #                 'reward_fn_raw': grid_search_param_tmp['reward_fn_raw'],
+                    #                 'standard_normalized': standard_score_normalized,
+                    #                 'reward_fn_normalized': reward_fn_score_normalized,
+                    #                 'precision': grid_search_param_tmp['precision'],
+                    #                 'recall': grid_search_param_tmp['recall'],
+                    #                 'f1': grid_search_param_tmp['f1'],
+                    #                 'detection_counters': grid_search_param_tmp['detection_counters'],
+                    #                 'accuracy': grid_search_param_tmp['accuracy'],
+                    #                 # conf_matrix, mcc, is_anomalies, likelihoods, results_df, raw_nab_score,
+                    #             }
+                    #             ensemble_result_df.loc[len(ensemble_result_df)] = new_row
+                    # else:
+                    #     raise RuntimeError('Out of index num grid search')
 
                 # print(data_identification)
                 ensemble_meta_data_file = os.path.join(ensemble_model_dir, f'ensemble_final_result_{"+".join(ensemble_meta_data["models"])}.csv')
