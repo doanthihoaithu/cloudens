@@ -65,7 +65,7 @@ data_preparation_pipeline:
   features_prep:
     filter:
       http_codes: ['4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
-      aggregations: ['min'] # aggregations can be ['count', 'avg', 'min', 'max',' median', 'std', 'kurtosis', 'skewness']
+      aggregations: ['count'] # aggregations can be ['count', 'avg', 'min', 'max',' median', 'std', 'kurtosis', 'skewness']
 
   train_test_config:
     anomaly_window:

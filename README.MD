@@ -4,25 +4,28 @@
 ![python](https://img.shields.io/badge/python-3.12.2-blue.svg)
 
 
-This repository contains the code implementation for the paper submitted in ICSE Research Track 2026 with title **"ClouDens: A Scalable Ensemble Framework for Anomaly Detection in Large-Scale Cloud Systems"**.
+This repository contains the code implementation for the paper submitted in ICSE 2026 Research Track with title **"ClouDens: A Scalable Ensemble Framework for Anomaly Detection in Large-Scale Cloud Systems"**.
 
 The repository includes scripts and modules for anomaly detection using Spatio-Temporal Graph Neural Networks (ST-GNNs), NAB scoring, and related preprocessing tasks. 
 The pipeline is modularized for flexibility and ease of use.
 
 ## 🔍 Overview
 
-ClouDens builds upon the ST-GNNs architecture and introduces enhancements tailored for detecting anomalies in complex cloud environments. This repository includes:
+![ClouDens Overview](figures/overview.png)
 
-- Preprocessed datasets and feature subsets
-- ClouDens and GRU-based model implementations
-- Forecast-based anomaly scoring with multiple post-processing strategies
-- Evaluation scripts for NAB scores and other metrics
+
+ClouDens builds upon the ST-GNNs architecture and introduces ensemble enhancements tailored for detecting anomalies in complex cloud environments. This repository includes:
+
+- Script for preprocessing the IBM Cloud Dataset
+- Forecasting-based Architecture Code Implementation for  ClouDens and a GRU-based model
+- Anomaly scoring based on forecast errors with different strategies, including *Max Aggregation*, *Anomaly Likelihood Function*, and *Mahalanobis Distance*
+- Evaluation scripts for the final ensemble approach, calculating NAB scores and other metrics
 
 ---
 
 # Project Setup: Anomaly Data Preparation
 
-This guide helps you set up the environment for the "Anomaly Detection" project. Follow these steps to ensure you have the correct Python version and dependencies installed for replicability.
+This guide helps you set up the environment for the ClouDens project. Follow these steps to ensure you have the correct Python version and dependencies installed for replicability.
 
 ---
 
@@ -61,10 +64,6 @@ If Python 3.12.2 is not installed, download it from the [official Python website
 
 
 ### Setup Options
-
-> **Using Docker**:  
-> All dependencies, directory structures, and data downloads are handled automatically. Refer to [Section 5.1 Using Docker](#51-using-docker) for execution details.
-
 > **Using a Virtual Environment**:  
 > Continue with the steps below and refer to [Section 5.2 Using Virtual Environment](#52-using-virtual-environment) for execution instructions.
 
@@ -119,15 +118,16 @@ icse2026_cloudens_ad/
 ├── data/
 │   ├── massaged/        # Pivoted input data
 │   ├── labels/          # Anomaly window labels
-├── results/
-│   ├── model_experiments/ # Experiment results
-├── trained_models/      # Saved trained models
+├── experiment_results/  # Experiment results presented in the paper
+│   ├── ...              
+│   ├── table_4_full.png
+├── trained_models/      # Saved trained models and related outputs
 ```
 
 You can **create these directories** using the following shell script:
 
 ```bash
-mkdir -p conf src data/massaged data/labels results/model_experiments trained_models
+mkdir -p conf src data/massaged data/labels experiment_results trained_models
 ```
 
 
@@ -157,7 +157,7 @@ curl -L -o data/massaged/pivoted_data_all.parquet https://zenodo.org/records/140
 
 ### 4.1 Configuration
 
-- **`config.yaml`**: Stores the configuration for file paths, training/testing parameters, and model settings.
+- **`config.yaml`**: Stores the configuration for preprocessing tasks, model settings, and evaluation.
 
 ### 4.2 Scripts
 
@@ -170,41 +170,48 @@ curl -L -o data/massaged/pivoted_data_all.parquet https://zenodo.org/records/140
 - **`nab_scoring.py`**: Implements NAB (Numenta Anomaly Benchmark) scoring, including options for standard scoring or custom profiles like `reward_fn`.
 
 - **`plotting_module.py`**: Provides utilities for visualizing the results of anomaly detection, such as normalized 5XX counts and detected anomalies.
+- **`ibm_dataset_loader.py`**: A class to manage all relevant information of a feature subset input
+- **`utils.py`**: Built-ins to handle basic operations
+- **`run_preprocessing.py`**: Script to run pre-processing tasks, supporting handling a single or multiple feature subsets
+- **`run_training_single_model.py`**: Script to train forecasting model on a single feature subset
+- **`run_ensemble_approach.py`**: Script to ensemble outputs of multiple based models on different feature subets
 
-
-### 4.3 Results Directory (`./results/model_experiments/`)
+### 4.3 Results Directory (`./trained_models`)
+#### Folder structure
+```plaintext
+trained_models/
+├── ensemble/                                    # Output of the ensemble approach
+├── no_group_4xx_avg        
+│   ├── A3TGCN/                                  # A3TGCN trained model and relevant outputs on `4xx avg` feature subset   
+│   │   ├── A3TGCN_autoencoder.pt                # Saved model
+│   │   ├── A3TGCN_grid_search.csv               # NAB Score with different thresholds and post-processing strategies
+│   │   ├── A3TGCN_predictions_for_assembles.csv # Predicted labels for ensembling
+│   │   ├── A3TGCN_train_val_losses.png
+│   │   ├── mahalanobis.npy                      # Mahalanobis distance corresponding to `reconstruction_errors.npy`, saved for reuse
+│   │   ├── mse_error.txt                        # MSE error on test data
+│   │   ├── reconstruction_errors.npy            # Raw forecast errors for post-processing
+│   ├── GRU/                                     # GRU trained model and relevant outputs on `4xx avg` feature subset
+├── no_group_4xx_count/
+├── no_group_4xx_min/ 
+├── no_group_4xx_max/ 
+├── no_group_5xx_avg/ 
+├── no_group_5xx_count/ 
+├── no_group_5xx_min/ 
+├── no_group_5xx_max/ 
+```
 
 #### Files:
 
-- **`unweighted__<Model>_anomaly_detection_results.csv`**  
-   Contains detailed results from the unweighted anomaly detection experiments using the specified model (e.g., ANN or GRU), including metrics such as true positives, false positives, and anomaly windows, for the entire test period.
+- **`no_group_4xx_avg/A3TGCN`**: A folder contains detailed results from the anomaly detection experiments using the `A3TGCN` model, including the saved 
+    trained model, raw forecast errors, Mahalanobis Distance, Grid Search Output with different metrics such as 
+    true positives, false positives, and anomaly windows, for the entire test period.
+- **`no_group_4xx_avg/GRU`**: A folder contains the trained model on `4xx_avg` feature subset, with different outputs for evaluation like `A3TGCN` model
 
-- **`unweighted__<Model>_anomaly_detection_results.png`**  
-   A graphical visualization of the results from the unweighted anomaly detection experiment, depicting anomalies and their corresponding NAB scores. The plot includes:
-   - **5XX Count (Normalized)**: The normalized count of 5XX errors.
-   - **Predicted Anomalies (Red X)**: Anomalies detected by the model.
-   - **Ground Truth Anomalies**: Highlighted areas based on categories like IssueTracker, InstantMessenger, and TestLog.
-
-- **`unweighted__<Model>_results.csv`**  
-   Consolidated results of the unweighted experiments with the specified model, providing a summary of key performance metrics.
-
+- **`A3TGCN_grid_search.csv`**: Consolidated results of the experiments with the specified model, providing a summary of key performance metrics.
+- **`ensemble`**: Contains ensemble results
 ---
 
-## 5 Execution
-
-### 5.1 Using Docker
-
-#### 5.1.1 Build the Docker image using the provided `Dockerfile`:
-```bash
-docker build -t anomaly-detector .
-```
-
-#### 5.1.2 Run the Docker container:
-```bash
-docker run -it anomaly-detector
-```
-
-### 5.2 Using Virtual Environment
+## 5 Execution - Using Virtual Environment
 
 The workflow is configured using the [Hydra](https://github.com/facebookresearch/hydra) framework.
 
@@ -213,7 +220,7 @@ The selected HTTP Status Codes and Aggregations can be configurable in the `conf
 Modify the following parameters under `data_preparation_pipeline`:
 ```yaml
 data_preparation_pipeline:
-  multiple_preprocessing: true # true or false
+  multiple_preprocessing: false # true or false
   feature_subsets:
     http_codes: ['5xx','4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
     aggregations: ['count','avg','min','max']
@@ -301,6 +308,4 @@ python src/run_training_single_model.py evaluation.use_model=A3TGCN evaluation.r
 - Use the exact steps mentioned above to ensure a consistent environment across different setups.
 
 ---
-
-If you encounter any issues, please feel free to reach out for support by opening an issue.
 
