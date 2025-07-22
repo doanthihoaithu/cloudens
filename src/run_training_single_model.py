@@ -28,7 +28,7 @@ from utils import clear_folder, get_project_root, get_full_err_scores, set_rando
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-def load_wrapper(model_name, config, static_edge_index):
+def load_wrapper(model_name, config, static_edge_index, static_edge_weight):
     node_features = config['node_features']
     periods = config['slide_win']
     batch_size = config['batch_size']
@@ -37,7 +37,7 @@ def load_wrapper(model_name, config, static_edge_index):
     num_nodes = config['num_nodes']
 
     if model_name == 'A3TGCN':
-        return A3TGCNWrapper(node_features, periods, static_edge_index, batch_size=batch_size, device=device)
+        return A3TGCNWrapper(node_features, periods, static_edge_index, static_edge_weight, batch_size=batch_size, device=device)
     elif model_name == 'GRU':
         return GRUWrapper(num_nodes, node_features, hidden_units, layer_dim=1, batch_size=batch_size, device=device)
     # if model_name == 'ASTGCN':
@@ -150,7 +150,8 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                  'num_nodes': data_loader.num_nodes,
                                  'device': DEVICE})
             model_wrapper = load_wrapper(model_name=model, config=graph_config,
-                                         static_edge_index=data_loader.get_edges_as_tensor(device=DEVICE))
+                                         static_edge_index=data_loader.get_edges_as_tensor(device=DEVICE),
+                                         static_edge_weight=data_loader.get_edge_weights_as_tensor(device=DEVICE))
             model_wrapper.load(model_filename)
         else:
             if experiment_config.retrain:
@@ -167,7 +168,8 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                  'num_nodes': data_loader.num_nodes,
                                  'device': DEVICE})
             model_wrapper = load_wrapper(model_name=model, config=graph_config,
-                                         static_edge_index=data_loader.get_edges_as_tensor(device=DEVICE))
+                                         static_edge_index=data_loader.get_edges_as_tensor(device=DEVICE),
+                                         static_edge_weight=data_loader.get_edge_weights_as_tensor(device=DEVICE))
             history = model_wrapper.train(train_loader, valid_loader, epochs=experiment_config.get('epochs'))
             model_wrapper.save(model_filename)
             plot_training_history(model_name='A3TGCN', training_history=history,

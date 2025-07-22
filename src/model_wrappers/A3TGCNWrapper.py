@@ -16,7 +16,7 @@ class TemporalGNN(torch.nn.Module):
         # Equals single-shot prediction
         self.linear = torch.nn.Linear(32, node_features)
 
-    def forward(self, x, edge_index, edge_weight=None):
+    def forward(self, x, edge_index, edge_weight):
         """
         x = Node features for T time steps
         edge_index = Graph edge indices
@@ -30,9 +30,10 @@ class TemporalGNN(torch.nn.Module):
         return h
 class A3TGCNWrapper:
 
-    def __init__(self, node_features, periods, static_edge_index, batch_size=32, device='cpu'):
+    def __init__(self, node_features, periods, static_edge_index, static_edge_weight, batch_size=32, device='cpu'):
         self.device = device
         self.static_edge_index = static_edge_index
+        self.static_edge_weight = static_edge_weight
         self.node_features = node_features
         self.periods = periods
         self.batch_size = batch_size
@@ -75,7 +76,7 @@ class A3TGCNWrapper:
                                                         desc=f'Training...'):
                 # encoder_inputs = sample.x.to(DEVICE)
                 # labels = sample.y.to(DEVICE)
-                y_hat = model(encoder_inputs, self.static_edge_index)  # Get model predictions
+                y_hat = model(encoder_inputs, self.static_edge_index, self.static_edge_weight)  # Get model predictions
                 loss = self.loss_fn(y_hat, labels)  # Mean squared error #loss = torch.mean((y_hat-labels)**2)  sqrt to change it to rmse
                 loss.backward()
                 self.optimizer.step()
@@ -104,7 +105,7 @@ class A3TGCNWrapper:
         predictions = []
         for encoder_inputs, labels in tqdm(test_loader, total=len(test_loader), desc=f'Testing...'):
             # Get model predictions
-            y_hat = self.model(encoder_inputs, self.static_edge_index)
+            y_hat = self.model(encoder_inputs, self.static_edge_index, self.static_edge_weight)
             predictions.append(y_hat.detach().cpu().numpy())
             # Mean squared error
             loss = self.loss_fn(y_hat, labels)

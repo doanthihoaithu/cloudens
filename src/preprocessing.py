@@ -193,9 +193,10 @@ def prepare_5xx_4xx_features(cfg):
     json.dump(meta_data, open(cfg['meta_data_file'], 'w'), indent=4)
     log.info('Save meta data to "%s"', cfg['meta_data_file'])
 
-    adjacency_matrix = build_adjacency_matrix_no_group(meta_data['node_ids'])
-    node_indices, neighbor_indices = np.where(adjacency_matrix == 1)
-    adjacency_matrix = np.array([node_indices, neighbor_indices])
+    adjacency_matrix = build_adjacency_matrix_no_group(meta_data['node_ids']).T
+    # node_indices, neighbor_indices = np.where(adjacency_matrix == 1)
+    # node_indices, neighbor_indices, weights = adjacency_matrix
+    # adjacency_matrix = np.array([node_indices, neighbor_indices])
     np.save(cfg['adjacency_file'], adjacency_matrix)
     log.info(f'Save adjacency matrix (shape={adjacency_matrix.shape}) to {cfg["adjacency_file"]}')
 

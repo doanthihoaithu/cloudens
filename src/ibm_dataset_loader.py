@@ -205,11 +205,16 @@ class IBMDatasetLoader(object):
         self.targets_test = windowed_data[:, window_size,:,:]
 
     def _get_edges_and_weights(self):
-        self.edges = np.array(self.adjacency_matrix)
-        self.edge_weights = np.ones(self.edges.shape[1])
+        # self.edges = np.array(self.adjacency_matrix)
+        # self.edge_weights = np.ones(self.edges.shape[1])
+        self.edges = self.adjacency_matrix[:2,:]
+        self.edge_weights = self.adjacency_matrix[2,:]
 
     def get_edges_as_tensor(self, device='cpu'):
         return torch.LongTensor(self.edges).to(device)
+
+    def get_edge_weights_as_tensor(self, device='cpu'):
+        return torch.FloatTensor(self.edge_weights).to(device)
 
     def _download_url(self, url, save_path):  # pragma: no cover
         context = ssl._create_unverified_context()
@@ -385,182 +390,182 @@ class IBMDatasetLoader(object):
                 print(f'Done saving feature data!')
                 return reconstructed_df, meta_data, adjacency_matrix
 
-            else:
-                selected_columns = group_method.split('+')
-                grouped_df = column_df[selected_columns].value_counts().to_frame('count').reset_index()
-                grouped_df = grouped_df[grouped_df['calculation_type'] == 'count']
+            # else:
+            #     selected_columns = group_method.split('+')
+            #     grouped_df = column_df[selected_columns].value_counts().to_frame('count').reset_index()
+            #     grouped_df = grouped_df[grouped_df['calculation_type'] == 'count']
+            #
+            #     # patterns = ['_5\d\d_endpoint']
+            #     patterns = column_df['type'].unique()
+            #     calculation_types = ['count']
+            #     columns_dictionary = dict()
+            #     center_component_pattern_length = grouped_df.shape[0]
+            #
+            #     for index, entry in tqdm(enumerate(
+            #             grouped_df[selected_columns].values), total=center_component_pattern_length, \
+            #             desc='Grouping columns for nodes...'):
+            #         # print(f'{index}/{center_component_pattern_length}:', center, component, http_code_pattern)
+            #         http_code_pattern = entry[-2]
+            #         calculation_type = entry[-1]
+            #         center_index = selected_columns.index('center') if 'center' in selected_columns else None
+            #         if center_index is not None:
+            #             center = entry[center_index]
+            #         else:
+            #             center = None
+            #         component_index = selected_columns.index('component') if 'component' in selected_columns else None
+            #         if component_index is not None:
+            #             component = entry[component_index]
+            #         else:
+            #             component = None
+            #         endpoint_index = selected_columns.index('endpoint') if 'endpoint' in selected_columns else None
+            #         if endpoint_index is not None:
+            #             endpoint = entry[endpoint_index]
+            #         else:
+            #             endpoint = None
+            #
+            #
+            #
+            #         # condition = [column_df[selected_columns[i]] == groups[i] for i, group_name in enumerate(groups)]
+            #         if center_index is None:
+            #             if endpoint is not None and component is not None:
+            #                 corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
+            #                                                   (column_df['calculation_type'].isin(calculation_types)) & \
+            #                                                   (column_df['endpoint'] == endpoint) & \
+            #                                                   (column_df['component'] == component) & \
+            #                                                   (column_df['type'] == http_code_pattern)
+            #                                                   ]
+            #             elif endpoint is not None:
+            #                 corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
+            #                                                   (column_df['calculation_type'].isin(calculation_types)) & \
+            #                                                   (column_df['endpoint'] == endpoint) & \
+            #                                                   (column_df['type'] == http_code_pattern)
+            #                                                   ]
+            #             else:
+            #                 corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
+            #                                                   (column_df['calculation_type'].isin(calculation_types)) & \
+            #                                                   (column_df['component'] == component) & \
+            #                                                   (column_df['type'] == http_code_pattern)
+            #                                                   ]
+            #         elif component_index is None:
+            #             if center is not None and endpoint is not None:
+            #                 corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
+            #                                                   (column_df['calculation_type'].isin(calculation_types)) & \
+            #                                                   (column_df['center'] == center) & \
+            #                                                   (column_df['endpoint'] == endpoint) & \
+            #                                                   (column_df['type'] == http_code_pattern)
+            #                                                   ]
+            #             elif center is not None:
+            #                 corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
+            #                                                   (column_df['calculation_type'].isin(calculation_types)) & \
+            #                                                   (column_df['center'] == center) & \
+            #                                                   (column_df['type'] == http_code_pattern)
+            #                                                   ]
+            #             else:
+            #                 corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
+            #                                                   (column_df['calculation_type'].isin(calculation_types)) & \
+            #                                                   (column_df['endpoint'] == endpoint) & \
+            #                                                   (column_df['type'] == http_code_pattern)
+            #                                                   ]
+            #
+            #         elif endpoint_index is None:
+            #             if center is not None and component is not None:
+            #                 corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
+            #                                                   (column_df['calculation_type'].isin(calculation_types)) & \
+            #                                                   (column_df['center'] == center) & \
+            #                                                   (column_df['component'] == component) & \
+            #                                                   (column_df['type'] == http_code_pattern)
+            #                                                   ]
+            #             elif center is not None:
+            #                 corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
+            #                                                   (column_df['calculation_type'].isin(calculation_types)) & \
+            #                                                   (column_df['center'] == center) & \
+            #                                                   (column_df['type'] == http_code_pattern)
+            #                                                   ]
+            #             else:
+            #                 corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
+            #                                                   (column_df['calculation_type'].isin(calculation_types)) & \
+            #                                                   (column_df['component'] == component) & \
+            #                                                   (column_df['type'] == http_code_pattern)
+            #                                                   ]
+            #         elif center_index and component_index and endpoint_index:
+            #             corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
+            #                                               (column_df['calculation_type'].isin(calculation_types)) & \
+            #                                               (column_df['center'] == center) & \
+            #                                               (column_df['component'] == component) & \
+            #                                               (column_df['endpoint'] == endpoint) & \
+            #                                               (column_df['type'] == http_code_pattern)
+            #                                               ]
+            #         else:
+            #             corresponding_columns = column_df
+            #         node_key = f'{"+".join(entry[:-2])}'
+            #         if node_key not in columns_dictionary:
+            #             columns_dictionary[node_key] = dict()
+            #         columns_dictionary[node_key][f'{http_code_pattern}'] = \
+            #             corresponding_columns['column_name'].values
+            #
+            #     print("Number of nodes:", len(columns_dictionary.keys()))
+            #
+            #     grouped_columns_file = os.path.join(grouping_data_dir, f'columns_group_by_{selected_group_mode}.json')
+            #     json.dump(columns_dictionary, open(grouped_columns_file, 'w'), cls=NumpyEncoder)
+            #     query_columns = self._combine_all_columns_from_dict(columns_dictionary)
 
-                # patterns = ['_5\d\d_endpoint']
-                patterns = column_df['type'].unique()
-                calculation_types = ['count']
-                columns_dictionary = dict()
-                center_component_pattern_length = grouped_df.shape[0]
-
-                for index, entry in tqdm(enumerate(
-                        grouped_df[selected_columns].values), total=center_component_pattern_length, \
-                        desc='Grouping columns for nodes...'):
-                    # print(f'{index}/{center_component_pattern_length}:', center, component, http_code_pattern)
-                    http_code_pattern = entry[-2]
-                    calculation_type = entry[-1]
-                    center_index = selected_columns.index('center') if 'center' in selected_columns else None
-                    if center_index is not None:
-                        center = entry[center_index]
-                    else:
-                        center = None
-                    component_index = selected_columns.index('component') if 'component' in selected_columns else None
-                    if component_index is not None:
-                        component = entry[component_index]
-                    else:
-                        component = None
-                    endpoint_index = selected_columns.index('endpoint') if 'endpoint' in selected_columns else None
-                    if endpoint_index is not None:
-                        endpoint = entry[endpoint_index]
-                    else:
-                        endpoint = None
-
-
-
-                    # condition = [column_df[selected_columns[i]] == groups[i] for i, group_name in enumerate(groups)]
-                    if center_index is None:
-                        if endpoint is not None and component is not None:
-                            corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
-                                                              (column_df['calculation_type'].isin(calculation_types)) & \
-                                                              (column_df['endpoint'] == endpoint) & \
-                                                              (column_df['component'] == component) & \
-                                                              (column_df['type'] == http_code_pattern)
-                                                              ]
-                        elif endpoint is not None:
-                            corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
-                                                              (column_df['calculation_type'].isin(calculation_types)) & \
-                                                              (column_df['endpoint'] == endpoint) & \
-                                                              (column_df['type'] == http_code_pattern)
-                                                              ]
-                        else:
-                            corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
-                                                              (column_df['calculation_type'].isin(calculation_types)) & \
-                                                              (column_df['component'] == component) & \
-                                                              (column_df['type'] == http_code_pattern)
-                                                              ]
-                    elif component_index is None:
-                        if center is not None and endpoint is not None:
-                            corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
-                                                              (column_df['calculation_type'].isin(calculation_types)) & \
-                                                              (column_df['center'] == center) & \
-                                                              (column_df['endpoint'] == endpoint) & \
-                                                              (column_df['type'] == http_code_pattern)
-                                                              ]
-                        elif center is not None:
-                            corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
-                                                              (column_df['calculation_type'].isin(calculation_types)) & \
-                                                              (column_df['center'] == center) & \
-                                                              (column_df['type'] == http_code_pattern)
-                                                              ]
-                        else:
-                            corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
-                                                              (column_df['calculation_type'].isin(calculation_types)) & \
-                                                              (column_df['endpoint'] == endpoint) & \
-                                                              (column_df['type'] == http_code_pattern)
-                                                              ]
-
-                    elif endpoint_index is None:
-                        if center is not None and component is not None:
-                            corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
-                                                              (column_df['calculation_type'].isin(calculation_types)) & \
-                                                              (column_df['center'] == center) & \
-                                                              (column_df['component'] == component) & \
-                                                              (column_df['type'] == http_code_pattern)
-                                                              ]
-                        elif center is not None:
-                            corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
-                                                              (column_df['calculation_type'].isin(calculation_types)) & \
-                                                              (column_df['center'] == center) & \
-                                                              (column_df['type'] == http_code_pattern)
-                                                              ]
-                        else:
-                            corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
-                                                              (column_df['calculation_type'].isin(calculation_types)) & \
-                                                              (column_df['component'] == component) & \
-                                                              (column_df['type'] == http_code_pattern)
-                                                              ]
-                    elif center_index and component_index and endpoint_index:
-                        corresponding_columns = column_df[(column_df['type'].isin(patterns)) & \
-                                                          (column_df['calculation_type'].isin(calculation_types)) & \
-                                                          (column_df['center'] == center) & \
-                                                          (column_df['component'] == component) & \
-                                                          (column_df['endpoint'] == endpoint) & \
-                                                          (column_df['type'] == http_code_pattern)
-                                                          ]
-                    else:
-                        corresponding_columns = column_df
-                    node_key = f'{"+".join(entry[:-2])}'
-                    if node_key not in columns_dictionary:
-                        columns_dictionary[node_key] = dict()
-                    columns_dictionary[node_key][f'{http_code_pattern}'] = \
-                        corresponding_columns['column_name'].values
-
-                print("Number of nodes:", len(columns_dictionary.keys()))
-
-                grouped_columns_file = os.path.join(grouping_data_dir, f'columns_group_by_{selected_group_mode}.json')
-                json.dump(columns_dictionary, open(grouped_columns_file, 'w'), cls=NumpyEncoder)
-                query_columns = self._combine_all_columns_from_dict(columns_dictionary)
-
-            parquet_file = pq.ParquetFile(self.pivoted_raw_data_file)
-            batch_dfs = []
-            for i, batch in enumerate(parquet_file.iter_batches(batch_size=10000, columns=query_columns)):
-                # if i > 1 and (selected_group_mode == 'center_endpoint'):
-                #     break
-                print(f'Processing batch: {i}')
-                batch_df = batch.to_pandas()
-
-                required_patterns = ['_-1_endpoint', '_2\\d\\d_endpoint', '_3\\d\\d_endpoint', \
-                                     '_4\\d\\d_endpoint', '_5\\d\\d_endpoint']
-                node_dfs = []
-                for node_id, column_group in columns_dictionary.items():
-                    data = dict()
-                    existing_http_code_patterns = list(column_group.keys())
-
-                    for http_code_pattern in required_patterns:
-                        http_code = '5xx'
-                        if http_code_pattern == required_patterns[0]:
-                            http_code = '1xx'
-                        elif http_code_pattern == required_patterns[1]:
-                            http_code = '2xx'
-                        elif http_code_pattern == required_patterns[2]:
-                            http_code = '3xx'
-                        elif http_code_pattern == required_patterns[3]:
-                            http_code = '4xx'
-                        else:
-                            http_code = '5xx'
-
-                        if http_code_pattern in existing_http_code_patterns:
-                            corresponding_columns = column_group[http_code_pattern]
-                            data[f'{node_id}+{http_code}+count'] = batch_df[corresponding_columns].sum(axis=1)
-                        else:
-                            data[f'{node_id}+{http_code}+count'] = pd.Series(np.zeros(len(batch)))
-
-                    new_df = pd.DataFrame(data)
-                    node_dfs.append(new_df)
-                batch_df = pd.concat(node_dfs, axis=1)
-                batch_dfs.append(batch_df)
-
-
-            meta_data = dict({})
-            meta_data['node_ids'] = list(columns_dictionary.keys())
-            meta_data['node_feature_names'] = [f'{calculation_types[0]}_{code}' for code in ['1xx', '2xx', '3xx', '4xx', '5xx']]
-            json.dump(meta_data, open(meta_data_file, 'w'), cls=NumpyEncoder)
-            self.num_nodes = len(meta_data['node_ids'])
-            self.num_node_features = len(meta_data['node_feature_names'])
-
-            adjacency_matrix = self._build_adjacency_matrix(meta_data['node_ids'])
-            node_indices, neighbor_indices = np.where(adjacency_matrix == 1)
-            np.save(adjacency_file, np.array([node_indices, neighbor_indices]))
-
-            reconstructed_df = pd.concat(batch_dfs, axis=0)
-            print('Reconstruct_df.shape', reconstructed_df.shape)
-            print(f'Saving feature data to {feature_raw_file}')
-            reconstructed_df.to_parquet(feature_raw_file, index=None)
-            print(f'Done saving feature data!')
-            return reconstructed_df, meta_data, adjacency_matrix
+            # parquet_file = pq.ParquetFile(self.pivoted_raw_data_file)
+            # batch_dfs = []
+            # for i, batch in enumerate(parquet_file.iter_batches(batch_size=10000, columns=query_columns)):
+            #     # if i > 1 and (selected_group_mode == 'center_endpoint'):
+            #     #     break
+            #     print(f'Processing batch: {i}')
+            #     batch_df = batch.to_pandas()
+            #
+            #     required_patterns = ['_-1_endpoint', '_2\\d\\d_endpoint', '_3\\d\\d_endpoint', \
+            #                          '_4\\d\\d_endpoint', '_5\\d\\d_endpoint']
+            #     node_dfs = []
+            #     for node_id, column_group in columns_dictionary.items():
+            #         data = dict()
+            #         existing_http_code_patterns = list(column_group.keys())
+            #
+            #         for http_code_pattern in required_patterns:
+            #             http_code = '5xx'
+            #             if http_code_pattern == required_patterns[0]:
+            #                 http_code = '1xx'
+            #             elif http_code_pattern == required_patterns[1]:
+            #                 http_code = '2xx'
+            #             elif http_code_pattern == required_patterns[2]:
+            #                 http_code = '3xx'
+            #             elif http_code_pattern == required_patterns[3]:
+            #                 http_code = '4xx'
+            #             else:
+            #                 http_code = '5xx'
+            #
+            #             if http_code_pattern in existing_http_code_patterns:
+            #                 corresponding_columns = column_group[http_code_pattern]
+            #                 data[f'{node_id}+{http_code}+count'] = batch_df[corresponding_columns].sum(axis=1)
+            #             else:
+            #                 data[f'{node_id}+{http_code}+count'] = pd.Series(np.zeros(len(batch)))
+            #
+            #         new_df = pd.DataFrame(data)
+            #         node_dfs.append(new_df)
+            #     batch_df = pd.concat(node_dfs, axis=1)
+            #     batch_dfs.append(batch_df)
+            #
+            #
+            # meta_data = dict({})
+            # meta_data['node_ids'] = list(columns_dictionary.keys())
+            # meta_data['node_feature_names'] = [f'{calculation_types[0]}_{code}' for code in ['1xx', '2xx', '3xx', '4xx', '5xx']]
+            # json.dump(meta_data, open(meta_data_file, 'w'), cls=NumpyEncoder)
+            # self.num_nodes = len(meta_data['node_ids'])
+            # self.num_node_features = len(meta_data['node_feature_names'])
+            #
+            # adjacency_matrix = self._build_adjacency_matrix(meta_data['node_ids'])
+            # node_indices, neighbor_indices = np.where(adjacency_matrix == 1)
+            # np.save(adjacency_file, np.array([node_indices, neighbor_indices]))
+            #
+            # reconstructed_df = pd.concat(batch_dfs, axis=0)
+            # print('Reconstruct_df.shape', reconstructed_df.shape)
+            # print(f'Saving feature data to {feature_raw_file}')
+            # reconstructed_df.to_parquet(feature_raw_file, index=None)
+            # print(f'Done saving feature data!')
+            # return reconstructed_df, meta_data, adjacency_matrix
 
     def _build_adjacency_matrix(self, node_ids):
         matrix = []
@@ -599,7 +604,7 @@ class IBMDatasetLoader(object):
         feature_df = pd.read_parquet(feature_data_file)
         feature_df.index = pd.to_datetime(feature_df.index)
 
-        assert adjacency_matrix.shape[0] == 2
+        assert adjacency_matrix.shape[0] == 3
         assert feature_df.shape[1]/len(node_ids) == len(node_feature_names)
 
         print('Loading reconstructed time series at', feature_data_file)

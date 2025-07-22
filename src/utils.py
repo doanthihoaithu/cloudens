@@ -34,8 +34,32 @@ class ProgressBar:
       delta_mb = current_mb - self.progress_bar.n
       self.progress_bar.update(delta_mb)
 
+# def build_adjacency_matrix_no_group(node_ids):
+#     matrix = []
+#     for index_i, i in enumerate(node_ids):
+#         i_distance = np.zeros(len(node_ids))
+#         i_tokens = np.array(i.split('_'))
+#         i_center, i_communication_type, i_component, i_method, i_endpoint = i_tokens[0],i_tokens[1], i_tokens[2], i_tokens[3], i_tokens[5]
+#         for index_j, j in enumerate(node_ids):
+#             j_tokens = np.array(j.split('_'))
+#             j_center,j_communication_type, j_component, j_method, j_endpoint = j_tokens[0], j_tokens[1], j_tokens[2], j_tokens[3], j_tokens[5]
+#
+#             # correlated = np.any([i_tokens[token_index] == j_tokens[token_index] for token_index in range(len(i_tokens))])
+#             # correlated = i_tokens[-1] == j_tokens[-1]
+#             # if i_component == j_component:
+#             #     i_distance[index_j] = 1
+#             if i_endpoint == j_endpoint :
+#                 if i_component == j_component:
+#                     if i_method == j_method:
+#                         i_distance[index_j] = 1
+#
+#             if index_i == index_j:
+#                 i_distance[index_j] = 0
+#         matrix.append(i_distance)
+#     return np.array(matrix)
 
 def build_adjacency_matrix_no_group(node_ids):
+    num_nodes = len(node_ids)
     matrix = []
     for index_i, i in enumerate(node_ids):
         i_distance = np.zeros(len(node_ids))
@@ -49,15 +73,34 @@ def build_adjacency_matrix_no_group(node_ids):
             # correlated = i_tokens[-1] == j_tokens[-1]
             # if i_component == j_component:
             #     i_distance[index_j] = 1
-            if i_endpoint == j_endpoint :
-                if i_component == j_component:
-                    if i_method == j_method:
-                        i_distance[index_j] = 1
+            if (i_endpoint == j_endpoint) and (i_component == j_component):
+                # if i_component == j_component:
+                if i_method == j_method:
+                    # if i_communication_type == j_communication_type:
+                    i_distance[index_j] = 0.8
+                    # else:
+                    #     i_distance[index_j] = 0.6
+                else:
+                    if i_communication_type == j_communication_type:
+                        i_distance[index_j] = 0.6
+                    else:
+                        i_distance[index_j] = 0.2
 
             if index_i == index_j:
                 i_distance[index_j] = 0
         matrix.append(i_distance)
-    return np.array(matrix)
+
+    matrix = np.array(matrix)
+
+    edges = []
+    for i in range(num_nodes):
+        for j in range(i + 1, num_nodes):  # Use i < j to avoid duplicates in undirected graph
+            if matrix[i, j] > 0:
+                edges.append([i, j, matrix[i, j]])
+                edges.append([j, i, matrix[i, j]])
+    edges = np.array(edges)
+    return edges
+    # return edges[:,0], edges[:,1], edges[:,2]
 
 def clear_folder(folder_dir):
     import os
