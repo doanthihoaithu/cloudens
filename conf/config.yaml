@@ -49,10 +49,14 @@ evaluation:
 
 data_preparation_pipeline:
   grouping_mode: 'no_group'
-  multiple_preprocessing: true
+  multiple_preprocessing: false
   feature_subsets:
     http_codes: ['5xx','4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
     aggregations: ['count','avg','min','max']
+  features_prep:
+    filter:
+      http_codes: ['5xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
+      aggregations: ['count'] # aggregations can be ['count', 'avg', 'min', 'max',' median', 'std', 'kurtosis', 'skewness']
 
   ground_truth_labels:
     path: "data/labels/"
@@ -61,11 +65,6 @@ data_preparation_pipeline:
   input_file:
     path: "data/massaged/"
     filename: "pivoted_data_all.parquet"
-
-  features_prep:
-    filter:
-      http_codes: ['4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
-      aggregations: ['count'] # aggregations can be ['count', 'avg', 'min', 'max',' median', 'std', 'kurtosis', 'skewness']
 
   train_test_config:
     anomaly_window:

@@ -4,9 +4,11 @@
 ![python](https://img.shields.io/badge/python-3.12.2-blue.svg)
 
 
-This repository contains the code implementation for the paper submitted in ICSE 2026 Research Track with title **"ClouDens: A Scalable Ensemble Framework for Anomaly Detection in Large-Scale Cloud Systems"**.
+This repository contains the official implementation of our paper submitted to **ICSE 2026 Research Track** with title **"ClouDens: A Scalable Ensemble Framework for Anomaly Detection in Large-Scale Cloud Systems"**.
 
-The repository includes scripts and modules for anomaly detection using Spatio-Temporal Graph Neural Networks (ST-GNNs), NAB scoring, and related preprocessing tasks. 
+ClouDens is an ensemble-based anomaly detection framework built on spatio-temporal graph neural networks (ST-GNNs), 
+with features tailored for large-scale cloud telemetry.
+This repository includes scripts for different steps, including data pre-processing, model engineering, anomaly scoring, and evaluation, with several built-ins being implemented. 
 The pipeline is modularized for flexibility and ease of use.
 
 ## 🔍 Overview
@@ -14,12 +16,12 @@ The pipeline is modularized for flexibility and ease of use.
 ![ClouDens Overview](figures/overview.png)
 
 
-ClouDens builds upon the ST-GNNs architecture and introduces ensemble enhancements tailored for detecting anomalies in complex cloud environments. This repository includes:
+ClouDens employs an ensemble approach with the base model of ST-GNNs architecture with specific enhancements tailored for detecting anomalies in complex cloud environments. This repository includes:
 
-- Script for preprocessing the IBM Cloud Dataset
-- Forecasting-based Architecture Code Implementation for  ClouDens and a GRU-based model
-- Anomaly scoring based on forecast errors with different strategies, including *Max Aggregation*, *Anomaly Likelihood Function*, and *Mahalanobis Distance*
-- Evaluation scripts for the final ensemble approach, calculating NAB scores and other metrics
+- Preprocessing scripts for the IBM Cloud dataset 
+- Forecasting-based architecture Code Implementation for  ClouDens and a GRU-based baseline
+- Anomaly scoring on forecast errors with different strategies, including *Max Aggregation*, *Anomaly Likelihood Function*, and *Mahalanobis Distance*
+- Evaluation using NAB scores, precision, recall, and false positive metrics
 
 ---
 
@@ -61,12 +63,6 @@ Ensure you have Python 3.12.2 installed:
 python --version
 ```
 If Python 3.12.2 is not installed, download it from the [official Python website](https://www.python.org/downloads/release/python-3122/) and install it.
-
-
-### Setup Options
-> **Using a Virtual Environment**:  
-> Continue with the steps below and refer to [Section 5.2 Using Virtual Environment](#52-using-virtual-environment) for execution instructions.
-
 
 ### 2.3 Create a Virtual Environment
 Create a virtual environment using Python 3.12.2:
@@ -137,8 +133,6 @@ The data required for this project is provided in the following dataset:
 > Dataset for the paper "Anomaly Detection in Large-Scale Cloud Systems: An Industry Case and Dataset" (v1.0) [Data set].
 > Zenodo. https://doi.org/10.5281/zenodo.14062900
 
-### 3.1 Input Data
-
 - Place pivoted data files (e.g., `pivoted_data_all.parquet`) in `data/massaged/`.
 - Place anomaly window labels `anomaly_windows.csv` in `data/labels/`.
 
@@ -148,16 +142,11 @@ curl -L -o data/labels/anomaly_windows.csv https://zenodo.org/records/14062900/f
 curl -L -o data/massaged/pivoted_data_all.parquet https://zenodo.org/records/14062900/files/pivoted_data_all.parquet?download=1
 ```
 
-
----
-> **For manual setup using a virtual environment**, after downloading the files, proceed to [Section 5.2 Using Virtual Environment](#52-using-virtual-environment) for execution details.
-
-
 ## 4 File Descriptions
 
 ### 4.1 Configuration
 
-- **`config.yaml`**: Stores the configuration for preprocessing tasks, model settings, and evaluation.
+- **`config.yaml`**: Stores the configuration for preprocessing tasks, model settings, and evaluation settings.
 
 ### 4.2 Scripts
 
@@ -165,22 +154,22 @@ curl -L -o data/massaged/pivoted_data_all.parquet https://zenodo.org/records/140
 
 - **`preprocessing.py`**: Built-ins to handle data preparation, including loading feature subsets, and filtering training/testing anomaly windows.
 
-- **`anomaly_likelihood.py`**: Contains functions to compute anomaly likelihood using reconstruction errors and statistical analysis.
+- **`anomaly_likelihood.py`**: Contains functions to compute anomaly likelihood using forecast errors and statistical analysis.
 
-- **`nab_scoring.py`**: Implements NAB (Numenta Anomaly Benchmark) scoring, including options for standard scoring or custom profiles like `reward_fn`.
+- **`nab_scoring.py`**: Implements NAB (Numenta Anomaly Benchmark) scoring, performing two basic profiles like `reward_fn` and `standard`.
 
 - **`plotting_module.py`**: Provides utilities for visualizing the results of anomaly detection, such as normalized 5XX counts and detected anomalies.
 - **`ibm_dataset_loader.py`**: A class to manage all relevant information of a feature subset input
 - **`utils.py`**: Built-ins to handle basic operations
 - **`run_preprocessing.py`**: Script to run pre-processing tasks, supporting handling a single or multiple feature subsets
-- **`run_training_single_model.py`**: Script to train forecasting model on a single feature subset
+- **`run_training_single_model.py`**: Script to train a forecasting model on a single feature subset
 - **`run_ensemble_approach.py`**: Script to ensemble outputs of multiple based models on different feature subets
 
 ### 4.3 Results Directory (`./trained_models`)
 #### Folder structure
 ```plaintext
 trained_models/
-├── ensemble/                                    # Output of the ensemble approach
+├── ensemble/                                    # # Final ensemble results
 ├── no_group_4xx_avg        
 │   ├── A3TGCN/                                  # A3TGCN trained model and relevant outputs on `4xx avg` feature subset   
 │   │   ├── A3TGCN_autoencoder.pt                # Saved model
@@ -201,21 +190,21 @@ trained_models/
 ```
 
 #### Files:
+- **`no_group_4xx_avg/A3TGCN`**: Contains detailed results from anomaly detection experiments using the A3TGCN model on the `4xx avg` feature subset. 
+This includes the trained model, raw forecast errors, Mahalanobis distances, and grid search outputs with key metrics such as true positives, false positives, NAB scores, and detected anomaly windows across the test period.
 
-- **`no_group_4xx_avg/A3TGCN`**: A folder contains detailed results from the anomaly detection experiments using the `A3TGCN` model, including the saved 
-    trained model, raw forecast errors, Mahalanobis Distance, Grid Search Output with different metrics such as 
-    true positives, false positives, and anomaly windows, for the entire test period.
-- **`no_group_4xx_avg/GRU`**: A folder contains the trained model on `4xx_avg` feature subset, with different outputs for evaluation like `A3TGCN` model
+- **`no_group_4xx_avg/GRU`**: Contains the trained GRU model on the same `4xx avg` subset, along with evaluation outputs similar to those in the A3TGCN folder.
 
-- **`A3TGCN_grid_search.csv`**: Consolidated results of the experiments with the specified model, providing a summary of key performance metrics.
-- **`ensemble`**: Contains ensemble results
+- **`A3TGCN_grid_search.csv`**: A summary file reporting the performance of the A3TGCN model across different threshold and post-processing configurations.
+
+- **`ensemble`**: Contains final ensemble results that combine outputs from all trained models and scoring strategies.
 ---
 
 ## 5 Execution - Using Virtual Environment
 
 The workflow is configured using the [Hydra](https://github.com/facebookresearch/hydra) framework.
 
-#### Split the pivoted dataset into different feature subsets
+### 5.1. Split the pivoted dataset into different feature subsets
 The selected HTTP Status Codes and Aggregations can be configurable in the `config.yaml` file. 
 Modify the following parameters under `data_preparation_pipeline`:
 ```yaml
@@ -260,7 +249,7 @@ icse2026_cloudens_ad/
 │   ├── labels/          # Anomaly window labels
 ├── trained_models/      # Saved trained models
 ```
-#### 5.2.1 Configuring the Base Model Architecture
+### 5.2 Configuring the Base Model Architecture
 
 The model type (e.g., A3T-GCN or GRU) is configurable in the `config.yaml` file. Modify the following parameters under `evaluation`:
 
@@ -271,7 +260,7 @@ evaluation:
 ```
 
 
-#### 5.2.3 Run the Project
+### 5.3 Run the Project on a single feature subset
 To train a single model on a single feature subset, execute the following script after setting up the required directories and input files:
 
 ```bash
@@ -285,21 +274,82 @@ Note that you can pass configuration parameters directly via the command line. F
 python src/run_training_single_model.py evaluation.use_model=A3TGCN evaluation.retrain=true  
 ```
 
+Model outputs will be saved under the directory `trained_models/no_group_<feature subset>/<model name>`.
+
+For example, training the `A3TGCN` model on the `5xx count` feature subset will produce the following structure:
+
+```plaintext
+trained_models/                                  # Final ensemble results
+├── no_group_5xx_count        
+│   ├── A3TGCN/                                  # A3TGCN trained model and relevant outputs on `5xx count` feature subset   
+│   │   ├── A3TGCN_autoencoder.pt                # Saved model
+│   │   ├── A3TGCN_grid_search.csv               # NAB Score with different thresholds and post-processing strategies
+│   │   ├── A3TGCN_predictions_for_assembles.csv # Predicted labels for ensembling
+│   │   ├── A3TGCN_train_val_losses.png
+│   │   ├── mahalanobis.npy                      # Mahalanobis distance corresponding to `reconstruction_errors.npy`, saved for reuse
+│   │   ├── mse_error.txt                        # MSE error on test data
+│   │   ├── reconstruction_errors.npy            # Raw forecast errors for post-processing
+│   ├── GRU/          
+```
+---
+
+You can refer to `A3TGCN_grid_search.csv` to view NAB scores under both the `standard` and `low_fn` profiles, 
+evaluated across different thresholds and post-processing strategies.
+
+
+### 5.4 Run the Project with the ensemble approach
+
 To get output of ensemble approach after training on all feature subsets (8 subsets in our paper), execute the following script:
 
 ```bash
 python src/run_ensemble_approach.py
 ```
-This script will choose feature subsets based on your configuration settings in `config.yaml`, 
-by iterating over 
-all combinations of `http_codes` and `aggregations` specified in `evaluation.ensembles`, 
+
+This script selects feature subsets based on the settings in `config.yaml`. It either:
+
+- Iterates over all combinations of `http_codes` and `aggregations` defined in `evaluation.ensembles.auto_combination`, or
+
+- Uses a specific combination defined in `evaluation.ensembles.manual_combination`.
+
+The behavior is controlled by the `evaluation.ensembles.combination_mode` setting.
+
+
+```yaml
+evaluation:
+  ensembles:
+    combination_mode: 'manual'        # ['auto', 'manual']
+    auto_combination:
+      num_selection: 8
+      http_codes: ['5xx','4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
+      aggregations: ['count','avg','min', 'max']
+    manual_combination:
+#      http_codes: [ '5xx','4xx' ] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
+#      aggregations: [ 'count','min']
+      http_codes: ['5xx','4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
+      aggregations: ['max','avg']
+```
 
 Note that you can pass configuration parameters directly via the command line. For example:
 ```bash
-python src/run_training_single_model.py evaluation.use_model=A3TGCN evaluation.retrain=true  
+python src/run_ensemble_approach.py evaluation.use_model=A3TGCN evaluation.ensembles.combination_mode=manual  
 ```
 
+The results from the ensemble approach are saved in the directory: `trained_models/ensemble/`
+```plaintext
+trained_models/                                  
+├── ensemble/                                # Final ensemble outputs
+│   ├── ensemble_final_result_no_group_5xx_count+no_group_4xx_min.csv   
+│   ├── ensemble_final_result_no_group_5xx_max+no_group_4xx_avg.csv
+│   ├── ensemble_final_result_no_group_5xx_count+no_group_5xx_avg+no_group_5xx_min+no_group_5xx_max+no_group_4xx_count+no_group_4xx_avg+no_group_4xx_min+no_group_4xx_max    
+```
 ---
+
+You can refer to `ensemble_final_result_no_group_5xx_count+no_group_4xx_min.csv` to view NAB scores under both 
+the `standard` and `low_fn` profiles. 
+These results are generated by ensembling outputs from two models trained on 
+the `5xx count` and `4xx min` feature subsets.
+
+**Ensure that all base model outputs are generated before running the ensemble approach.**
 
 ## Notes for Replicability
 
