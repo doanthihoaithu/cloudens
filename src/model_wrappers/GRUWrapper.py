@@ -16,7 +16,6 @@ class GRUCustom(torch.nn.Module):
         self.hidden_dim = hidden_dim
         self.layer_dim = layer_dim
 
-        # Attention Temporal Graph Convolutional Cell
         self.rnn = GRU(input_size=num_nodes*node_features,
                        hidden_size=hidden_dim,
                        num_layers=layer_dim,
@@ -131,7 +130,9 @@ class GRUWrapper:
 
         reconstruction_errors = np.concatenate(batch_reconstruction_errors, axis=0)
         predictions = np.concatenate(predictions, axis=0)
-        return predictions, reconstruction_errors, sum(total_loss) / len(total_loss)
+
+        not_nan_results = None
+        return predictions, not_nan_results ,reconstruction_errors, sum(total_loss) / len(total_loss)
 
     def save(self, path):
         torch.save(self.model.state_dict(), path)

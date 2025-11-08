@@ -13,7 +13,7 @@ from utils import build_adjacency_matrix_no_group
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-def clean_training_data(df, anomaly_windows):
+def clean_training_data(df, mask_df,  anomaly_windows):
     """
     Removes anomalies from the training data based on ground truth anomaly windows.
 
@@ -29,8 +29,10 @@ def clean_training_data(df, anomaly_windows):
     anomaly_windows['anomaly_window_end'] = anomaly_windows['anomaly_window_end'].dt.tz_localize(None)
 
     df_label = df.copy()
+    df_mask = mask_df.copy()
     # df_label['5XX_count'] = df_label.sum(axis=1)
     df_label['isAnomaly'] = 0
+    df_mask['isAnomaly'] = 0
 
     # for index, row in df_label.iterrows():
     #     # Ensure that index is tz-naive before comparison
@@ -45,11 +47,15 @@ def clean_training_data(df, anomaly_windows):
             (df_label.index <= anomaly_window['anomaly_window_end'])].index
 
         df_label.loc[anomaly_indices, 'isAnomaly'] = 1.0
+        df_mask.loc[anomaly_indices, 'isAnomaly'] = 1.0
 
     # df_cleaned = df_label[df_label['isAnomaly'] == 0].drop(columns=['isAnomaly', '5XX_count'])
     df_cleaned = df_label[df_label['isAnomaly'] == 0].drop(columns=['isAnomaly'])
+    df_mask = df_mask[df_mask['isAnomaly'] == 0].drop(columns=['isAnomaly'])
+    # df_label[[df_label['isAnomaly'] == 1]] = np.nan
+    # df_cleaned = df_label.drop(columns=['isAnomaly'])
     print(f'Cleaning training data..., Drop {df_label.shape[0] - df_cleaned.shape[0]} rows')
-    return df_cleaned
+    return df_cleaned, df_mask
 
 def filter_anomaly_windows(gt_utc_df, start_date, end_date, test_start_date):
     """
@@ -97,7 +103,9 @@ def load_and_prepare_data_according_to_config(cfg):
     # grouping_data_dir = cfg.grouping_data_dir
     # filtered_raw_filename = cfg.filtered_raw_filename
 
+    reset_saved_data = cfg['reset_saved_data']
     input_file = cfg['filtered_raw_file']
+    not_nan_mask_file = cfg['not_nan_mask_file']
     meta_data_file = cfg['meta_data_file']
     adjacency_file = cfg['adjacency_file']
 
@@ -109,19 +117,21 @@ def load_and_prepare_data_according_to_config(cfg):
     # minutes_before = cfg.train_test_config.anomaly_window.minutes_before
 
     # Load the 5XX and 4XX features only
-    if os.path.exists(input_file) and os.path.exists(meta_data_file) and os.path.exists(adjacency_file):
+    if os.path.exists(input_file) and os.path.exists(not_nan_mask_file) and os.path.exists(meta_data_file) and os.path.exists(adjacency_file) and (not reset_saved_data):
         filtered_df = pd.read_parquet(input_file, engine='fastparquet', index='interval_start')
-        log.info(f"File '{input_file}' loaded successfully.")
+        not_nan_mask_df = pd.read_parquet(not_nan_mask_file, engine='fastparquet', index='interval_start')
+        log.info(f"File {input_file} and {not_nan_mask_file} loaded successfully.")
 
     else:
         log.info(f'Some of the following files are missing!')
         log.info('\n'.join([input_file, meta_data_file, adjacency_file]))
         log.info(f'Generating data according to filter {cfg["filter"]}')
-        filtered_df = prepare_5xx_4xx_features(cfg)
+        filtered_df, not_nan_mask_df = prepare_5xx_4xx_features(cfg)
 
     # filtered_df.fillna(0, inplace=True)
     filtered_df.index = pd.to_datetime(filtered_df.index)
-    print('filtered_df.shape', filtered_df.shape)
+    not_nan_mask_df.index = pd.to_datetime(not_nan_mask_df.index)
+    print('filtered_df.shape', filtered_df.shape, 'not_nan_mask_df.shape', not_nan_mask_df.shape)
 
     # Load anomaly windows
     gt_df = pd.read_csv(gt_input_file)
@@ -133,7 +143,7 @@ def load_and_prepare_data_according_to_config(cfg):
 
     gt_utc_df = gt_df[['number', 'anomaly_window_start', 'anomaly_window_end', 'anomaly_source']].copy()
 
-    return filtered_df, gt_utc_df
+    return filtered_df, not_nan_mask_df, gt_utc_df
 
 def prepare_5xx_4xx_features(cfg):
     """
@@ -209,8 +219,12 @@ def prepare_5xx_4xx_features(cfg):
     if 'interval_start' in all_columns and 'interval_start' not in columns_to_keep:
         columns_to_keep.append('interval_start')
 
+    feature_columns = columns_to_keep[:-1]
+
     # Load only the filtered columns
     filtered_df = pd.read_parquet(input_path, columns=columns_to_keep)
+    not_nan_mask_df = filtered_df.notna()
+    not_nan_mask_df['interval_start'] = filtered_df['interval_start']
     is_nan = filtered_df.isna().values.any()
     print(f'%nan in the dataset:', filtered_df.iloc[:,1:].isnull().sum().sum()/(filtered_df.iloc[:,1:].shape[0]*filtered_df.iloc[:,1:].shape[1])*100)
     if is_nan:
@@ -218,10 +232,12 @@ def prepare_5xx_4xx_features(cfg):
         for arr, list_c in columns_to_keep_dictionary.items():
             if arr == 'count':
                 filtered_df[list_c] = filtered_df[list_c].fillna(0)
+                # nan_masked_df[list_c] =filtered_df[list_c].isna()
                 print(f'Fillna with 0 for {arr} features')
             else:
                 medians = filtered_df[list_c].median()
                 filtered_df[list_c] = filtered_df[list_c].fillna(medians)
+                # nan_masked_df[list_c] = filtered_df[list_c].isna()
                 print(f'Fillna with median for {arr} features')
     is_nan = filtered_df.isna().values.any()
     assert is_nan == False
@@ -230,6 +246,9 @@ def prepare_5xx_4xx_features(cfg):
     if 'interval_start' in filtered_df.columns:
         filtered_df['interval_start'] = pd.to_datetime(filtered_df['interval_start'], unit="s")
         filtered_df.set_index('interval_start', inplace=True)
+
+        not_nan_mask_df['interval_start'] = pd.to_datetime(not_nan_mask_df['interval_start'], unit="s")
+        not_nan_mask_df.set_index('interval_start', inplace=True)
 
 
     # Extract data center name from filename
@@ -248,5 +267,12 @@ def prepare_5xx_4xx_features(cfg):
     filtered_df.to_parquet(output_path, index=True)
     log.info(f'Data saved as "{output_path}"')
 
-    return filtered_df
+    not_nan_mask_file_path = os.path.join(dir_to_save_to, 'not_nan_mask.parquet')
+    not_nan_mask_df.to_parquet(not_nan_mask_file_path, index=True)
+    log.info(f'Not NaN mask data saved as "{not_nan_mask_file_path}"')
+
+    assert  not_nan_mask_df.shape[0] == filtered_df.shape[0]
+    assert not_nan_mask_df.shape[1] == filtered_df.shape[1]
+
+    return filtered_df, not_nan_mask_df
 

@@ -22,7 +22,8 @@ from model_wrappers.GRUWrapper import GRUWrapper
 from plotting_module import plot_training_history
 from anomaly_likelihood import compute_anomaly_likelihood
 from nab_scoring import calculate_nab_score_with_window_based_tp_fn
-from utils import clear_folder, get_project_root, get_full_err_scores, set_random_seed, calculate_mahalanobis_distance
+from utils import clear_folder, get_project_root, get_full_err_scores, set_random_seed, calculate_mahalanobis_distance, \
+    calculate_mahalanobis_distance_with_not_nan_mask
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -35,9 +36,11 @@ def load_wrapper(model_name, config, static_edge_index, static_edge_weight):
     device = config['device']
     hidden_units = config['hidden_units']
     num_nodes = config['num_nodes']
+    null_padding_target = config['null_padding_target']
+    null_padding_feature = config['null_padding_feature']
 
     if model_name == 'A3TGCN':
-        return A3TGCNWrapper(node_features, periods, static_edge_index, static_edge_weight, batch_size=batch_size, device=device)
+        return A3TGCNWrapper(node_features, null_padding_feature, null_padding_target, periods, static_edge_index, static_edge_weight, batch_size=batch_size, device=device)
     elif model_name == 'GRU':
         return GRUWrapper(num_nodes, node_features, hidden_units, layer_dim=1, batch_size=batch_size, device=device)
     # if model_name == 'ASTGCN':
@@ -90,6 +93,12 @@ def main(cfg: DictConfig):
     # })
 
     data_preparation_config = cfg.data_preparation_pipeline
+    if experiment_config.use_model == 'GRU':
+        data_preparation_config.null_padding_feature = False
+        data_preparation_config.null_padding_target = False
+
+        experiment_config.null_padding_feature = False
+        experiment_config.null_padding_target = False
 
 
     # task_id = sys.argv[0]
@@ -116,6 +125,8 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
 
     train_loader, valid_loader, test_loader, edge_index = data_loader.get_index_dataset(
         window_size=experiment_config.slide_win,
+        null_padding_feature=experiment_config.null_padding_feature,
+        null_padding_target=experiment_config.null_padding_target,
         batch_size=batch_size,
         device=DEVICE)
     print("Training dataset batches", len(train_loader))
@@ -137,7 +148,16 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
         model_config = model_configs[model]
         # model_filename_extension = 'h5' if model_type in tf_models else 'pt'
 
-        model_dir = os.path.join(trained_models_dir, selected_group_mode, model)
+        # model_dir = os.path.join(trained_models_dir, selected_group_mode, model)
+        if (experiment_config.null_padding_feature == False) and (experiment_config.null_padding_target == False):
+            model_dir = os.path.join(trained_models_dir, selected_group_mode, model)
+        elif experiment_config.null_padding_target and (not experiment_config.null_padding_feature):
+            model_dir = os.path.join(trained_models_dir, selected_group_mode, f'{model}_null_padding_target')
+        elif (not experiment_config.null_padding_target) and experiment_config.null_padding_feature:
+            model_dir = os.path.join(trained_models_dir, selected_group_mode, f'{model}_null_padding_feature')
+        else:
+            model_dir = os.path.join(trained_models_dir, selected_group_mode, f'{model}_null_padding_both')
+
         os.makedirs(model_dir, exist_ok=True)
         model_filename = os.path.join(model_dir, model_config['model_filename'])
         # Check if the model file exists
@@ -148,6 +168,8 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                  'batch_size': batch_size,
                                  'hidden_units': 32,
                                  'num_nodes': data_loader.num_nodes,
+                                 'null_padding_feature': experiment_config.null_padding_feature,
+                                 'null_padding_target': experiment_config.null_padding_target,
                                  'device': DEVICE})
             model_wrapper = load_wrapper(model_name=model, config=graph_config,
                                          static_edge_index=data_loader.get_edges_as_tensor(device=DEVICE),
@@ -155,9 +177,9 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
             model_wrapper.load(model_filename)
         else:
             if experiment_config.retrain:
-                print(f"Using model: {model}. Re-training...")
+                print(f"Using model: {model}, null padding: {experiment_config.null_padding_target}. Re-training...")
             else:
-                print(f"No trained model found for {model}. Training a new model...")
+                print(f"No trained model found for {model}, null padding {experiment_config.null_padding_target}. Training a new model...")
 
             clear_folder(model_dir)
 
@@ -166,6 +188,8 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                  'batch_size': batch_size,
                                  'hidden_units': 32,
                                  'num_nodes': data_loader.num_nodes,
+                                 'null_padding_target': experiment_config.null_padding_target,
+                                 'null_padding_feature': experiment_config.null_padding_feature,
                                  'device': DEVICE})
             model_wrapper = load_wrapper(model_name=model, config=graph_config,
                                          static_edge_index=data_loader.get_edges_as_tensor(device=DEVICE),
@@ -176,8 +200,9 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                   model_save_dir=os.path.dirname(model_filename))
 
         predictions_file = os.path.join(model_dir,'reconstruction_errors.npy')
-        if not os.path.exists(predictions_file):
-            X_test_predictions, reconstruction_error_raw, test_loss = model_wrapper.predict(test_loader)
+        not_nan_results_file = os.path.join(model_dir,'not_nan_results.npy')
+        if not os.path.exists(predictions_file) or experiment_config.retest:
+            X_test_predictions, not_nan_results, reconstruction_error_raw, test_loss = model_wrapper.predict(test_loader)
             with open(predictions_file, 'wb') as f:
                 np.save(f, reconstruction_error_raw)
                 log.info(f"Reconstruction errors saved to {predictions_file}")
@@ -191,6 +216,25 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                 with open(mahalanobis_distances_file, 'wb') as f:
                     np.save(f, mahalanobis_distances)
                     log.info(f"Mahalanobis_distances saved to {mahalanobis_distances_file}")
+
+                mahalanobis_distances_after_mask_file = os.path.join(os.path.dirname(predictions_file), 'mahalanobis_after_mask.npy')
+                mahalanobis_distances_after_mask, mahalanobis_distances_top_contributions = calculate_mahalanobis_distance_with_not_nan_mask(
+                    reconstruction_error_raw, not_nan_results, experiment_config.top_k_contribution)
+                with open(mahalanobis_distances_after_mask_file, 'wb') as f:
+                    np.save(f, mahalanobis_distances_after_mask)
+                    log.info(f"Mahalanobis_distances after not_nan_mask saved to {mahalanobis_distances_after_mask_file}")
+
+                mahalanobis_distances_after_mask_top_k_contribution_file = os.path.join(
+                                                                        os.path.dirname(mahalanobis_distances_after_mask_file),
+                                                                        f'mahalanobis_top_k_contribution.npy'
+                                                                            )
+                with open(mahalanobis_distances_after_mask_top_k_contribution_file, 'wb') as f:
+                    np.save(f, mahalanobis_distances_top_contributions)
+                    log.info(
+                        f"Mahalanobis_distances after not_nan_mask top-k contribution index saved to {mahalanobis_distances_after_mask_top_k_contribution_file}")
+
+                with open(not_nan_results_file, 'wb') as f:
+                    np.save(f, not_nan_results)
         else:
             with open(predictions_file, 'rb') as f:
                 reconstruction_error_raw = np.load(f)
@@ -200,10 +244,53 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                 with open(mse_reconstruction_error_file, 'w') as f:
                     f.write(str(mse_reconstruction_error_raw))
                     log.info(f"MSE reconstruction errors saved to {mse_reconstruction_error_file}")
+
+                with open(not_nan_results_file, 'rb') as not_nan_results_f:
+                    not_nan_results = np.load(not_nan_results_f)
+                    log.info(
+                        f'Not nan results loaded from {not_nan_results_file}, having shape: {not_nan_results.shape}')
+
+                re_calculate_mahalanobis = experiment_config.re_calculate_mahalanobis
                 mahalanobis_distances_file = os.path.join(os.path.dirname(predictions_file), 'mahalanobis.npy')
-                with open(mahalanobis_distances_file, 'rb') as mahala_f:
-                    mahalanobis_distances = np.load(mahala_f)
-                    log.info(f'Mahalanobis_distances loaded from {mahalanobis_distances_file}, having shape: {mahalanobis_distances.shape}')
+                if re_calculate_mahalanobis == False:
+                    with open(mahalanobis_distances_file, 'rb') as mahala_f:
+                        mahalanobis_distances = np.load(mahala_f)
+                        log.info(f'Mahalanobis_distances loaded from {mahalanobis_distances_file}, having shape: {mahalanobis_distances.shape}')
+
+                        log.info(f'Mahalanobis distance min {mahalanobis_distances.min()}, max {mahalanobis_distances.max()}')
+                    mahalanobis_distances_after_mask_file = os.path.join(os.path.dirname(predictions_file), 'mahalanobis_after_mask.npy')
+                    with open(mahalanobis_distances_after_mask_file, 'rb') as mahala_f:
+                        mahalanobis_distances_after_mask = np.load(mahala_f)
+                        log.info(
+                            f'Mahalanobis_distances after mask loaded from {mahalanobis_distances_after_mask_file}, having shape: {mahalanobis_distances_after_mask.shape}')
+                        log.info(
+                            f'Mahalanobis distance after mask min {mahalanobis_distances_after_mask.min()}, max {mahalanobis_distances_after_mask.max()}')
+
+                else:
+                    mahalanobis_distances = calculate_mahalanobis_distance(reconstruction_error_raw)
+                    mahalanobis_distances_file = os.path.join(os.path.dirname(predictions_file), 'mahalanobis.npy')
+                    with open(mahalanobis_distances_file, 'wb') as f:
+                        np.save(f, mahalanobis_distances)
+                        log.info(f"Mahalanobis_distances saved to {mahalanobis_distances_file}")
+
+                    mahalanobis_distances_after_mask_file = os.path.join(os.path.dirname(predictions_file),
+                                                                         'mahalanobis_after_mask.npy')
+                    mahalanobis_distances_after_mask, mahalanobis_distances_top_contributions = calculate_mahalanobis_distance_with_not_nan_mask(
+                        reconstruction_error_raw, not_nan_results, experiment_config.top_k_contribution)
+                    with open(mahalanobis_distances_after_mask_file, 'wb') as f:
+                        np.save(f, mahalanobis_distances_after_mask)
+                        log.info(
+                            f"Mahalanobis_distances after not_nan_mask saved to {mahalanobis_distances_after_mask_file}")
+                        log.info(f'Top-k feature contribution in mahalanobis_after_mask distance shape {mahalanobis_distances_top_contributions.shape}')
+
+                    mahalanobis_distances_after_mask_top_k_contribution_file = os.path.join(
+                                                    os.path.dirname(mahalanobis_distances_after_mask_file),
+                                                    'mahalanobis_top_k_contribution.npy')
+                    with open(mahalanobis_distances_after_mask_top_k_contribution_file, 'wb') as f:
+                        np.save(f, mahalanobis_distances_top_contributions)
+                        log.info(
+                            f"Mahalanobis_distances after not_nan_mask top-k contribution index saved to {mahalanobis_distances_after_mask_top_k_contribution_file}")
+
 
         assert reconstruction_error_raw.shape[0] == mahalanobis_distances.shape[0]
         assert reconstruction_error_raw.shape[0] == len(data_loader.test_index)

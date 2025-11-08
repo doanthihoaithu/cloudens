@@ -39,6 +39,11 @@ class IBMDatasetLoader(object):
         log.info("Starting preparation for features")
         grouping_mode = data_preparation_config.grouping_mode
         self.grouping_mode = grouping_mode
+        null_padding_feature = data_preparation_config.null_padding_feature
+        null_padding_target = data_preparation_config.null_padding_target
+
+        self.null_padding_feature = null_padding_feature
+        self.null_padding_target = null_padding_target
 
         selected_http_codes = data_preparation_config.features_prep.filter.http_codes
         selected_aggregations = data_preparation_config.features_prep.filter.aggregations
@@ -46,6 +51,7 @@ class IBMDatasetLoader(object):
         log.info('Grouping mode: {}'.format(grouping_mode))
         log.info('Selected http codes: {}'.format(selected_http_codes))
         log.info('Selected aggregations: {}'.format(selected_aggregations))
+        log.info('Null padding feature: {} Null padding target: {}'.format(null_padding_feature, null_padding_target))
 
         root_dir = get_project_root()
         data_dir = os.path.join(root_dir, 'data')
@@ -127,12 +133,19 @@ class IBMDatasetLoader(object):
 
         # Filter data for training and testing
         working_data = self.X_raw.loc[start_date:end_date]
+        working_not_nan_mask = self.X_raw_not_nan_mask[start_date:end_date]
         train_data = working_data.loc[start_date:train_end_date]
-        train_data = clean_training_data(train_data, self.anomaly_windows)
+        train_not_nan_mask = working_not_nan_mask.loc[start_date:train_end_date]
+        train_data, train_not_nan_mask = clean_training_data(train_data, train_not_nan_mask, self.anomaly_windows)
+
+        assert train_data.shape, train_not_nan_mask.shape
+        self.train_not_nan_mask: pd.DataFrame = train_not_nan_mask
 
         test_data = working_data.loc[test_start_date:end_date]
+        test_not_nan_mask =working_not_nan_mask.loc[test_start_date:end_date]
         self.test_labels = self.timestamp_and_label_df.loc[test_start_date:end_date]['is_anomaly']
         self.test_index = test_data.index
+        self.test_not_nan_mask = test_not_nan_mask
         assert len(self.test_labels) == len(self.test_index)
 
         self.X_train_raw = train_data
@@ -141,6 +154,9 @@ class IBMDatasetLoader(object):
         scaler = MinMaxScaler()
         self.X_train_scaled = scaler.fit_transform(self.X_train_raw)
         self.X_test_scaled = scaler.transform(self.X_test_raw)
+
+        assert self.X_train_scaled.shape == self.train_not_nan_mask.shape
+        assert self.X_test_scaled.shape == self.test_not_nan_mask.shape
 
         print(f'Train data raw shape {self.X_train_raw.shape}, Test data raw shape {self.X_test_raw.shape}')
 
@@ -169,40 +185,129 @@ class IBMDatasetLoader(object):
                                                                        test_start_date)
         return anomaly_windows, anomaly_windows_test
 
-    def get_dataset(self, window_size: int = 6):
-        self._get_edges_and_weights()
-        self._generate_task(window_size)
-        dataset_train = StaticGraphTemporalSignal(
-            self.edges, self.edge_weights, self.features_train, self.targets_train
-        )
+    # def get_dataset(self, window_size, null_padding_feature, null_padding_target):
+    #     self._get_edges_and_weights()
+    #     self._generate_task(window_size, null_padding_target, null_padding_target)
+    #     dataset_train = StaticGraphTemporalSignal(
+    #         self.edges, self.edge_weights, self.features_train, self.targets_train
+    #     )
+    #
+    #     dataset_train, dataset_valid = temporal_signal_split(dataset_train, train_ratio=0.8)
+    #
+    #     dataset_test = StaticGraphTemporalSignal(
+    #         self.edges, self.edge_weights, self.features_test, self.targets_test
+    #     )
+    #
+    #     return dataset_train, dataset_valid, dataset_test
 
-        dataset_train, dataset_valid = temporal_signal_split(dataset_train, train_ratio=0.8)
+    def _generate_task(self, window_size: int, null_padding_feature,  null_padding_target, train_val_ratio: float=0.8):
+        if null_padding_target == False and null_padding_feature == False:
 
-        dataset_test = StaticGraphTemporalSignal(
-            self.edges, self.edge_weights, self.features_test, self.targets_test
-        )
+            windowed_data = (torch.tensor(self.X_train_scaled).unfold(dimension=0, size=window_size + 1, step=1).permute(0, 2, 1)
+                             .reshape(-1,window_size+1, self.num_nodes, self.num_node_features)).numpy()
 
-        return dataset_train, dataset_valid, dataset_test
+            train_offset = int(train_val_ratio * windowed_data.shape[0])
+            windowed_data_train = windowed_data[0:train_offset]
+            windowed_data_valid = windowed_data[train_offset:]
 
-    def _generate_task(self, window_size: int, train_val_ratio: float=0.8):
+            self.features_train = windowed_data_train[:, :window_size, :,:]
+            self.targets_train = windowed_data_train[:, window_size, :,:]
 
-        windowed_data = (torch.tensor(self.X_train_scaled).unfold(dimension=0, size=window_size + 1, step=1).permute(0, 2, 1)
-                         .reshape(-1,window_size+1, self.num_nodes, self.num_node_features)).numpy()
+            self.features_valid = windowed_data_valid[:, :window_size, :, :]
+            self.targets_valid = windowed_data_valid[:, window_size, :, :]
 
-        train_offset = int(train_val_ratio * windowed_data.shape[0])
-        windowed_data_train = windowed_data[0:train_offset]
-        windowed_data_valid = windowed_data[train_offset:]
+            windowed_data = np.concatenate([self.X_test_scaled[0:1,:].repeat(window_size, 0), self.X_test_scaled], axis=0)
+            windowed_data = torch.tensor(windowed_data).unfold(dimension=0,size=window_size+1,step=1).permute(0,2,1).reshape(-1,window_size+1, self.num_nodes, self.num_node_features).numpy()
+            self.features_test = windowed_data[:, :window_size,:,:]
+            self.targets_test = windowed_data[:, window_size,:,:]
+        elif null_padding_target == True and null_padding_feature == False:
+            assert self.X_train_scaled.shape == self.train_not_nan_mask.shape
+            windowed_data = (
+                torch.tensor(self.X_train_scaled).unfold(dimension=0, size=window_size + 1, step=1).permute(0, 2, 1)
+                .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features)).numpy()
 
-        self.features_train = windowed_data_train[:, :window_size, :,:]
-        self.targets_train = windowed_data_train[:, window_size, :,:]
+            not_nan_mask_windowed_data = (
+                torch.tensor(self.train_not_nan_mask.values).unfold(dimension=0, size=window_size + 1, step=1).permute(0, 2, 1)
+                .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features)).numpy()
 
-        self.features_valid = windowed_data_valid[:, :window_size, :, :]
-        self.targets_valid = windowed_data_valid[:, window_size, :, :]
+            assert windowed_data.ndim == not_nan_mask_windowed_data.ndim
+            assert windowed_data.ndim == 4
+            windowed_data = np.concatenate((windowed_data, not_nan_mask_windowed_data), axis=3)
+            train_offset = int(train_val_ratio * windowed_data.shape[0])
+            windowed_data_train = windowed_data[0:train_offset]
+            windowed_data_valid = windowed_data[train_offset:]
 
-        windowed_data = np.concatenate([self.X_test_scaled[0:1,:].repeat(window_size, 0), self.X_test_scaled], axis=0)
-        windowed_data = torch.tensor(windowed_data).unfold(dimension=0,size=window_size+1,step=1).permute(0,2,1).reshape(-1,window_size+1, self.num_nodes, self.num_node_features).numpy()
-        self.features_test = windowed_data[:, :window_size,:,:]
-        self.targets_test = windowed_data[:, window_size,:,:]
+            self.features_train = windowed_data_train[:, :window_size, :, :-1]
+            self.targets_train = windowed_data_train[:, window_size, :, :]
+
+            self.features_valid = windowed_data_valid[:, :window_size, :, :-1]
+            self.targets_valid = windowed_data_valid[:, window_size, :, :]
+
+            windowed_data = np.concatenate([self.X_test_scaled[0:1, :].repeat(window_size, 0), self.X_test_scaled],
+                                           axis=0)
+            not_nan_mask_windowed_data = np.concatenate([self.test_not_nan_mask.values[0:1, :].repeat(window_size, 0), self.test_not_nan_mask],
+                                           axis=0)
+            windowed_data = (torch.tensor(windowed_data).unfold(dimension=0, size=window_size + 1, step=1)
+                             .permute(0, 2, 1)
+                             .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features).numpy())
+            not_nan_mask_windowed_data = (torch.tensor(not_nan_mask_windowed_data)
+                                          .unfold(dimension=0, size=window_size + 1, step=1)
+                                          .permute(0, 2, 1)
+                                          .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features).numpy())
+            assert windowed_data.ndim == not_nan_mask_windowed_data.ndim
+            assert windowed_data.ndim == 4
+            windowed_data = np.concatenate((windowed_data, not_nan_mask_windowed_data), axis=3)
+
+            self.features_test = windowed_data[:, :window_size, :, :-1]
+            self.targets_test = windowed_data[:, window_size, :, :]
+        elif null_padding_target == False and null_padding_feature == True:
+            assert self.X_train_scaled.shape == self.train_not_nan_mask.shape
+            windowed_data = (
+                torch.tensor(self.X_train_scaled).unfold(dimension=0, size=window_size + 1, step=1).permute(0, 2, 1)
+                .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features)).numpy()
+
+            not_nan_mask_windowed_data = (
+                torch.tensor(self.train_not_nan_mask.values).unfold(dimension=0, size=window_size + 1, step=1).permute(
+                    0, 2, 1)
+                .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features)).numpy()
+
+            assert windowed_data.ndim == not_nan_mask_windowed_data.ndim
+            assert windowed_data.ndim == 4
+            windowed_data = np.concatenate((windowed_data, not_nan_mask_windowed_data), axis=3)
+            train_offset = int(train_val_ratio * windowed_data.shape[0])
+            windowed_data_train = windowed_data[0:train_offset]
+            windowed_data_valid = windowed_data[train_offset:]
+
+            self.features_train = windowed_data_train[:, :window_size, :, :]
+            self.targets_train = windowed_data_train[:, window_size, :, :-1]
+
+            self.features_valid = windowed_data_valid[:, :window_size, :, :]
+            self.targets_valid = windowed_data_valid[:, window_size, :, :-1]
+
+            windowed_data = np.concatenate([self.X_test_scaled[0:1, :].repeat(window_size, 0), self.X_test_scaled],
+                                           axis=0)
+            not_nan_mask_windowed_data = np.concatenate(
+                [self.test_not_nan_mask.values[0:1, :].repeat(window_size, 0), self.test_not_nan_mask],
+                axis=0)
+            windowed_data = (torch.tensor(windowed_data).unfold(dimension=0, size=window_size + 1, step=1)
+                             .permute(0, 2, 1)
+                             .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features).numpy())
+            not_nan_mask_windowed_data = (torch.tensor(not_nan_mask_windowed_data)
+                                          .unfold(dimension=0, size=window_size + 1, step=1)
+                                          .permute(0, 2, 1)
+                                          .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features).numpy())
+            assert windowed_data.ndim == not_nan_mask_windowed_data.ndim
+            assert windowed_data.ndim == 4
+            windowed_data = np.concatenate((windowed_data, not_nan_mask_windowed_data), axis=3)
+
+            self.features_test = windowed_data[:, :window_size, :, :]
+            self.targets_test = windowed_data[:, window_size, :, :-1]
+        else:
+            raise ValueError('Not support')
+
+        del self.X_raw
+        del self.X_train_raw
+        del self.X_test_raw
 
     def _get_edges_and_weights(self):
         # self.edges = np.array(self.adjacency_matrix)
@@ -305,10 +410,11 @@ class IBMDatasetLoader(object):
         self.timestamp_and_label_df = timestamp_df
         self.print_details_of_timestamps(timestamp_df)
 
-        feature_df, meta_data, adjacency_matrix = self.construct_data_to_nodes_with_features(column_df)
+        feature_df, not_nan_mask_df, meta_data, adjacency_matrix = self.construct_data_to_nodes_with_features(column_df)
         # feature_shaped = feature_df.values.reshape(-1, len(meta_data['node_ids']), len(meta_data['node_feature_names']))
         assert isinstance(feature_df.index, pd.DatetimeIndex)
         self.X_raw = feature_df
+        self.X_raw_not_nan_mask = not_nan_mask_df
         self.X_raw.index = self.timestamp_and_label_df.index
         self.meta_data = meta_data
         self.adjacency_matrix = adjacency_matrix
@@ -342,13 +448,16 @@ class IBMDatasetLoader(object):
         feature_raw_file = os.path.join(grouping_data_dir, 'filtered_raw_data.parquet')
         meta_data_file = os.path.join(grouping_data_dir, 'meta_data.json')
         adjacency_file = os.path.join(grouping_data_dir, 'adjacency_matrix.npy')
+        not_nan_mask_file =  os.path.join(grouping_data_dir, 'not_nan_mask.parquet')
 
-        if os.path.exists(feature_raw_file) and os.path.exists(meta_data_file) and os.path.exists(adjacency_file):
+        reset_saved_data = self.data_preparation_config.reset_saved_data
+
+        if os.path.exists(feature_raw_file) and os.path.exists(not_nan_mask_file) and os.path.exists(meta_data_file) and os.path.exists(adjacency_file) and (not reset_saved_data):
             print(f'Found data files corresponding to grouping mode <{selected_group_mode}>. Loading existed files at: {grouping_data_dir}')
-            feature_data_df, meta_data, adjacency_matrix = self._loading_features_according_to_grouping_mode(feature_raw_file, meta_data_file, adjacency_file)
+            feature_data_df, not_nan_mask_df, meta_data, adjacency_matrix = self._loading_features_according_to_grouping_mode(feature_raw_file, not_nan_mask_file, meta_data_file, adjacency_file)
             self.num_nodes = len(meta_data['node_ids'])
             self.num_node_features = len(meta_data['node_feature_names'])
-            return feature_data_df, meta_data, adjacency_matrix
+            return feature_data_df, not_nan_mask_df, meta_data, adjacency_matrix
         else:
             print('Start reconstructing data according to grouping mode', selected_group_mode)
             if 'no_group' in selected_group_mode:
@@ -357,13 +466,15 @@ class IBMDatasetLoader(object):
                     'ground_truth_labels_file': self.anomaly_windows_file,
                     # 'grouping_data_dir': grouping_data_dir,
                     'filtered_raw_file': feature_raw_file,
+                    'not_nan_mask_file': not_nan_mask_file,
                     'feature_filename': 'features.parquet',
                     'meta_data_file': meta_data_file,
                     'adjacency_file': adjacency_file,
                     'filter': filter,
                     'minutes_before': self.data_preparation_config.train_test_config.anomaly_window.minutes_before,
+                    'reset_saved_data': reset_saved_data
                 })
-                df_prodlive, gt_utc_df = load_and_prepare_data_according_to_config(loader_config)
+                df_prodlive, not_nan_mask_df, gt_utc_df = load_and_prepare_data_according_to_config(loader_config)
 
                 # meta_data = dict({})
                 # meta_data['node_ids'] = list(df_prodlive.columns)
@@ -387,8 +498,11 @@ class IBMDatasetLoader(object):
                 print('Reconstruct_df.shape', reconstructed_df.shape)
                 print(f'Saving feature data to {feature_raw_file}')
                 reconstructed_df.to_parquet(feature_raw_file, index=None)
+
+                print(f'Saving not_nan_mask data to{not_nan_mask_file}')
+                not_nan_mask_df.to_parquet(not_nan_mask_file, index=None)
                 print(f'Done saving feature data!')
-                return reconstructed_df, meta_data, adjacency_matrix
+                return reconstructed_df, not_nan_mask_df, meta_data, adjacency_matrix
 
             # else:
             #     selected_columns = group_method.split('+')
@@ -585,7 +699,7 @@ class IBMDatasetLoader(object):
             matrix.append(i_distance)
         return np.array(matrix)
 
-    def _loading_features_according_to_grouping_mode(self, feature_data_file, meta_data_file, adjacency_matrix_file):
+    def _loading_features_according_to_grouping_mode(self, feature_data_file, not_nan_mask_file, meta_data_file, adjacency_matrix_file):
         # feature_data_file = os.path.join(group_data_dir, 'filtered_raw_data.parquet')
         # meta_data_file = os.path.join(group_data_dir, 'meta_data.json')
         # adjacency_matrix_file = os.path.join(group_data_dir, 'adjacency_matrix.npy')
@@ -604,12 +718,17 @@ class IBMDatasetLoader(object):
         feature_df = pd.read_parquet(feature_data_file)
         feature_df.index = pd.to_datetime(feature_df.index)
 
+        print('Loading not_nan_mask at', not_nan_mask_file)
+        not_nan_mask_df = pd.read_parquet(not_nan_mask_file)
+        not_nan_mask_df.index = pd.to_datetime(not_nan_mask_df.index)
+
         assert adjacency_matrix.shape[0] == 3
         assert feature_df.shape[1]/len(node_ids) == len(node_feature_names)
+        assert feature_df.shape == not_nan_mask_df.shape
 
         print('Loading reconstructed time series at', feature_data_file)
 
-        return feature_df, meta_data_json, adjacency_matrix
+        return feature_df, not_nan_mask_df, meta_data_json, adjacency_matrix
 
 
     def _combine_all_columns_from_dict(self, columns_dictionary):
@@ -728,9 +847,9 @@ class IBMDatasetLoader(object):
         return self.num_node_features
 
 
-    def get_index_dataset(self, window_size=6, batch_size=8, shuffle=False, device='cpu'):
+    def get_index_dataset(self, window_size, null_padding_feature, null_padding_target, batch_size=8, shuffle=False, device='cpu'):
         self._get_edges_and_weights()
-        self._generate_task(window_size)
+        self._generate_task(window_size, null_padding_feature, null_padding_target)
         # dataset_train = StaticGraphTemporalSignal(
         #     self.edges, self.edge_weights, self.features_train, self.targets_train
         # )

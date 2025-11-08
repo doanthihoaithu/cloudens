@@ -122,6 +122,8 @@ def analyze_reconstruction_errors_essembles(ensembles_config, data_preparation_c
 
                 train_loader, valid_loader, test_loader, edge_index = data_loader.get_index_dataset(
                     window_size=experiment_config.slide_win,
+                    null_padding_feature= experiment_config.null_padding_feature,
+                    null_padding_target=experiment_config.null_padding_target,
                     batch_size=batch_size,
                     device=DEVICE)
                 print("Training dataset batches", len(train_loader))
@@ -137,7 +139,10 @@ def analyze_reconstruction_errors_essembles(ensembles_config, data_preparation_c
                 model_config = model_configs[model]
                 # model_filename_extension = 'h5' if model_type in tf_models else 'pt'
 
-                model_dir = os.path.join(trained_models_dir, selected_group_mode, model)
+                if not experiment_config.null_padding_target:
+                    model_dir = os.path.join(trained_models_dir, selected_group_mode, model)
+                else:
+                    model_dir = os.path.join(trained_models_dir, selected_group_mode, f'{model}_null_padding_target')
                 os.makedirs(model_dir, exist_ok=True)
                 # model_filename = os.path.join(model_dir, model_config['model_filename'])
 

@@ -1,4 +1,5 @@
 import os.path
+import time
 
 import torch
 from torch_geometric_temporal import A3TGCN2, ASTGCN
@@ -8,14 +9,20 @@ from tqdm import tqdm
 
 
 class TemporalGNN(torch.nn.Module):
-    def __init__(self, node_features, periods, batch_size):
+    def __init__(self, node_features, periods, batch_size, null_padding_feature, null_padding_target):
         super(TemporalGNN, self).__init__()
         # Attention Temporal Graph Convolutional Cell
-        self.tgnn = A3TGCN2(in_channels=node_features, out_channels=32, periods=periods,
-                            batch_size=batch_size)  # node_features=2, periods=12
+        if null_padding_feature:
+            self.tgnn = A3TGCN2(in_channels=node_features + 1, out_channels=32, periods=periods,
+                                batch_size=batch_size)  # node_features=2, periods=12
+        else:
+            self.tgnn = A3TGCN2(in_channels=node_features, out_channels=32, periods=periods,
+                                batch_size=batch_size)
         # Equals single-shot prediction
-        self.linear = torch.nn.Linear(32, node_features)
-
+        if null_padding_target:
+            self.linear = torch.nn.Linear(32, node_features + 1)
+        else:
+            self.linear = torch.nn.Linear(32, node_features)
     def forward(self, x, edge_index, edge_weight):
         """
         x = Node features for T time steps
@@ -27,15 +34,18 @@ class TemporalGNN(torch.nn.Module):
         h = self.tgnn(x, edge_index, edge_weight)  # x [b, 207, 2, 12]  returns h [b, 207, 12]
         h = F.relu(h)
         h = self.linear(h)
+        h = F.sigmoid(h)
         return h
 class A3TGCNWrapper:
 
-    def __init__(self, node_features, periods, static_edge_index, static_edge_weight, batch_size=32, device='cpu'):
+    def __init__(self, node_features, null_padding_feature, null_padding_target, periods, static_edge_index, static_edge_weight, batch_size=32, device='cpu'):
         self.device = device
         self.static_edge_index = static_edge_index
         self.static_edge_weight = static_edge_weight
         self.node_features = node_features
         self.periods = periods
+        self.null_padding_target = null_padding_target
+        self.null_padding_feature = null_padding_feature
         self.batch_size = batch_size
         self._init_model()
 
@@ -44,7 +54,10 @@ class A3TGCNWrapper:
         # Making the model
 
         print(f'Device: {self.device}')
-        model = TemporalGNN(node_features=self.node_features, periods=self.periods, batch_size=self.batch_size).to(self.device)
+        model = TemporalGNN(node_features=self.node_features, periods=self.periods, batch_size=self.batch_size,
+                            null_padding_feature=self.null_padding_feature,
+                            null_padding_target=self.null_padding_target).to(self.device)
+
 
         self.optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
         self.loss_fn = torch.nn.MSELoss()
@@ -67,7 +80,7 @@ class A3TGCNWrapper:
 
         train_losses = []
         valid_losses = []
-
+        training_start_time = time.time()
         for epoch in range(epochs):
             model.train()
             step = 0
@@ -87,11 +100,12 @@ class A3TGCNWrapper:
                 #     print(sum(loss_list) / len(loss_list))
             epoch_train_loss = sum(loss_list) / len(loss_list)
             train_losses.append(epoch_train_loss)
-            predictions, reconstruction_errors, epoch_valid_loss = self.predict(val_loader)
+            predictions, not_nan_results, reconstruction_errors, epoch_valid_loss = self.predict(val_loader)
             valid_losses.append(epoch_valid_loss)
 
             print("Epoch {} train RMSE: {:.7f}, valid RMSE: {:.7f}".format(epoch, epoch_train_loss, epoch_valid_loss))
-
+        training_end_time = time.time()
+        print(f"Training time: {training_end_time - training_start_time}")
         history = {'epochs': epochs, 'train_losses': train_losses, 'valid_losses': valid_losses}
         self.history = history
         return history
@@ -103,18 +117,30 @@ class A3TGCNWrapper:
         total_loss = []
         batch_reconstruction_errors = []
         predictions = []
+        not_nan_predictions = []
+        not_nan_labels = []
+        predict_start_time = time.time()
         for encoder_inputs, labels in tqdm(test_loader, total=len(test_loader), desc=f'Testing...'):
             # Get model predictions
             y_hat = self.model(encoder_inputs, self.static_edge_index, self.static_edge_weight)
-            predictions.append(y_hat.detach().cpu().numpy())
+            predictions.append(y_hat.detach().cpu().numpy()[:,:,0])
+            not_nan_predictions.append(y_hat.detach().cpu().numpy()[:,:,-1])
+            not_nan_labels.append(labels.detach().cpu().numpy()[:,:,-1])
             # Mean squared error
             loss = self.loss_fn(y_hat, labels)
             total_loss.append(loss.item())
-            batch_reconstruction_errors.append(abs(y_hat - labels).detach().cpu().numpy())
-
+            # print(y_hat.shape, labels.shape)
+            # batch_reconstruction_errors.append(abs(y_hat - labels).detach().cpu().numpy())
+            batch_reconstruction_errors.append(abs(y_hat - labels).detach().cpu().numpy()[:,:,0:1])
+        predict_end_time = time.time()
+        print(f"Inference time: {predict_end_time - predict_start_time}")
         reconstruction_errors = np.concatenate(batch_reconstruction_errors, axis=0)
+        print(f"Reconstruction errors: {reconstruction_errors.shape}")
         predictions = np.concatenate(predictions, axis=0)
-        return predictions, reconstruction_errors, sum(total_loss) / len(total_loss)
+        not_nan_predictions = np.concatenate(not_nan_predictions, axis=0)
+        not_nan_labels = np.concatenate(not_nan_labels, axis=0)
+        not_nan_results = [not_nan_predictions, not_nan_labels]
+        return predictions, np.array(not_nan_results), reconstruction_errors, sum(total_loss) / len(total_loss)
 
     def save(self, path):
         torch.save(self.model.state_dict(), path)
