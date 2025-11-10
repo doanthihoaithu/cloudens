@@ -226,12 +226,13 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
 
                 mahalanobis_distances_after_mask_top_k_contribution_file = os.path.join(
                                                                         os.path.dirname(mahalanobis_distances_after_mask_file),
-                                                                        f'mahalanobis_top_k_contribution.npy'
-                                                                            )
-                with open(mahalanobis_distances_after_mask_top_k_contribution_file, 'wb') as f:
-                    np.save(f, mahalanobis_distances_top_contributions)
-                    log.info(
-                        f"Mahalanobis_distances after not_nan_mask top-k contribution index saved to {mahalanobis_distances_after_mask_top_k_contribution_file}")
+                                                                        f'mahalanobis_top_k_contribution.csv'
+                                                                        )
+                mahalanobis_distances_after_mask_top_k_contribution_df = pd.DataFrame(mahalanobis_distances_top_contributions)
+                mahalanobis_distances_after_mask_top_k_contribution_df.index = data_loader.test_index
+                mahalanobis_distances_after_mask_top_k_contribution_df.to_csv(mahalanobis_distances_after_mask_top_k_contribution_file)
+                log.info(
+                    f"Mahalanobis_distances after not_nan_mask top-k contribution index saved to {mahalanobis_distances_after_mask_top_k_contribution_file}")
 
                 with open(not_nan_results_file, 'wb') as f:
                     np.save(f, not_nan_results)
@@ -285,16 +286,20 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
 
                     mahalanobis_distances_after_mask_top_k_contribution_file = os.path.join(
                                                     os.path.dirname(mahalanobis_distances_after_mask_file),
-                                                    'mahalanobis_top_k_contribution.npy')
-                    with open(mahalanobis_distances_after_mask_top_k_contribution_file, 'wb') as f:
-                        np.save(f, mahalanobis_distances_top_contributions)
-                        log.info(
-                            f"Mahalanobis_distances after not_nan_mask top-k contribution index saved to {mahalanobis_distances_after_mask_top_k_contribution_file}")
+                                                    'mahalanobis_top_k_contribution.csv')
+                    mahalanobis_distances_after_mask_top_k_contribution_df = pd.DataFrame(
+                        mahalanobis_distances_top_contributions)
+                    mahalanobis_distances_after_mask_top_k_contribution_df.index = data_loader.test_index
+                    mahalanobis_distances_after_mask_top_k_contribution_df.to_csv(
+                        mahalanobis_distances_after_mask_top_k_contribution_file)
+                    log.info(
+                        f"Mahalanobis_distances after not_nan_mask top-k contribution index saved to {mahalanobis_distances_after_mask_top_k_contribution_file}")
 
 
         assert reconstruction_error_raw.shape[0] == mahalanobis_distances.shape[0]
         assert reconstruction_error_raw.shape[0] == len(data_loader.test_index)
 
+        # reconstruction_error_raw = refine_reconstruction_error_with_not_nan_mask(reconstruction_error_raw, data_loader.test_not_nan_mask.values.astype(bool))
         # is_anomalies, likelihoods, reconstruction_error = label_reconstruction_errors(reconstruction_errors, )
         # Call grid search or other functions
         log.info("Starting Grid Search for best parameters...")

@@ -4,3 +4,4 @@ data
 .hydra
 trained_models
 **/__pycache__/
+conf/config.yaml

@@ -103,7 +103,7 @@ class GRUWrapper:
                 #     print(sum(loss_list) / len(loss_list))
             epoch_train_loss = sum(loss_list) / len(loss_list)
             train_losses.append(epoch_train_loss)
-            predictions, reconstruction_errors, epoch_valid_loss = self.predict(val_loader)
+            predictions, not_nan_results, reconstruction_errors, epoch_valid_loss = self.predict(val_loader)
             valid_losses.append(epoch_valid_loss)
 
             print("Epoch {} train RMSE: {:.7f}, valid RMSE: {:.7f}".format(epoch, epoch_train_loss, epoch_valid_loss))

@@ -184,12 +184,13 @@ def calculate_mahalanobis_distance(reconstruction_error_raw):
     return  mahalanobis_distances
 
 def calculate_mahalanobis_distance_with_not_nan_mask(reconstruction_error_raw, not_nan_mask, top_k):
-    not_nan_prob = not_nan_mask[0, :,:].reshape(reconstruction_error_raw.shape[0], -1)
+    if not_nan_mask is not None:
+        not_nan_prob = not_nan_mask[0, :,:].reshape(reconstruction_error_raw.shape[0], -1)
 
-    assert reconstruction_error_raw.shape[0] == not_nan_prob.shape[0]
-    # min_matrix = reconstruction_error_raw.min(axis=0)
-    reconstruction_error_raw[not_nan_prob <= 0.6] = 0.0
-    print('Calculating Mahalanobis Distance with not_nan_mask')
+        assert reconstruction_error_raw.shape[0] == not_nan_prob.shape[0]
+        # min_matrix = reconstruction_error_raw.min(axis=0)
+        reconstruction_error_raw[not_nan_prob <= 0.6] = 0.0
+        print('Calculating Mahalanobis Distance with not_nan_mask')
     num_timestamps = reconstruction_error_raw.shape[0]
     flattened = reconstruction_error_raw.reshape(num_timestamps, -1)
     mean_vec = np.mean(flattened, axis=0)
@@ -215,6 +216,17 @@ def calculate_mahalanobis_distance_with_not_nan_mask(reconstruction_error_raw, n
     assert mahalanobis_distances.shape[0] == mahalanobis_top_contributions.shape[0]
     assert k == mahalanobis_top_contributions.shape[1]
     return mahalanobis_distances, mahalanobis_top_contributions
+
+def refine_reconstruction_error_with_not_nan_mask(reconstruction_error_raw, not_nan_mask):
+    if not_nan_mask is not None:
+        not_nan_prob = not_nan_mask.reshape(reconstruction_error_raw.shape[0], -1)
+
+        assert reconstruction_error_raw.shape[0] == not_nan_prob.shape[0]
+        # min_matrix = reconstruction_error_raw.min(axis=0)
+        reconstruction_error_raw[not_nan_prob <= 0.6] = 0.0
+        print('Calculating Mahalanobis Distance with not_nan_mask')
+        return reconstruction_error_raw
+    return reconstruction_error_raw
 def set_random_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
