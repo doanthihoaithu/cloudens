@@ -303,7 +303,47 @@ class IBMDatasetLoader(object):
             self.features_test = windowed_data[:, :window_size, :, :]
             self.targets_test = windowed_data[:, window_size, :, :-1]
         else:
-            raise ValueError('Not support')
+            assert self.X_train_scaled.shape == self.train_not_nan_mask.shape
+            windowed_data = (
+                torch.tensor(self.X_train_scaled).unfold(dimension=0, size=window_size + 1, step=1).permute(0, 2, 1)
+                .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features)).numpy()
+
+            not_nan_mask_windowed_data = (
+                torch.tensor(self.train_not_nan_mask.values).unfold(dimension=0, size=window_size + 1, step=1).permute(
+                    0, 2, 1)
+                .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features)).numpy()
+
+            assert windowed_data.ndim == not_nan_mask_windowed_data.ndim
+            assert windowed_data.ndim == 4
+            windowed_data = np.concatenate((windowed_data, not_nan_mask_windowed_data), axis=3)
+            train_offset = int(train_val_ratio * windowed_data.shape[0])
+            windowed_data_train = windowed_data[0:train_offset]
+            windowed_data_valid = windowed_data[train_offset:]
+
+            self.features_train = windowed_data_train[:, :window_size, :, :]
+            self.targets_train = windowed_data_train[:, window_size, :, :]
+
+            self.features_valid = windowed_data_valid[:, :window_size, :, :]
+            self.targets_valid = windowed_data_valid[:, window_size, :, :]
+
+            windowed_data = np.concatenate([self.X_test_scaled[0:1, :].repeat(window_size, 0), self.X_test_scaled],
+                                           axis=0)
+            not_nan_mask_windowed_data = np.concatenate(
+                [self.test_not_nan_mask.values[0:1, :].repeat(window_size, 0), self.test_not_nan_mask],
+                axis=0)
+            windowed_data = (torch.tensor(windowed_data).unfold(dimension=0, size=window_size + 1, step=1)
+                             .permute(0, 2, 1)
+                             .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features).numpy())
+            not_nan_mask_windowed_data = (torch.tensor(not_nan_mask_windowed_data)
+                                          .unfold(dimension=0, size=window_size + 1, step=1)
+                                          .permute(0, 2, 1)
+                                          .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features).numpy())
+            assert windowed_data.ndim == not_nan_mask_windowed_data.ndim
+            assert windowed_data.ndim == 4
+            windowed_data = np.concatenate((windowed_data, not_nan_mask_windowed_data), axis=3)
+
+            self.features_test = windowed_data[:, :window_size, :, :]
+            self.targets_test = windowed_data[:, window_size, :, :]
 
         del self.X_raw
         del self.X_train_raw
