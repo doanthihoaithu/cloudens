@@ -5,3 +5,6 @@ data
 trained_models
 **/__pycache__/
 conf/config.yaml
+*.out
+*.err
+torch210
