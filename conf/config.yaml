@@ -16,12 +16,12 @@ evaluation:
   retest: false
   re_calculate_mahalanobis: false
   top_k_contribution: 5
-  use_model: 'A3TGCN' # 'A3TGCN' or 'GRU'
+  use_model: 'GRU' # 'A3TGCN' or 'GRU'
   null_padding_feature: false
-  null_padding_target: true
+  null_padding_target: false
   train_batch_size: 16 # 16  # training batch size
   evaluation_batch_size: 32
-  slide_win: 6
+  slide_win: 7
   nab_scoring_profiles: [ "standard", "reward_fn" ] # Options: "standard", "reward_fn"
   model_save_path: "trained_models/"
   epochs: 15
@@ -56,6 +56,7 @@ data_preparation_pipeline:
   grouping_mode: 'no_group'
   multiple_preprocessing: true
   reset_saved_data: false
+  slide_win: ${evaluation.slide_win}
   null_padding_target: ${evaluation.null_padding_target}
   null_padding_feature: ${evaluation.null_padding_feature}
   feature_subsets:
@@ -98,10 +99,11 @@ model_configs:
     loss_function: "mse"
     null_padding_target: false
     null_padding_feature: false
+    slide_win: ${evaluation.slide_win}
 #    data_dir: "./trained_models/gru/"
   A3TGCN:
     model_filename: 'A3TGCN_autoencoder.pt'
-    slide_win: 6
+    slide_win: ${evaluation.slide_win}
     shuffle_train: false
     data_dir: "./trained_models/a3tgcn/"
     null_padding_target: ${evaluation.null_padding_target}
