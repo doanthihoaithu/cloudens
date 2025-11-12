@@ -167,7 +167,7 @@ def mahalanobis_with_top_k_contrib(x, k, mean, cov_inv):
     D2 = float(delta.T @ cov_inv @ delta)
     contrib = (delta**2) * np.diag(cov_inv)
     # z = cov_inv_sqrt @ delta
-    return np.sqrt(D2), np.argpartition(contrib, -k)[-k:]
+    return np.sqrt(D2), np.argsort(contrib)[-k:]
 def calculate_mahalanobis_distance(reconstruction_error_raw):
     print('Calculating Mahalanobis Distance')
     num_timestamps = reconstruction_error_raw.shape[0]
@@ -184,7 +184,7 @@ def calculate_mahalanobis_distance(reconstruction_error_raw):
     return  mahalanobis_distances
 
 def calculate_mahalanobis_distance_with_not_nan_mask(reconstruction_error_raw, not_nan_mask, top_k):
-    if not_nan_mask is not None:
+    if not_nan_mask is not None and (not_nan_mask.ndim == 3):
         not_nan_prob = not_nan_mask[0, :,:].reshape(reconstruction_error_raw.shape[0], -1)
 
         assert reconstruction_error_raw.shape[0] == not_nan_prob.shape[0]
@@ -201,7 +201,7 @@ def calculate_mahalanobis_distance_with_not_nan_mask(reconstruction_error_raw, n
     mahalanobis_data = [mahalanobis_with_top_k_contrib(flattened[t], k, mean_vec, inv_cov_matrix)
                             for t in range(num_timestamps)]
     mahalanobis_distances = np.array([k[0] for k in mahalanobis_data])
-    mahalanobis_top_contributions = np.array([k[1] for k in mahalanobis_data])
+    mahalanobis_top_contributions = np.array([k[-1] for k in mahalanobis_data])
 
     # # Compute Mahalanobis distance at each timestamp
     # mahalanobis_distances = np.array([

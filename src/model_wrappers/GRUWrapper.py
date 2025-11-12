@@ -1,4 +1,5 @@
 import os.path
+import time
 
 import torch
 from torch.nn import GRU
@@ -51,6 +52,7 @@ class GRUWrapper:
         self.layer_dim = layer_dim
         self.batch_size = batch_size
         self._init_model()
+        self.inference_time = 0
 
 
     def _init_model(self):
@@ -84,6 +86,8 @@ class GRUWrapper:
         train_losses = []
         valid_losses = []
 
+        start_time = time.time()
+
         for epoch in range(epochs):
             model.train()
             step = 0
@@ -103,22 +107,24 @@ class GRUWrapper:
                 #     print(sum(loss_list) / len(loss_list))
             epoch_train_loss = sum(loss_list) / len(loss_list)
             train_losses.append(epoch_train_loss)
-            predictions, not_nan_results, reconstruction_errors, epoch_valid_loss = self.predict(val_loader)
+            predictions, not_nan_results, reconstruction_errors, epoch_valid_loss = self.predict(val_loader, mode='valid')
             valid_losses.append(epoch_valid_loss)
 
             print("Epoch {} train RMSE: {:.7f}, valid RMSE: {:.7f}".format(epoch, epoch_train_loss, epoch_valid_loss))
-
-        history = {'epochs': epochs, 'train_losses': train_losses, 'valid_losses': valid_losses}
+        end_time = time.time()
+        training_time = end_time - start_time
+        history = {'epochs': epochs, 'train_losses': train_losses, 'valid_losses': valid_losses, 'training_time': training_time}
         self.history = history
         return history
 
-    def predict(self, test_loader):
+    def predict(self, test_loader, mode):
         self.model.eval()
         step = 0
         # Store for analysis
         total_loss = []
         batch_reconstruction_errors = []
         predictions = []
+        start_inference_time = time.time()
         for encoder_inputs, labels in tqdm(test_loader, total=len(test_loader), desc=f'Testing...'):
             # Get model predictions
             y_hat = self.model(encoder_inputs)
@@ -130,6 +136,10 @@ class GRUWrapper:
 
         reconstruction_errors = np.concatenate(batch_reconstruction_errors, axis=0)
         predictions = np.concatenate(predictions, axis=0)
+        end_inference_time = time.time()
+        inference_time = end_inference_time - start_inference_time
+        if mode == 'test':
+            self.inference_time = inference_time
 
         not_nan_results = None
         return predictions, not_nan_results ,reconstruction_errors, sum(total_loss) / len(total_loss)

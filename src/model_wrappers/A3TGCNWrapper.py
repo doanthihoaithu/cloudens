@@ -48,6 +48,7 @@ class A3TGCNWrapper:
         self.null_padding_feature = null_padding_feature
         self.batch_size = batch_size
         self._init_model()
+        self.inference_time = 0
 
 
     def _init_model(self):
@@ -100,17 +101,21 @@ class A3TGCNWrapper:
                 #     print(sum(loss_list) / len(loss_list))
             epoch_train_loss = sum(loss_list) / len(loss_list)
             train_losses.append(epoch_train_loss)
-            predictions, not_nan_results, reconstruction_errors, epoch_valid_loss = self.predict(val_loader)
+            predictions, not_nan_results, reconstruction_errors, epoch_valid_loss = self.predict(val_loader, mode='valid')
             valid_losses.append(epoch_valid_loss)
 
             print("Epoch {} train RMSE: {:.7f}, valid RMSE: {:.7f}".format(epoch, epoch_train_loss, epoch_valid_loss))
         training_end_time = time.time()
-        print(f"Training time: {training_end_time - training_start_time}")
-        history = {'epochs': epochs, 'train_losses': train_losses, 'valid_losses': valid_losses}
+        training_time = training_end_time - training_start_time
+        print(f"Training time: {training_time}")
+        history = {'epochs': epochs,
+                   'train_losses': train_losses,
+                   'valid_losses': valid_losses,
+                   'training_time': training_time}
         self.history = history
         return history
 
-    def predict(self, test_loader):
+    def predict(self, test_loader, mode):
         self.model.eval()
         step = 0
         # Store for analysis
@@ -133,7 +138,10 @@ class A3TGCNWrapper:
             # batch_reconstruction_errors.append(abs(y_hat - labels).detach().cpu().numpy())
             batch_reconstruction_errors.append(abs(y_hat - labels).detach().cpu().numpy()[:,:,0:1])
         predict_end_time = time.time()
-        print(f"Inference time: {predict_end_time - predict_start_time}")
+        inference_time = predict_end_time - predict_start_time
+        print(f"Inference time: {inference_time}")
+        if mode == 'test':
+            self.inference_time = inference_time
         reconstruction_errors = np.concatenate(batch_reconstruction_errors, axis=0)
         print(f"Reconstruction errors: {reconstruction_errors.shape}")
         predictions = np.concatenate(predictions, axis=0)

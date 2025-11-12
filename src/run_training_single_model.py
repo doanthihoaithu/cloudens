@@ -1,6 +1,8 @@
 import random
 import sys
 import os
+import time
+
 import hydra
 from omegaconf import DictConfig
 import logging
@@ -197,13 +199,16 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                          static_edge_weight=data_loader.get_edge_weights_as_tensor(device=DEVICE))
             history = model_wrapper.train(train_loader, valid_loader, epochs=experiment_config.get('epochs'))
             model_wrapper.save(model_filename)
-            plot_training_history(model_name='A3TGCN', training_history=history,
+            plot_training_history(model_name=model, training_history=history,
                                   model_save_dir=os.path.dirname(model_filename))
 
         predictions_file = os.path.join(model_dir,'reconstruction_errors.npy')
         not_nan_results_file = os.path.join(model_dir,'not_nan_results.npy')
         if not os.path.exists(predictions_file) or experiment_config.retest:
-            X_test_predictions, not_nan_results, reconstruction_error_raw, test_loss = model_wrapper.predict(test_loader)
+
+            X_test_predictions, not_nan_results, reconstruction_error_raw, test_loss = model_wrapper.predict(test_loader, mode='test')
+            inference_time = model_wrapper.inference_time
+            pd.DataFrame(data={'inference_time': [inference_time]}).to_csv(os.path.join(model_dir,'inference_time.csv'))
             with open(predictions_file, 'wb') as f:
                 np.save(f, reconstruction_error_raw)
                 log.info(f"Reconstruction errors saved to {predictions_file}")
@@ -248,7 +253,7 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                     log.info(f"MSE reconstruction errors saved to {mse_reconstruction_error_file}")
 
                 with open(not_nan_results_file, 'rb') as not_nan_results_f:
-                    not_nan_results = np.load(not_nan_results_f)
+                    not_nan_results = np.load(not_nan_results_f, allow_pickle=True)
                     log.info(
                         f'Not nan results loaded from {not_nan_results_file}, having shape: {not_nan_results.shape}')
 
@@ -304,7 +309,7 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
         # is_anomalies, likelihoods, reconstruction_error = label_reconstruction_errors(reconstruction_errors, )
         # Call grid search or other functions
         log.info("Starting Grid Search for best parameters...")
-        result_df, is_anomalies_df = grid_search_new(
+        result_df, is_anomalies_df, likelihood_top_k_contribution_dict = grid_search_new(
             data_loader, reconstruction_error_raw, experiment_config=experiment_config, mahalanobis_distances=mahalanobis_distances)
 
         result_df.insert(1,'NAB_standard_rank', result_df['standard_normalized'].rank(ascending=False))
@@ -315,6 +320,11 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
 
         result_df.to_csv(grid_search_file, index=False)
         log.info('Grid Search results saved to {}'.format(grid_search_file))
+
+        likelihood_top_k_contribution_file = os.path.join(model_dir, f'likelihood_top_k_contribution.csv')
+        likelihood_top_k_contribution_df = pd.DataFrame(data=likelihood_top_k_contribution_dict, index=is_anomalies_df.index)
+        # likelihood_top_k_contribution_df[is_anomalies_df.columns] = is_anomalies_df.values
+        likelihood_top_k_contribution_df.to_csv(likelihood_top_k_contribution_file)
 
         max_NAB_standard_profile_index = result_df['standard_normalized'].idxmax()
         log.info(
@@ -465,10 +475,11 @@ def grid_search_new(data_loader, reconstruction_errors, experiment_config, mahal
             params_combinations.extend(list(params_combinations_new))
     num_combinations = len(params_combinations)
     is_anomalies_df = pd.DataFrame()
+    likelihood_top_k_contributions_dict = dict()
     for index, (post_processing_strategy, topk, anomaly_threshold, long_window, short_window) in tqdm(enumerate(params_combinations), desc='running grid search', total=num_combinations):
         print(f'post_processing_strategy: {post_processing_strategy}')
         print(f'topk: {topk} and anomaly_threshold: {anomaly_threshold} long window: {long_window} short window: {short_window}')
-        is_anomalies, likelihoods, reconstruction_error = label_reconstruction_errors(data_loader.test_index, reconstruction_errors, mahalanobis_distances, post_processing_strategy, topk, anomaly_threshold, long_window, short_window)
+        is_anomalies, likelihoods, reconstruction_error, likelihood_top_k_contribution = label_reconstruction_errors(data_loader.test_index, reconstruction_errors, mahalanobis_distances, post_processing_strategy, topk, anomaly_threshold, long_window, short_window)
 
         # Create results DataFrame for evaluation
         visualization_df = pd.DataFrame({
@@ -476,12 +487,19 @@ def grid_search_new(data_loader, reconstruction_errors, experiment_config, mahal
             'true_anomaly': data_loader.test_labels,  # This is what the function expects
             'predicted_anomaly': is_anomalies.values,  # The output of the model
             'anomaly_likelihood': likelihoods,
-            'reconstruction_error': reconstruction_error
+            'reconstruction_error': reconstruction_error,
         })
+
+        if (likelihood_top_k_contribution is not None) and (likelihood_top_k_contributions_dict.get(f'{topk}') is None):
+            top_k_contributions_shape = likelihood_top_k_contribution.shape
+            assert topk == top_k_contributions_shape[1]
+            for i in range(top_k_contributions_shape[1]):
+                likelihood_top_k_contributions_dict[f'top{topk}_{i}'] = likelihood_top_k_contribution[:,i]
+
+
         visualization_df.index = data_loader.test_index
 
         print("SAMPLE RESULT DF: ", visualization_df.head())
-
         is_anomalies_df[f'is_anomaly_{index}'] = is_anomalies.values
 
         # model_dir
@@ -539,7 +557,7 @@ def grid_search_new(data_loader, reconstruction_errors, experiment_config, mahal
         result_df.loc[len(result_df)] = new_row
 
     is_anomalies_df.index = data_loader.test_index
-    return result_df, is_anomalies_df
+    return result_df, is_anomalies_df, likelihood_top_k_contributions_dict
 
 def label_reconstruction_errors_with_mahalanobis(index, post_processing, mahalanobis_distances, anomaly_threshold):
     print('Post processing', post_processing)
@@ -609,7 +627,7 @@ def label_reconstruction_errors(index, reconstruction_errors, mahalanobis_distan
         threshold = np.percentile(reconstruction_error_full, anomaly_threshold)
         is_anomalies = (reconstruction_error_full > threshold).astype(int)
         likelihoods = reconstruction_error_full
-        return pd.Series(is_anomalies, index=index), likelihoods, reconstruction_error_full
+        return pd.Series(is_anomalies, index=index), likelihoods, reconstruction_error_full, None
     if post_processing_strategy == 'max':
         # num_samples, num_nodes, num_feats = reconstruction_errors.shape
         # reconstruction_errors = reconstruction_errors.reshape((num_samples, num_nodes * num_feats))
@@ -625,13 +643,16 @@ def label_reconstruction_errors(index, reconstruction_errors, mahalanobis_distan
         threshold = np.percentile(reconstruction_error_full, anomaly_threshold)
         is_anomalies = (reconstruction_error_full > threshold).astype(int)
         likelihoods = reconstruction_error_full
-        return pd.Series(is_anomalies, index=index), likelihoods, reconstruction_error_full
+        return pd.Series(is_anomalies, index=index), likelihoods, reconstruction_error_full, None
 
     # reconstruction_errors = reconstruction_errors.reshape(num_timestamps, -1)
     reconstruction_errors = get_full_err_scores(reconstruction_errors)
     reconstruction_error_raw = reconstruction_errors
     reconstruction_error_raw = reconstruction_error_raw.reshape(num_timestamps, -1)
+    likelihood_top_k_anomaly_index = reconstruction_error_raw.argsort(axis=1)[:,-topk:]
     reconstruction_error_full = MinMaxScaler().fit_transform(np.sort(reconstruction_error_raw, axis=1)[:, -topk:].mean(axis=-1, keepdims=True)).reshape(-1)
+    # reconstruction_error_full = MinMaxScaler().fit_transform(reconstruction_error_raw[likelihood_top_k_anomaly_index].mean(axis=-1, keepdims=True)).reshape(-1)
+
     # reconstruction_error_raw = reconstruction_error_raw.mean(axis=-1)
     # reconstruction_error_full = MinMaxScaler().fit_transform(reconstruction_error_raw.mean(axis=-1, keepdims=True)).reshape(-1)
     is_anomalies_layer_1 = None
@@ -650,7 +671,7 @@ def label_reconstruction_errors(index, reconstruction_errors, mahalanobis_distan
     if is_anomalies_layer_1 is not None:
         is_anomalies = ((is_anomalies_layer_1+is_anomalies)>=1).astype(int)
 
-    return pd.Series(is_anomalies, index=index), likelihoods, reconstruction_error_full
+    return pd.Series(is_anomalies, index=index), likelihoods, reconstruction_error_full, likelihood_top_k_anomaly_index
 
 def evaluate_performance(y_true, y_pred):
     """
