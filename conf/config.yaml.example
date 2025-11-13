@@ -14,7 +14,7 @@ modeling:
 evaluation:
   retrain: false
   retest: false
-  re_calculate_mahalanobis: true
+  re_calculate_mahalanobis: false
   top_k_contribution: 5
   use_model: 'A3TGCN' # 'A3TGCN' or 'GRU'
   null_padding_feature: false

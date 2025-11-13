@@ -101,7 +101,7 @@ class A3TGCNWrapper:
                 #     print(sum(loss_list) / len(loss_list))
             epoch_train_loss = sum(loss_list) / len(loss_list)
             train_losses.append(epoch_train_loss)
-            predictions, not_nan_results, reconstruction_errors, epoch_valid_loss = self.predict(val_loader, mode='valid')
+            predictions, is_nan_results, reconstruction_errors, epoch_valid_loss = self.predict(val_loader, mode='valid')
             valid_losses.append(epoch_valid_loss)
 
             print("Epoch {} train RMSE: {:.7f}, valid RMSE: {:.7f}".format(epoch, epoch_train_loss, epoch_valid_loss))
@@ -122,15 +122,15 @@ class A3TGCNWrapper:
         total_loss = []
         batch_reconstruction_errors = []
         predictions = []
-        not_nan_predictions = []
-        not_nan_labels = []
+        is_nan_predictions = []
+        is_nan_labels = []
         predict_start_time = time.time()
         for encoder_inputs, labels in tqdm(test_loader, total=len(test_loader), desc=f'Testing...'):
             # Get model predictions
             y_hat = self.model(encoder_inputs, self.static_edge_index, self.static_edge_weight)
             predictions.append(y_hat.detach().cpu().numpy()[:,:,0])
-            not_nan_predictions.append(y_hat.detach().cpu().numpy()[:,:,-1])
-            not_nan_labels.append(labels.detach().cpu().numpy()[:,:,-1])
+            is_nan_predictions.append(y_hat.detach().cpu().numpy()[:,:,-1])
+            is_nan_labels.append(labels.detach().cpu().numpy()[:,:,-1])
             # Mean squared error
             loss = self.loss_fn(y_hat, labels)
             total_loss.append(loss.item())
@@ -145,10 +145,10 @@ class A3TGCNWrapper:
         reconstruction_errors = np.concatenate(batch_reconstruction_errors, axis=0)
         print(f"Reconstruction errors: {reconstruction_errors.shape}")
         predictions = np.concatenate(predictions, axis=0)
-        not_nan_predictions = np.concatenate(not_nan_predictions, axis=0)
-        not_nan_labels = np.concatenate(not_nan_labels, axis=0)
-        not_nan_results = [not_nan_predictions, not_nan_labels]
-        return predictions, np.array(not_nan_results), reconstruction_errors, sum(total_loss) / len(total_loss)
+        is_nan_predictions = np.concatenate(is_nan_predictions, axis=0)
+        is_nan_labels = np.concatenate(is_nan_labels, axis=0)
+        is_nan_results = [is_nan_predictions, is_nan_labels]
+        return predictions, np.array(is_nan_results), reconstruction_errors, sum(total_loss) / len(total_loss)
 
     def save(self, path):
         torch.save(self.model.state_dict(), path)

@@ -25,7 +25,7 @@ from plotting_module import plot_training_history
 from anomaly_likelihood import compute_anomaly_likelihood
 from nab_scoring import calculate_nab_score_with_window_based_tp_fn
 from utils import clear_folder, get_project_root, get_full_err_scores, set_random_seed, calculate_mahalanobis_distance, \
-    calculate_mahalanobis_distance_with_not_nan_mask
+    calculate_mahalanobis_distance_with_is_nan_mask, refine_reconstruction_error_with_is_nan_mask
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -203,10 +203,10 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                   model_save_dir=os.path.dirname(model_filename))
 
         predictions_file = os.path.join(model_dir,'reconstruction_errors.npy')
-        not_nan_results_file = os.path.join(model_dir,'not_nan_results.npy')
+        is_nan_results_file = os.path.join(model_dir,'is_nan_results.npy')
         if not os.path.exists(predictions_file) or experiment_config.retest:
 
-            X_test_predictions, not_nan_results, reconstruction_error_raw, test_loss = model_wrapper.predict(test_loader, mode='test')
+            X_test_predictions, is_nan_results, reconstruction_error_raw, test_loss = model_wrapper.predict(test_loader, mode='test')
             inference_time = model_wrapper.inference_time
             pd.DataFrame(data={'inference_time': [inference_time]}).to_csv(os.path.join(model_dir,'inference_time.csv'))
             with open(predictions_file, 'wb') as f:
@@ -224,11 +224,11 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                     log.info(f"Mahalanobis_distances saved to {mahalanobis_distances_file}")
 
                 mahalanobis_distances_after_mask_file = os.path.join(os.path.dirname(predictions_file), 'mahalanobis_after_mask.npy')
-                mahalanobis_distances_after_mask, mahalanobis_distances_top_contributions = calculate_mahalanobis_distance_with_not_nan_mask(
-                    reconstruction_error_raw, not_nan_results, experiment_config.top_k_contribution)
+                mahalanobis_distances_after_mask, mahalanobis_distances_top_contributions = calculate_mahalanobis_distance_with_is_nan_mask(
+                    reconstruction_error_raw, is_nan_results, experiment_config.top_k_contribution)
                 with open(mahalanobis_distances_after_mask_file, 'wb') as f:
                     np.save(f, mahalanobis_distances_after_mask)
-                    log.info(f"Mahalanobis_distances after not_nan_mask saved to {mahalanobis_distances_after_mask_file}")
+                    log.info(f"Mahalanobis_distances after is_nan_mask saved to {mahalanobis_distances_after_mask_file}")
 
                 mahalanobis_distances_after_mask_top_k_contribution_file = os.path.join(
                                                                         os.path.dirname(mahalanobis_distances_after_mask_file),
@@ -238,10 +238,10 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                 mahalanobis_distances_after_mask_top_k_contribution_df.index = data_loader.test_index
                 mahalanobis_distances_after_mask_top_k_contribution_df.to_csv(mahalanobis_distances_after_mask_top_k_contribution_file)
                 log.info(
-                    f"Mahalanobis_distances after not_nan_mask top-k contribution index saved to {mahalanobis_distances_after_mask_top_k_contribution_file}")
+                    f"Mahalanobis_distances after is_nan_mask top-k contribution index saved to {mahalanobis_distances_after_mask_top_k_contribution_file}")
 
-                with open(not_nan_results_file, 'wb') as f:
-                    np.save(f, not_nan_results)
+                with open(is_nan_results_file, 'wb') as f:
+                    np.save(f, is_nan_results)
         else:
             with open(predictions_file, 'rb') as f:
                 reconstruction_error_raw = np.load(f)
@@ -252,10 +252,10 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                     f.write(str(mse_reconstruction_error_raw))
                     log.info(f"MSE reconstruction errors saved to {mse_reconstruction_error_file}")
 
-                with open(not_nan_results_file, 'rb') as not_nan_results_f:
-                    not_nan_results = np.load(not_nan_results_f, allow_pickle=True)
+                with open(is_nan_results_file, 'rb') as is_nan_results_f:
+                    is_nan_results = np.load(is_nan_results_f, allow_pickle=True)
                     log.info(
-                        f'Not nan results loaded from {not_nan_results_file}, having shape: {not_nan_results.shape}')
+                        f'Not nan results loaded from {is_nan_results_file}, having shape: {is_nan_results.shape}')
 
                 re_calculate_mahalanobis = experiment_config.re_calculate_mahalanobis
                 mahalanobis_distances_file = os.path.join(os.path.dirname(predictions_file), 'mahalanobis.npy')
@@ -282,12 +282,12 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
 
                     mahalanobis_distances_after_mask_file = os.path.join(os.path.dirname(predictions_file),
                                                                          'mahalanobis_after_mask.npy')
-                    mahalanobis_distances_after_mask, mahalanobis_distances_top_contributions = calculate_mahalanobis_distance_with_not_nan_mask(
-                        reconstruction_error_raw, not_nan_results, experiment_config.top_k_contribution)
+                    mahalanobis_distances_after_mask, mahalanobis_distances_top_contributions = calculate_mahalanobis_distance_with_is_nan_mask(
+                        reconstruction_error_raw, is_nan_results, experiment_config.top_k_contribution)
                     with open(mahalanobis_distances_after_mask_file, 'wb') as f:
                         np.save(f, mahalanobis_distances_after_mask)
                         log.info(
-                            f"Mahalanobis_distances after not_nan_mask saved to {mahalanobis_distances_after_mask_file}")
+                            f"Mahalanobis_distances after is_nan_mask saved to {mahalanobis_distances_after_mask_file}")
                         log.info(f'Top-k feature contribution in mahalanobis_after_mask distance shape {mahalanobis_distances_top_contributions.shape}')
 
                     mahalanobis_distances_after_mask_top_k_contribution_file = os.path.join(
@@ -299,13 +299,13 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                     mahalanobis_distances_after_mask_top_k_contribution_df.to_csv(
                         mahalanobis_distances_after_mask_top_k_contribution_file)
                     log.info(
-                        f"Mahalanobis_distances after not_nan_mask top-k contribution index saved to {mahalanobis_distances_after_mask_top_k_contribution_file}")
+                        f"Mahalanobis_distances after is_nan_mask top-k contribution index saved to {mahalanobis_distances_after_mask_top_k_contribution_file}")
 
 
         assert reconstruction_error_raw.shape[0] == mahalanobis_distances.shape[0]
         assert reconstruction_error_raw.shape[0] == len(data_loader.test_index)
 
-        # reconstruction_error_raw = refine_reconstruction_error_with_not_nan_mask(reconstruction_error_raw, data_loader.test_not_nan_mask.values.astype(bool))
+        # reconstruction_error_raw = refine_reconstruction_error_with_is_nan_mask(reconstruction_error_raw, data_loader.test_is_nan_mask.values.astype(bool))
         # is_anomalies, likelihoods, reconstruction_error = label_reconstruction_errors(reconstruction_errors, )
         # Call grid search or other functions
         log.info("Starting Grid Search for best parameters...")
