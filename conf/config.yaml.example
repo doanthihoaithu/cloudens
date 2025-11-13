@@ -14,7 +14,7 @@ modeling:
 evaluation:
   retrain: false
   retest: false
-  re_calculate_mahalanobis: false
+  re_calculate_mahalanobis: true
   top_k_contribution: 5
   use_model: 'A3TGCN' # 'A3TGCN' or 'GRU'
   null_padding_feature: false
@@ -25,9 +25,9 @@ evaluation:
   nab_scoring_profiles: [ "standard", "reward_fn" ] # Options: "standard", "reward_fn"
   model_save_path: "trained_models/"
   epochs: 15
-  post_processing_strategies: ['max', 'likelihood', 'mahalanobis']
+  post_processing_strategies: ['likelihood', 'mahalanobis']
   topks: [1]
-  distribution_anomaly_thresholds: [99.7, 99.8, 99.9]
+  distribution_anomaly_thresholds: [99.5, 99.6, 99.7, 99.8, 99.9]
 #  mahalanobis_anomaly_thresholds: [99.6, 99.7, 99.8]
   anomaly_thresholds: [0.998, 0.9985, 0.9997, 0.99975]
   long_windows: [30]
@@ -67,7 +67,7 @@ data_preparation_pipeline:
   features_prep:
     filter:
       http_codes: ['5xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
-      aggregations: ['count'] # aggregations can be ['count', 'avg', 'min', 'max',' median', 'std', 'kurtosis', 'skewness']
+      aggregations: ['avg'] # aggregations can be ['count', 'avg', 'min', 'max',' median', 'std', 'kurtosis', 'skewness']
 
   ground_truth_labels:
     path: "data/labels/"
