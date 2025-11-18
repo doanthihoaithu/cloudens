@@ -17,14 +17,15 @@ evaluation:
   re_calculate_mahalanobis: false
   top_k_contribution: 5
   use_model: 'A3TGCN' # 'A3TGCN' or 'GRU'
-  null_padding_feature: true
+  null_padding_feature: false
   null_padding_target: false
   train_batch_size: 16 # 16  # training batch size
   evaluation_batch_size: 32
-  slide_win: 6
+  slide_win: 12
+  fill_nan: 'zero' # 'zero','mean', 'median'
   nab_scoring_profiles: [ "standard", "reward_fn" ] # Options: "standard", "reward_fn"
   model_save_path: "trained_models/"
-  epochs: 10
+  epochs: 15
   post_processing_strategies: ['likelihood', 'mahalanobis']
   topks: [1]
   distribution_anomaly_thresholds: [99.5, 99.6, 99.7, 99.8, 99.9]
@@ -59,6 +60,7 @@ data_preparation_pipeline:
   slide_win: ${evaluation.slide_win}
   null_padding_target: ${evaluation.null_padding_target}
   null_padding_feature: ${evaluation.null_padding_feature}
+  fill_nan: ${evaluation.fill_nan}
   feature_subsets:
 #    http_codes: ['5xx','4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
 #    aggregations: ['count','avg','min','max']
@@ -98,6 +100,20 @@ plotting:
       aggregations: ['count', 'avg','min','max']
   null_padding_feature: ${evaluation.null_padding_feature}
   null_padding_target: ${evaluation.null_padding_target}
+
+multiple_evaluation:
+  models: ['GRU','A3TGCN']
+#  models: ['GRU']
+#  slide_wins: [6, 12]
+  slide_wins: [6,8,12]
+  subsets:
+#    http_codes: [ '5xx', '4xx']
+    http_codes: [ '5xx','4xx']
+    aggregations: [ 'count', 'avg','min','max' ]
+#    aggregations: ['max']
+  fill_nan_values: ['zero','mean', 'median']
+  null_padding_feature: [true, false]
+  null_padding_target: [true, false]
 
 model_configs:
   GRU:
