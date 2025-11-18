@@ -153,6 +153,10 @@ def generate_figure_for_fpr(plotting_config):
                                          gridsearch_file_name_1)
         gridsearch_file_2 = os.path.join(train_models_dir, f'window_{window_size}', feature_subset, model_name_2,
                                          gridsearch_file_name_2)
+
+        if (not os.path.exists(gridsearch_file_1)) or (not os.path.exists(gridsearch_file_2)):
+            continue
+
         print(gridsearch_file_1)
         print(gridsearch_file_2)
         cloudens_grid_search_df_1 = pd.read_csv(gridsearch_file_1)
