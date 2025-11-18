@@ -41,9 +41,11 @@ class IBMDatasetLoader(object):
         self.grouping_mode = grouping_mode
         null_padding_feature = data_preparation_config.null_padding_feature
         null_padding_target = data_preparation_config.null_padding_target
+        fill_nan = data_preparation_config.fill_nan
 
         self.null_padding_feature = null_padding_feature
         self.null_padding_target = null_padding_target
+        self.fill_nan = fill_nan
 
         selected_http_codes = data_preparation_config.features_prep.filter.http_codes
         selected_aggregations = data_preparation_config.features_prep.filter.aggregations
@@ -485,7 +487,7 @@ class IBMDatasetLoader(object):
         if not os.path.exists(grouping_data_dir):
             os.makedirs(grouping_data_dir)
 
-        feature_raw_file = os.path.join(grouping_data_dir, 'filtered_raw_data.parquet')
+        feature_raw_file = os.path.join(grouping_data_dir, f'raw_data_fill_nan_with_{self.fill_nan}.parquet')
         meta_data_file = os.path.join(grouping_data_dir, 'meta_data.json')
         adjacency_file = os.path.join(grouping_data_dir, 'adjacency_matrix.npy')
         is_nan_mask_file =  os.path.join(grouping_data_dir, 'is_nan_mask.parquet')
@@ -493,13 +495,13 @@ class IBMDatasetLoader(object):
         reset_saved_data = self.data_preparation_config.reset_saved_data
 
         if os.path.exists(feature_raw_file) and os.path.exists(is_nan_mask_file) and os.path.exists(meta_data_file) and os.path.exists(adjacency_file) and (not reset_saved_data):
-            print(f'Found data files corresponding to grouping mode <{selected_group_mode}>. Loading existed files at: {grouping_data_dir}')
+            print(f'Found data files corresponding to grouping mode <{selected_group_mode}>. Loading existed files at: {feature_raw_file}')
             feature_data_df, is_nan_mask_df, meta_data, adjacency_matrix = self._loading_features_according_to_grouping_mode(feature_raw_file, is_nan_mask_file, meta_data_file, adjacency_file)
             self.num_nodes = len(meta_data['node_ids'])
             self.num_node_features = len(meta_data['node_feature_names'])
             return feature_data_df, is_nan_mask_df, meta_data, adjacency_matrix
         else:
-            print('Start reconstructing data according to grouping mode', selected_group_mode)
+            print('Start reconstructing data according to grouping mode', selected_group_mode, 'fill nan with ', self.fill_nan)
             if 'no_group' in selected_group_mode:
                 loader_config = dict({
                     'pivoted_raw_data_file': self.pivoted_raw_data_file,
@@ -512,7 +514,8 @@ class IBMDatasetLoader(object):
                     'adjacency_file': adjacency_file,
                     'filter': filter,
                     'minutes_before': self.data_preparation_config.train_test_config.anomaly_window.minutes_before,
-                    'reset_saved_data': reset_saved_data
+                    'reset_saved_data': reset_saved_data,
+                    'fill_nan': self.fill_nan,
                 })
                 df_prodlive, is_nan_mask_df, gt_utc_df = load_and_prepare_data_according_to_config(loader_config)
 

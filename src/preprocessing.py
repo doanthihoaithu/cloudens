@@ -167,6 +167,7 @@ def prepare_5xx_4xx_features(cfg):
     filter = cfg['filter']
     http_codes = filter['http_codes']
     aggregations = filter['aggregations']
+    fill_nan = cfg['fill_nan']
 
     first_aggregation = aggregations[0]
 
@@ -230,15 +231,30 @@ def prepare_5xx_4xx_features(cfg):
     if is_nan:
         log.info(f'NaN values detected in "{input_path}", filling NaN values')
         for arr, list_c in columns_to_keep_dictionary.items():
-            if arr == 'count':
-                filtered_df[list_c] = filtered_df[list_c].fillna(0)
-                # nan_masked_df[list_c] =filtered_df[list_c].isna()
+            if fill_nan == 'zero':
+                filtered_df[list_c] = filtered_df[list_c].fillna(0.0)
                 print(f'Fillna with 0 for {arr} features')
-            else:
+            elif fill_nan == 'mean':
+                means = filtered_df[list_c].mean()
+                filtered_df[list_c] = filtered_df[list_c].fillna(means)
+                print(f'Fillna with mean {means} for {arr} features')
+            elif fill_nan == 'median':
                 medians = filtered_df[list_c].median()
                 filtered_df[list_c] = filtered_df[list_c].fillna(medians)
-                # nan_masked_df[list_c] = filtered_df[list_c].isna()
-                print(f'Fillna with median for {arr} features')
+                print(f'Fillna with median {medians} for {arr} features')
+            else:
+                filtered_df[list_c] = filtered_df[list_c].fillna(0.0)
+                print(f'Fillna with 0.0 for {arr} features')
+
+            # if arr == 'count':
+            #     filtered_df[list_c] = filtered_df[list_c].fillna(0)
+            #     # nan_masked_df[list_c] =filtered_df[list_c].isna()
+            #     print(f'Fillna with 0 for {arr} features')
+            # else:
+            #     medians = filtered_df[list_c].median()
+            #     filtered_df[list_c] = filtered_df[list_c].fillna(medians)
+            #     # nan_masked_df[list_c] = filtered_df[list_c].isna()
+            #     print(f'Fillna with median for {arr} features')
     is_nan = filtered_df.isna().values.any()
     assert is_nan == False
 

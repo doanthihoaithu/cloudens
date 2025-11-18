@@ -146,6 +146,8 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
 
     slide_win = experiment_config.slide_win
 
+    fill_nan = experiment_config.fill_nan
+
     for model in models:
         print("Running model", model)
         model_config = model_configs[model]
@@ -153,13 +155,25 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
 
         # model_dir = os.path.join(trained_models_dir, selected_group_mode, model)
         if (experiment_config.null_padding_feature == False) and (experiment_config.null_padding_target == False):
-            model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', selected_group_mode, model)
+            model_dir = os.path.join(trained_models_dir, f'window_{slide_win}',
+                                     selected_group_mode,
+                                     f'fill_nan_with_{fill_nan}',
+                                     model)
         elif experiment_config.null_padding_target and (not experiment_config.null_padding_feature):
-            model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', selected_group_mode, f'{model}_null_padding_target')
+            model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', f'fill_nan_with_{fill_nan}',
+                                     selected_group_mode,
+                                     f'fill_nan_with_{fill_nan}',
+                                     f'{model}_null_padding_target')
         elif (not experiment_config.null_padding_target) and experiment_config.null_padding_feature:
-            model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', selected_group_mode, f'{model}_null_padding_feature')
+            model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', f'fill_nan_with_{fill_nan}',
+                                     selected_group_mode,
+                                     f'fill_nan_with_{fill_nan}',
+                                     f'{model}_null_padding_feature')
         else:
-            model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', selected_group_mode, f'{model}_null_padding_both')
+            model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', f'fill_nan_with_{fill_nan}',
+                                     selected_group_mode,
+                                     f'fill_nan_with_{fill_nan}',
+                                     f'{model}_null_padding_both')
 
         os.makedirs(model_dir, exist_ok=True)
         model_filename = os.path.join(model_dir, model_config['model_filename'])
@@ -653,7 +667,7 @@ def label_reconstruction_errors(index, reconstruction_errors, mahalanobis_distan
     reconstruction_error_raw = reconstruction_error_raw.reshape(num_timestamps, -1)
     likelihood_top_k_anomaly_index = reconstruction_error_raw.argsort(axis=1)[:,-topk:]
     reconstruction_error_full = MinMaxScaler().fit_transform(np.sort(reconstruction_error_raw, axis=1)[:, -topk:].mean(axis=-1, keepdims=True)).reshape(-1)
-    # reconstruction_error_full = MinMaxScaler().fit_transform(reconstruction_error_raw[likelihood_top_k_anomaly_index].mean(axis=-1, keepdims=True)).reshape(-1)
+    # reconstruction_error_full = MinMaxScaler().fit_transform(reconstruction_error_raw.mean(axis=-1, keepdims=True)).reshape(-1)
 
     # reconstruction_error_raw = reconstruction_error_raw.mean(axis=-1)
     # reconstruction_error_full = MinMaxScaler().fit_transform(reconstruction_error_raw.mean(axis=-1, keepdims=True)).reshape(-1)
