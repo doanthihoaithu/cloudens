@@ -202,6 +202,8 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
             plot_training_history(model_name=model, training_history=history,
                                   model_save_dir=os.path.dirname(model_filename))
 
+            experiment_config.retest = True
+
         predictions_file = os.path.join(model_dir,'reconstruction_errors.npy')
         is_nan_results_file = os.path.join(model_dir,'is_nan_results.npy')
         if not os.path.exists(predictions_file) or experiment_config.retest:
@@ -693,7 +695,7 @@ def evaluate_performance(y_true, y_pred):
     recall = recall_score(y_true, y_pred)
     f1 = f1_score(y_true, y_pred)
     accuracy = accuracy_score(y_true, y_pred)
-    conf_matrix = confusion_matrix(y_true, y_pred)
+    conf_matrix = confusion_matrix(y_true, y_pred).ravel().tolist()
     mcc = matthews_corrcoef(y_true, y_pred)
 
     return precision, recall, f1, accuracy, conf_matrix, mcc
