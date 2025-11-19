@@ -160,17 +160,17 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                      f'fill_nan_with_{fill_nan}',
                                      model)
         elif experiment_config.null_padding_target and (not experiment_config.null_padding_feature):
-            model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', f'fill_nan_with_{fill_nan}',
+            model_dir = os.path.join(trained_models_dir, f'window_{slide_win}',
                                      selected_group_mode,
                                      f'fill_nan_with_{fill_nan}',
                                      f'{model}_null_padding_target')
         elif (not experiment_config.null_padding_target) and experiment_config.null_padding_feature:
-            model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', f'fill_nan_with_{fill_nan}',
+            model_dir = os.path.join(trained_models_dir, f'window_{slide_win}',
                                      selected_group_mode,
                                      f'fill_nan_with_{fill_nan}',
                                      f'{model}_null_padding_feature')
         else:
-            model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', f'fill_nan_with_{fill_nan}',
+            model_dir = os.path.join(trained_models_dir, f'window_{slide_win}',
                                      selected_group_mode,
                                      f'fill_nan_with_{fill_nan}',
                                      f'{model}_null_padding_both')
