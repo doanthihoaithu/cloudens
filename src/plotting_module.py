@@ -357,6 +357,7 @@ def process_detection_counters(detection_counters_list):
 
     print(f'Length of detection counters: {len(detection_counters_list)}')
     dfs = []
+    columns = None
     for detection_counters in detection_counters_list:
         detection_counters = ast.literal_eval(detection_counters)
         # print(detection_counters)
@@ -372,6 +373,7 @@ def process_detection_counters(detection_counters_list):
         gt_TestLog_ids = detection_counters['gt_TestLog_ids']
         number_of_anomalies = len(gt_issue_ids) + len(gt_im_ids) + len(gt_TestLog_ids)
         column_names = [f'anomaly_{i}' for i in range(number_of_anomalies)]
+        columns = column_names
         df = pd.DataFrame(columns=column_names)
         for anomaly_id in issue_detected_ids:
             df[f'anomaly_{anomaly_id}'] = [True]
@@ -381,9 +383,10 @@ def process_detection_counters(detection_counters_list):
 
         for anomaly_id in TestLog_detected_ids:
             df[f'anomaly_{anomaly_id}'] = [True]
-        dfs.append(df)
+
+        dfs.append(df.values.reshape(-1))
     print(f'Length of detection counters: {len(dfs)}')
-    dfs = pd.concat(dfs, axis=0, ignore_index=True)
+    dfs = pd.DataFrame(np.array(dfs), columns=columns)
     print(f'Length of detection counters after concat: {dfs.shape}')
     return dfs.columns, dfs.values
 
