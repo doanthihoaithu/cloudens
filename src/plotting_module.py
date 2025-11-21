@@ -313,10 +313,10 @@ def generate_figure_for_fpr(plotting_config):
         fig.savefig(path2, bbox_inches=extent3.expanded(1.3, 1.5))
         print(f'Figure saved to {path2}')
 
-        total_graph_results_df = pd.concat(total_graph_dfs, ignore_index=True)
-        total_gru_results_df = pd.concat(total_gru_dfs, ignore_index=True)
-        total_gru_results_df.drop_duplicates(inplace=True)
-        combined_df = pd.concat([total_graph_results_df, total_gru_results_df], ignore_index=True)
-        combined_df.to_csv(os.path.join(combined_figure_save_dir,'combined_grid_search_results.csv'), index=False)
-        print(f'Combined grid search results saved to {combined_figure_save_dir}')
+    total_graph_results_df = pd.concat(total_graph_dfs, ignore_index=True)
+    total_gru_results_df = pd.concat(total_gru_dfs, ignore_index=True)
+    total_gru_results_df.drop_duplicates(inplace=True)
+    combined_df = pd.concat([total_graph_results_df, total_gru_results_df], ignore_index=True)
+    combined_df.to_csv(os.path.join(combined_figure_save_dir,'combined_grid_search_results.csv'), index=False)
+    print(f'Combined grid search results saved to {combined_figure_save_dir}')
 
