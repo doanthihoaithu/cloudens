@@ -189,11 +189,6 @@ def generate_figure_for_fpr(plotting_config):
         cloudens_grid_search_df_1['aggregation'] = aggregation
         cloudens_grid_search_df_1['training_time'] = training_time_df['training_time'].values[0]
         cloudens_grid_search_df_1['inference_time'] = inference_time_df['inference_time'].values[0]
-        anomaly_marks, detected_anomaly_ids = process_detection_counters(cloudens_grid_search_df_1['detection_counters'].values[0])
-        # print(anomaly_marks.shape, detected_anomaly_ids.shape)
-
-        cloudens_grid_search_df_1[anomaly_marks] = detected_anomaly_ids.reshape(-1)
-
 
         cloudens_grid_search_df_2 = pd.read_csv(gridsearch_file_2)
         cloudens_grid_search_df_2['model'] = model_name_2
@@ -205,9 +200,6 @@ def generate_figure_for_fpr(plotting_config):
         inference_time_df = pd.read_csv(os.path.join(os.path.dirname(gridsearch_file_2), f'inference_time.csv'))
         cloudens_grid_search_df_2['training_time'] = training_time_df['training_time'].values[0]
         cloudens_grid_search_df_2['inference_time'] = inference_time_df['inference_time'].values[0]
-        anomaly_marks, detected_anomaly_ids = process_detection_counters(
-            cloudens_grid_search_df_2['detection_counters'].values[0])
-        cloudens_grid_search_df_2[anomaly_marks] = detected_anomaly_ids.reshape(-1)
 
         cloudens_grid_search_df = pd.concat([cloudens_grid_search_df_1, cloudens_grid_search_df_2], axis=0,
                                             ignore_index=True)
@@ -338,10 +330,15 @@ def generate_figure_for_fpr(plotting_config):
     total_gru_results_df = pd.concat(total_gru_dfs, ignore_index=True)
     total_gru_results_df.drop_duplicates(inplace=True)
     combined_df = pd.concat([total_graph_results_df, total_gru_results_df], ignore_index=True)
+    anomaly_marks, detected_anomaly_ids = process_detection_counters(
+        combined_df['detection_counters'].tolist())
+
+    print(anomaly_marks.shape,detected_anomaly_ids.shape)
+    combined_df[anomaly_marks] = detected_anomaly_ids
     combined_df.to_csv(os.path.join(combined_figure_save_dir,'combined_grid_search_results.csv'), index=False)
     print(f'Combined grid search results saved to {combined_figure_save_dir}')
 
-def process_detection_counters(detection_counters):
+def process_detection_counters(detection_counters_list):
     # Example
     # {'issue_detected': 0,
     # 'issue_detected_ids': [],
@@ -357,30 +354,34 @@ def process_detection_counters(detection_counters):
     # 'fp': 123,
     # 'fn': 16}
 
-    detection_counters = ast.literal_eval(detection_counters)
 
-    # print(detection_counters)
-    # print(type(detection_counters))
-    issue_detected = detection_counters['issue_detected']
-    issue_detected_ids = detection_counters['issue_detected_ids']
-    im_detected = detection_counters['im_detected']
-    im_detected_ids = detection_counters['im_detected_ids']
-    TestLog_detected = detection_counters['TestLog_detected']
-    TestLog_detected_ids = detection_counters['TestLog_detected_ids']
-    gt_issue_ids = detection_counters['gt_issue_ids']
-    gt_im_ids = detection_counters['gt_im_ids']
-    gt_TestLog_ids = detection_counters['gt_TestLog_ids']
-    number_of_anomalies = len(gt_issue_ids) + len(gt_im_ids) + len(gt_TestLog_ids)
-    column_names = [f'anomaly_{i}' for i in range(number_of_anomalies)]
-    df = pd.DataFrame(columns=column_names)
-    for anomaly_id in issue_detected_ids:
-        df[f'anomaly_{anomaly_id}'] = [True]
+    dfs = []
+    for detection_counters in detection_counters_list:
+        detection_counters = ast.literal_eval(detection_counters)
+        # print(detection_counters)
+        # print(type(detection_counters))
+        issue_detected = detection_counters['issue_detected']
+        issue_detected_ids = detection_counters['issue_detected_ids']
+        im_detected = detection_counters['im_detected']
+        im_detected_ids = detection_counters['im_detected_ids']
+        TestLog_detected = detection_counters['TestLog_detected']
+        TestLog_detected_ids = detection_counters['TestLog_detected_ids']
+        gt_issue_ids = detection_counters['gt_issue_ids']
+        gt_im_ids = detection_counters['gt_im_ids']
+        gt_TestLog_ids = detection_counters['gt_TestLog_ids']
+        number_of_anomalies = len(gt_issue_ids) + len(gt_im_ids) + len(gt_TestLog_ids)
+        column_names = [f'anomaly_{i}' for i in range(number_of_anomalies)]
+        df = pd.DataFrame(columns=column_names)
+        for anomaly_id in issue_detected_ids:
+            df[f'anomaly_{anomaly_id}'] = [True]
 
-    for anomaly_id in im_detected_ids:
-        df[f'anomaly_{anomaly_id}'] = [True]
+        for anomaly_id in im_detected_ids:
+            df[f'anomaly_{anomaly_id}'] = [True]
 
-    for anomaly_id in TestLog_detected_ids:
-        df[f'anomaly_{anomaly_id}'] = [True]
-    return df.columns, df.values
+        for anomaly_id in TestLog_detected_ids:
+            df[f'anomaly_{anomaly_id}'] = [True]
+        dfs.append(df)
+    dfs = pd.concat(dfs, ignore_index=True)
+    return dfs.columns, dfs.values
 
 
