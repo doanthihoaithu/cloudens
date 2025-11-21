@@ -5,6 +5,9 @@ import pandas as pd
 import os
 import numpy as np
 
+from utils import get_project_root
+
+
 def plot_training_history(model_name, training_history, model_save_dir):
     epochs = training_history['epochs']
     train_losses = training_history['train_losses']
@@ -123,13 +126,16 @@ def generate_figure_for_fpr(plotting_config):
     model_name_2 = 'GRU' if 'GRU' in models else 'GRU'
     http_codes = plotting_config.false_positive_rate.subsets.http_codes
     aggregations = plotting_config.false_positive_rate.subsets.aggregations
-    null_padding_feature = plotting_config.null_padding_feature
-    null_padding_target = plotting_config.null_padding_target
-
+    null_padding_features = plotting_config.null_padding_features
+    null_padding_targets = [False]
+    fill_nan_values= plotting_config.fill_nan_values
     train_models_dir = plotting_config.model_save_path
     window_size = plotting_config.slide_win
 
-    for code, aggregation in itertools.product(http_codes, aggregations):
+    for code, aggregation, fill_nan_value, null_padding_feature, null_padding_target in itertools.product(http_codes, aggregations,
+                                                                                                           fill_nan_values,
+                                                                                                           null_padding_features,
+                                                                                                           null_padding_targets):
         feature_subset = f'no_group_{code}_{aggregation}'
         # model_name_1 = 'A3TGCN'
         # model_name_2 = 'GRU'
@@ -142,16 +148,16 @@ def generate_figure_for_fpr(plotting_config):
             model_config_1 = f'{model_name_1}_null_padding_target'
         else:
             model_config_1 = f'{model_name_1}'
-        if not os.path.exists(os.path.join(train_models_dir, f'window_{window_size}', feature_subset, model_config_1)):
-            model_config_1 = f'{model_name_1}'
+        # if not os.path.exists(os.path.join(train_models_dir, f'window_{window_size}', feature_subset, model_config_1)):
+        #     model_config_1 = f'{model_name_1}'
 
         gridsearch_file_name_1 = f'{model_name_1}_grid_search.csv'
         gridsearch_file_name_2 = f'{model_name_2}_grid_search.csv'
 
 
-        gridsearch_file_1 = os.path.join(train_models_dir, f'window_{window_size}', feature_subset, model_config_1,
+        gridsearch_file_1 = os.path.join(get_project_root(), train_models_dir, f'window_{window_size}', feature_subset, f'fill_nan_with_{fill_nan_value}', model_config_1,
                                          gridsearch_file_name_1)
-        gridsearch_file_2 = os.path.join(train_models_dir, f'window_{window_size}', feature_subset, model_name_2,
+        gridsearch_file_2 = os.path.join(get_project_root(), train_models_dir, f'window_{window_size}', feature_subset, f'fill_nan_with_{fill_nan_value}', model_name_2,
                                          gridsearch_file_name_2)
 
         if (not os.path.exists(gridsearch_file_1)) or (not os.path.exists(gridsearch_file_2)):
@@ -267,16 +273,19 @@ def generate_figure_for_fpr(plotting_config):
         # fig.tight_layout()
         fig.autofmt_xdate()
 
-        combined_figure_save_dir = os.path.join(plotting_config.output_dir, f'window_{window_size}')
+        combined_figure_save_dir = os.path.join(get_project_root(),plotting_config.output_dir, f'window_{window_size}')
         os.makedirs(combined_figure_save_dir, exist_ok=True)
         combined_file_name = f'{feature_subset}_{model_name_1}_{model_name_2}_combined.png'
 
         fig.savefig(os.path.join(combined_figure_save_dir, combined_file_name), bbox_inches='tight')
+        print(f'Figure saved to {combined_figure_save_dir}')
 
         path1 = os.path.join(combined_figure_save_dir, f'{feature_subset}_{model_name_1}_{model_name_2}_mahalanobis.png' )
         extent1 = ax1.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
         fig.savefig(path1, bbox_inches=extent1.expanded(1.3, 1.5))
+        print(f'Figure saved to {path1}')
 
         path2 = os.path.join(combined_figure_save_dir, f'{feature_subset}_{model_name_1}_{model_name_2}_likelihood.png' )
         extent3 = ax3.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
         fig.savefig(path2, bbox_inches=extent3.expanded(1.3, 1.5))
+        print(f'Figure saved to {path2}')

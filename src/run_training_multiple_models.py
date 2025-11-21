@@ -63,7 +63,7 @@ def main(cfg: DictConfig):
     combination_list = []
     for model in models:
         if 'GRU' == model:
-            GRU_combinations = list(itertools.product(['GRU'],slide_wins,
+            GRU_combinations = list(itertools.product(['GRU'], slide_wins,
                                             http_codes,
                                             aggregations,
                                             fill_nan_values,
@@ -75,8 +75,9 @@ def main(cfg: DictConfig):
                                             http_codes,
                                             aggregations,
                                             fill_nan_values,
-                                            null_padding_target_list,
-                                            null_padding_feature_list))
+                                            null_padding_feature_list,
+                                            null_padding_target_list
+                                            ))
             combination_list.extend(graph_combinations)
 
     for config in tqdm(combination_list, total=len(combination_list), desc='Training multiple models....'):

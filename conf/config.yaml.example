@@ -21,7 +21,7 @@ evaluation:
   null_padding_target: false
   train_batch_size: 16 # 16  # training batch size
   evaluation_batch_size: 32
-  slide_win: 12
+  slide_win: 6
   fill_nan: 'zero' # 'zero','mean', 'median'
   nab_scoring_profiles: [ "standard", "reward_fn" ] # Options: "standard", "reward_fn"
   model_save_path: "trained_models/"
@@ -96,10 +96,11 @@ plotting:
   false_positive_rate:
     models: ['GRU', 'A3TGCN']
     subsets:
-      http_codes: ['5xx']
+      http_codes: ['5xx','4xx']
       aggregations: ['count', 'avg','min','max']
-  null_padding_feature: ${evaluation.null_padding_feature}
-  null_padding_target: ${evaluation.null_padding_target}
+  null_padding_features: ${multiple_evaluation.null_padding_feature}
+  null_padding_targets: ${multiple_evaluation.null_padding_target}
+  fill_nan_values: ['zero','mean', 'median']
 
 multiple_evaluation:
   models: ['GRU','A3TGCN']
