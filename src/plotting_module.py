@@ -329,11 +329,12 @@ def generate_figure_for_fpr(plotting_config):
     total_graph_results_df = pd.concat(total_graph_dfs, ignore_index=True)
     total_gru_results_df = pd.concat(total_gru_dfs, ignore_index=True)
     total_gru_results_df.drop_duplicates(inplace=True)
-    combined_df = pd.concat([total_graph_results_df, total_gru_results_df], ignore_index=True)
+    combined_df = pd.concat([total_graph_results_df, total_gru_results_df], axis=0, ignore_index=True)
+    print(f'combined_df shape: {combined_df.shape}')
     anomaly_marks, detected_anomaly_ids = process_detection_counters(
         combined_df['detection_counters'].tolist())
 
-    print(anomaly_marks.shape,detected_anomaly_ids.shape)
+    print(anomaly_marks.shape, detected_anomaly_ids.shape, combined_df.shape)
     combined_df[anomaly_marks] = detected_anomaly_ids
     combined_df.to_csv(os.path.join(combined_figure_save_dir,'combined_grid_search_results.csv'), index=False)
     print(f'Combined grid search results saved to {combined_figure_save_dir}')
@@ -354,7 +355,7 @@ def process_detection_counters(detection_counters_list):
     # 'fp': 123,
     # 'fn': 16}
 
-
+    print(f'Length of detection counters: {len(detection_counters_list)}')
     dfs = []
     for detection_counters in detection_counters_list:
         detection_counters = ast.literal_eval(detection_counters)
@@ -381,7 +382,7 @@ def process_detection_counters(detection_counters_list):
         for anomaly_id in TestLog_detected_ids:
             df[f'anomaly_{anomaly_id}'] = [True]
         dfs.append(df)
-    dfs = pd.concat(dfs, ignore_index=True)
+    dfs = pd.concat(dfs, axis=0, ignore_index=True)
     return dfs.columns, dfs.values
 
 
