@@ -382,7 +382,9 @@ def process_detection_counters(detection_counters_list):
         for anomaly_id in TestLog_detected_ids:
             df[f'anomaly_{anomaly_id}'] = [True]
         dfs.append(df)
+    print(f'Length of detection counters: {len(dfs)}')
     dfs = pd.concat(dfs, axis=0, ignore_index=True)
+    print(f'Length of detection counters after concat: {dfs.shape}')
     return dfs.columns, dfs.values
 
 
