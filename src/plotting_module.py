@@ -275,17 +275,17 @@ def generate_figure_for_fpr(plotting_config):
 
         combined_figure_save_dir = os.path.join(get_project_root(),plotting_config.output_dir, f'window_{window_size}')
         os.makedirs(combined_figure_save_dir, exist_ok=True)
-        combined_file_name = f'{feature_subset}_{model_config_1}_{model_name_2}_combined.png'
+        combined_file_name = f'{feature_subset}_fill_nan_with_{fill_nan_value}_{model_config_1}_{model_name_2}_combined.png'
 
         fig.savefig(os.path.join(combined_figure_save_dir, combined_file_name), bbox_inches='tight')
         print(f'Figure saved to {combined_figure_save_dir}')
 
-        path1 = os.path.join(combined_figure_save_dir, f'{feature_subset}_{model_config_1}_{model_name_2}_mahalanobis.png' )
+        path1 = os.path.join(combined_figure_save_dir, f'{feature_subset}_fill_nan_with_{fill_nan_value}_{model_config_1}_{model_name_2}_mahalanobis.png' )
         extent1 = ax1.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
         fig.savefig(path1, bbox_inches=extent1.expanded(1.3, 1.5))
         print(f'Figure saved to {path1}')
 
-        path2 = os.path.join(combined_figure_save_dir, f'{feature_subset}_{model_config_1}_{model_name_2}_likelihood.png' )
+        path2 = os.path.join(combined_figure_save_dir, f'{feature_subset}_fill_nan_with_{fill_nan_value}_{model_config_1}_{model_name_2}_likelihood.png' )
         extent3 = ax3.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
         fig.savefig(path2, bbox_inches=extent3.expanded(1.3, 1.5))
         print(f'Figure saved to {path2}')
