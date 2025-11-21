@@ -132,6 +132,9 @@ def generate_figure_for_fpr(plotting_config):
     train_models_dir = plotting_config.model_save_path
     window_size = plotting_config.slide_win
 
+    total_graph_dfs = []
+    total_gru_dfs = []
+
     for code, aggregation, fill_nan_value, null_padding_feature, null_padding_target in itertools.product(http_codes, aggregations,
                                                                                                            fill_nan_values,
                                                                                                            null_padding_features,
@@ -155,9 +158,17 @@ def generate_figure_for_fpr(plotting_config):
         gridsearch_file_name_2 = f'{model_name_2}_grid_search.csv'
 
 
-        gridsearch_file_1 = os.path.join(get_project_root(), train_models_dir, f'window_{window_size}', feature_subset, f'fill_nan_with_{fill_nan_value}', model_config_1,
+        gridsearch_file_1 = os.path.join(get_project_root(), train_models_dir,
+                                         f'window_{window_size}',
+                                         feature_subset,
+                                         f'fill_nan_with_{fill_nan_value}',
+                                         model_config_1,
                                          gridsearch_file_name_1)
-        gridsearch_file_2 = os.path.join(get_project_root(), train_models_dir, f'window_{window_size}', feature_subset, f'fill_nan_with_{fill_nan_value}', model_name_2,
+        gridsearch_file_2 = os.path.join(get_project_root(), train_models_dir,
+                                         f'window_{window_size}',
+                                         feature_subset,
+                                         f'fill_nan_with_{fill_nan_value}',
+                                         model_name_2,
                                          gridsearch_file_name_2)
 
         if (not os.path.exists(gridsearch_file_1)) or (not os.path.exists(gridsearch_file_2)):
@@ -167,10 +178,22 @@ def generate_figure_for_fpr(plotting_config):
         print(gridsearch_file_2)
         cloudens_grid_search_df_1 = pd.read_csv(gridsearch_file_1)
         cloudens_grid_search_df_1['model'] = model_name_1
+        cloudens_grid_search_df_1['fill_nan_value'] = fill_nan_value
+        cloudens_grid_search_df_1['null_padding_feature'] = null_padding_feature
+        cloudens_grid_search_df_1['null_padding_target'] = null_padding_target
+        cloudens_grid_search_df_1['http_code'] = code
+        cloudens_grid_search_df_1['aggregation'] = aggregation
         cloudens_grid_search_df_2 = pd.read_csv(gridsearch_file_2)
         cloudens_grid_search_df_2['model'] = model_name_2
+        cloudens_grid_search_df_2['fill_nan_value'] = fill_nan_value
+        cloudens_grid_search_df_2['http_code'] = code
+        cloudens_grid_search_df_2['aggregation'] = aggregation
         cloudens_grid_search_df = pd.concat([cloudens_grid_search_df_1, cloudens_grid_search_df_2], axis=0,
                                             ignore_index=True)
+
+        total_graph_dfs.append(cloudens_grid_search_df_1)
+        total_gru_dfs.append(cloudens_grid_search_df_2)
+
         confusion_matrix_list = cloudens_grid_search_df['confusion_matrix'].str[1:-1].tolist()
         tn_list, fp_list, fn_list, tp_list = [], [], [], []
         for f in confusion_matrix_list:
@@ -289,3 +312,11 @@ def generate_figure_for_fpr(plotting_config):
         extent3 = ax3.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
         fig.savefig(path2, bbox_inches=extent3.expanded(1.3, 1.5))
         print(f'Figure saved to {path2}')
+
+        total_graph_results_df = pd.concat(total_graph_dfs, ignore_index=True)
+        total_gru_results_df = pd.concat(total_gru_dfs, ignore_index=True)
+        total_gru_results_df.drop_duplicates(inplace=True)
+        combined_df = pd.concat([total_graph_results_df, total_gru_results_df], ignore_index=True)
+        combined_df.to_csv(os.path.join(combined_figure_save_dir,'combined_grid_search_results.csv'), index=False)
+        print(f'Combined grid search results saved to {combined_figure_save_dir}')
+
