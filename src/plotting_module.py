@@ -375,6 +375,7 @@ def process_detection_counters(detection_counters_list):
         column_names = [f'anomaly_{i}' for i in range(number_of_anomalies)]
         columns = column_names
         df = pd.DataFrame(columns=column_names)
+        df[column_names] = np.asarray([False] * number_of_anomalies).reshape(1,-1)
         for anomaly_id in issue_detected_ids:
             df[f'anomaly_{anomaly_id}'] = [True]
 
@@ -386,7 +387,7 @@ def process_detection_counters(detection_counters_list):
 
         dfs.append(df.values.reshape(-1))
     print(f'Length of detection counters: {len(dfs)}')
-    dfs = np.array(dfs)
+    dfs = np.array(dfs, dtype=bool)
     print(f'dfs shape after np.concate', dfs.shape)
     final_df = pd.DataFrame(columns=columns)
     final_df[columns] = dfs
