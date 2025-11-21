@@ -177,17 +177,26 @@ def generate_figure_for_fpr(plotting_config):
         print(gridsearch_file_1)
         print(gridsearch_file_2)
         cloudens_grid_search_df_1 = pd.read_csv(gridsearch_file_1)
+        training_time_df = pd.read_csv(os.path.join(os.path.dirname(gridsearch_file_1), f'{model_name_1}_training_time.csv'))
+        inference_time_df = pd.read_csv(os.path.join(os.path.dirname(gridsearch_file_1), f'inference_time.csv'))
         cloudens_grid_search_df_1['model'] = model_name_1
         cloudens_grid_search_df_1['fill_nan_value'] = fill_nan_value
         cloudens_grid_search_df_1['null_padding_feature'] = null_padding_feature
         cloudens_grid_search_df_1['null_padding_target'] = null_padding_target
         cloudens_grid_search_df_1['http_code'] = code
         cloudens_grid_search_df_1['aggregation'] = aggregation
+        cloudens_grid_search_df_1['training_time'] = training_time_df['training_time'].values[0]
+        cloudens_grid_search_df_1['inference_time'] = inference_time_df['inference_time'].values[0]
         cloudens_grid_search_df_2 = pd.read_csv(gridsearch_file_2)
         cloudens_grid_search_df_2['model'] = model_name_2
         cloudens_grid_search_df_2['fill_nan_value'] = fill_nan_value
         cloudens_grid_search_df_2['http_code'] = code
         cloudens_grid_search_df_2['aggregation'] = aggregation
+        training_time_df = pd.read_csv(
+            os.path.join(os.path.dirname(gridsearch_file_2), f'{model_name_2}_training_time.csv'))
+        inference_time_df = pd.read_csv(os.path.join(os.path.dirname(gridsearch_file_2), f'inference_time.csv'))
+        cloudens_grid_search_df_2['training_time'] = training_time_df['training_time'].values[0]
+        cloudens_grid_search_df_2['inference_time'] = inference_time_df['inference_time'].values[0]
         cloudens_grid_search_df = pd.concat([cloudens_grid_search_df_1, cloudens_grid_search_df_2], axis=0,
                                             ignore_index=True)
 
