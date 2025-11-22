@@ -234,7 +234,9 @@ def generate_figure_for_fpr(plotting_config):
         sorted_likelihood_df = cloudens_likelihood_df.sort_values(by='anomaly_threshold', ascending=True, inplace=False)
         import matplotlib.pyplot as plt
 
-        fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(15, 5), gridspec_kw={'width_ratios': [5, 5]})
+        fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(17, 5),
+                                 # gridspec_kw={'width_ratios': [5, 5]}
+                                 )
         fig.suptitle(f'FPR vs NAB Score on the log subset "{code} {aggregation}"', fontsize=12, y=0.0)
 
         plt.subplots_adjust(wspace=0.25)
@@ -330,7 +332,7 @@ def generate_figure_for_fpr(plotting_config):
 
         path2 = os.path.join(combined_figure_save_dir, f'{feature_subset}_fill_nan_with_{fill_nan_value}_{model_config_1}_{model_name_2}_{nab_profile}_likelihood.png' )
         extent3 = ax3.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
-        fig.savefig(path2, bbox_inches=extent3.expanded(1.4, 1.5))
+        fig.savefig(path2, bbox_inches=extent3.expanded(1.3, 1.5))
         print(f'Figure saved to {path2}')
 
     total_graph_results_df = pd.concat(total_graph_dfs, ignore_index=True)
