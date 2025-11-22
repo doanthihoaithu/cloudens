@@ -134,13 +134,17 @@ def generate_figure_for_fpr(plotting_config):
     train_models_dir = plotting_config.model_save_path
     window_size = plotting_config.slide_win
 
+    nab_profiles = plotting_config.nab_profiles
+
     total_graph_dfs = []
     total_gru_dfs = []
 
-    for code, aggregation, fill_nan_value, null_padding_feature, null_padding_target in itertools.product(http_codes, aggregations,
+    for code, aggregation, fill_nan_value, null_padding_feature, null_padding_target, nab_profile in itertools.product(http_codes, aggregations,
                                                                                                            fill_nan_values,
                                                                                                            null_padding_features,
-                                                                                                           null_padding_targets):
+                                                                                                           null_padding_targets, nab_profiles):
+        y_right_label = 'Normalized NAB Reward Low FN Score' if nab_profile == 'low_fn' else 'Normalized NAB Standard Score'
+
         feature_subset = f'no_group_{code}_{aggregation}'
         # model_name_1 = 'A3TGCN'
         # model_name_2 = 'GRU'
@@ -231,6 +235,7 @@ def generate_figure_for_fpr(plotting_config):
         import matplotlib.pyplot as plt
 
         fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(15, 5), gridspec_kw={'width_ratios': [5, 5]})
+        fig.suptitle(f'FPR vs NAB Score on the log subset "{code} {aggregation}"', fontsize=12, y=0.0)
 
         plt.subplots_adjust(wspace=0.25)
 
@@ -250,7 +255,7 @@ def generate_figure_for_fpr(plotting_config):
         ax1.plot(x1, y12, 'o--', label='GRU FPR', color='green')
         ax1.legend(loc='upper left')
         ax1.set_xticks(x1)
-        ax1.set_xlabel('Mahalanobis Threshold')
+        ax1.set_xlabel('Mahalanobis Distance Threshold')
         ax1.set_ylabel('False Positive Rate', color='g')
         ax1.tick_params(axis='y', colors="green")
         # ax1.set_ylim([50, 100])
@@ -258,11 +263,11 @@ def generate_figure_for_fpr(plotting_config):
         ax1.legend(loc=(0.0, 1.04))
 
         ax2 = ax1.twinx()
-        ax2.plot(x1, y2, 'o-', label='A3TGCN NAB', color='blue')
-        ax2.plot(x1, y22, 'o--', label='GRU NAB', color='blue')
+        ax2.plot(x1, y2 if nab_profile == 'low_fn' else y3, 'o-', label='A3TGCN NAB', color='blue')
+        ax2.plot(x1, y22 if nab_profile == 'low_fn' else y32, 'o--', label='GRU NAB', color='blue')
         # ax2.plot(x1, y3, '*--', label='A3TGCN Standard', color='blue')
         # ax2.plot(x1, y32, '*--', label='GRU Standard', color='red')
-        ax2.set_ylabel('Normalized NAB Reward Low FN Score', color='b')
+        ax2.set_ylabel(y_right_label, color='b')
         ax2.tick_params(axis='y', colors="blue")
         # ax2.set_ylim([5, 30])
         # ax2.legend(loc='best')
@@ -273,7 +278,7 @@ def generate_figure_for_fpr(plotting_config):
         x2 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['anomaly_threshold'].iloc[1:]
         y4 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['false_positive_rate'].iloc[1:]
         y5 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['reward_fn_normalized'].iloc[1:]
-        y6 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['standard_normalized'].iloc[1:-1]
+        y6 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['standard_normalized'].iloc[1:]
 
         y42 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'GRU']['false_positive_rate'].iloc[1:]
         y52 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'GRU']['reward_fn_normalized'].iloc[1:]
@@ -283,7 +288,7 @@ def generate_figure_for_fpr(plotting_config):
         ax3.plot(x2, y42, 'o--', label='GRU FPR', color='green')
         ax3.legend(loc='upper left')
         ax3.set_xticks(x2)
-        ax3.set_xlabel('Likelihood Threshold')
+        ax3.set_xlabel('Likelihood Function Threshold')
         ax3.set_ylabel('False Positive Rate', color='g')
         # ax3.legend(loc='upper left')
         ax3.legend(loc=(0.0, 1.04))
@@ -292,11 +297,11 @@ def generate_figure_for_fpr(plotting_config):
         # ax3.set_ylim([87, 94])
 
         ax4 = ax3.twinx()
-        ax4.plot(x2, y5, 'o-', label='A3TGCN NAB', color='blue')
-        ax4.plot(x2, y52, 'o--', label='GRU NAB', color='blue')
+        ax4.plot(x2, y5 if nab_profile == 'low_fn' else y6, 'o-', label='A3TGCN NAB', color='blue')
+        ax4.plot(x2, y52 if nab_profile == 'low_fn' else y62, 'o--', label='GRU NAB', color='blue')
         # ax4.plot(x2, y6, '*-', label='A3TGCN Standard', color='blue')
         # ax4.plot(x2, y62, '*--', label='GRU Standard', color='blue')
-        ax4.set_ylabel('Normalized NAB Reward Low FN Score', color='b')
+        ax4.set_ylabel(y_right_label, color='b')
         # ax4.legend(loc='upper right')
         ax4.legend(loc=(0.8, 1.04))
         ax4.tick_params(axis='y', colors="blue")
@@ -311,19 +316,19 @@ def generate_figure_for_fpr(plotting_config):
 
         combined_figure_save_dir = os.path.join(get_project_root(),plotting_config.output_dir, f'window_{window_size}')
         os.makedirs(combined_figure_save_dir, exist_ok=True)
-        combined_file_name = f'{feature_subset}_fill_nan_with_{fill_nan_value}_{model_config_1}_{model_name_2}_combined.png'
+        combined_file_name = f'{feature_subset}_fill_nan_with_{fill_nan_value}_{model_config_1}_{model_name_2}_{nab_profile}_combined.png'
 
         fig.savefig(os.path.join(combined_figure_save_dir, combined_file_name), bbox_inches='tight')
         print(f'Figure saved to {combined_figure_save_dir}')
 
-        path1 = os.path.join(combined_figure_save_dir, f'{feature_subset}_fill_nan_with_{fill_nan_value}_{model_config_1}_{model_name_2}_mahalanobis.png' )
+        path1 = os.path.join(combined_figure_save_dir, f'{feature_subset}_fill_nan_with_{fill_nan_value}_{model_config_1}_{model_name_2}_{nab_profile}_mahalanobis.png' )
         extent1 = ax1.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
         fig.savefig(path1, bbox_inches=extent1.expanded(1.3, 1.5))
         print(f'Figure saved to {path1}')
 
-        path2 = os.path.join(combined_figure_save_dir, f'{feature_subset}_fill_nan_with_{fill_nan_value}_{model_config_1}_{model_name_2}_likelihood.png' )
+        path2 = os.path.join(combined_figure_save_dir, f'{feature_subset}_fill_nan_with_{fill_nan_value}_{model_config_1}_{model_name_2}_{nab_profile}_likelihood.png' )
         extent3 = ax3.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
-        fig.savefig(path2, bbox_inches=extent3.expanded(1.3, 1.5))
+        fig.savefig(path2, bbox_inches=extent3.expanded(1.4, 1.5))
         print(f'Figure saved to {path2}')
 
     total_graph_results_df = pd.concat(total_graph_dfs, ignore_index=True)

@@ -101,12 +101,13 @@ plotting:
   null_padding_features: ${multiple_evaluation.null_padding_feature}
   null_padding_targets: ${multiple_evaluation.null_padding_target}
   fill_nan_values: ['zero','mean', 'median']
+  nab_profiles: ['standard', 'low_fn']
 
 multiple_evaluation:
   models: ['GRU','A3TGCN']
 #  models: ['GRU']
-#  slide_wins: [6, 12]
-  slide_wins: [6,8,12]
+  slide_wins: [6, 12]
+#  slide_wins: [6,8,12]
   subsets:
 #    http_codes: [ '5xx', '4xx']
     http_codes: [ '5xx','4xx']
