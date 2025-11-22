@@ -242,14 +242,14 @@ def generate_figure_for_fpr(plotting_config):
         ax1 = axes[0]
         ax3 = axes[1]
 
-        x1 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'A3TGCN']['anomaly_threshold']
-        y1 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'A3TGCN']['false_positive_rate']
-        y2 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'A3TGCN']['reward_fn_normalized']
-        y3 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'A3TGCN']['standard_normalized']
+        x1 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'A3TGCN']['anomaly_threshold'].values
+        y1 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'A3TGCN']['false_positive_rate'].values
+        y2 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'A3TGCN']['reward_fn_normalized'].values
+        y3 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'A3TGCN']['standard_normalized'].values
 
-        y12 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'GRU']['false_positive_rate']
-        y22 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'GRU']['reward_fn_normalized']
-        y32 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'GRU']['standard_normalized']
+        y12 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'GRU']['false_positive_rate'].values
+        y22 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'GRU']['reward_fn_normalized'].values
+        y32 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'GRU']['standard_normalized'].values
 
         ax1.plot(x1, y1, 'o-', label='A3TGCN FPR', color='green')
         ax1.plot(x1, y12, 'o--', label='GRU FPR', color='green')
@@ -272,17 +272,18 @@ def generate_figure_for_fpr(plotting_config):
         # ax2.set_ylim([5, 30])
         # ax2.legend(loc='best')
         ax2.legend(loc=(0.8, 1.04))
-        ax2.axvline(x=99.8, color='b', linestyle='--')
-        ax2.annotate(' Selected threshold', xy=(99.8, ax2.get_ylim()[-1] * 0.95), color='b')
+        x_threshold = x1[y2.argmax()] if nab_profile == 'low_fn' else x1[y3.argmax()]
+        ax2.axvline(x=x_threshold, color='b', linestyle='--')
+        ax2.annotate(' Selected threshold', xy=(x_threshold, ax2.get_ylim()[-1] * 0.95), color='b')
 
-        x2 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['anomaly_threshold'].iloc[1:]
-        y4 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['false_positive_rate'].iloc[1:]
-        y5 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['reward_fn_normalized'].iloc[1:]
-        y6 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['standard_normalized'].iloc[1:]
+        x2 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['anomaly_threshold'].iloc[1:].values
+        y4 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['false_positive_rate'].iloc[1:].values
+        y5 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['reward_fn_normalized'].iloc[1:].values
+        y6 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['standard_normalized'].iloc[1:].values
 
-        y42 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'GRU']['false_positive_rate'].iloc[1:]
-        y52 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'GRU']['reward_fn_normalized'].iloc[1:]
-        y62 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'GRU']['standard_normalized'].iloc[1:]
+        y42 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'GRU']['false_positive_rate'].iloc[1:].values
+        y52 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'GRU']['reward_fn_normalized'].iloc[1:].values
+        y62 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'GRU']['standard_normalized'].iloc[1:].values
 
         ax3.plot(x2, y4, 'o-', label='A3TGCN FPR', color='green')
         ax3.plot(x2, y42, 'o--', label='GRU FPR', color='green')
@@ -306,8 +307,9 @@ def generate_figure_for_fpr(plotting_config):
         ax4.legend(loc=(0.8, 1.04))
         ax4.tick_params(axis='y', colors="blue")
         # ax4.set_xlim([0.9984, 0.99985])
-        ax4.axvline(x=0.99975, color='b', linestyle='--')
-        ax4.annotate(' Selected threshold', xy=(0.99975, ax4.get_ylim()[-1] * 0.95), color='b')
+        x_likelihood_threshold = x2[y5.argmax()] if nab_profile == 'low_fn' else x2[y6.argmax()]
+        ax4.axvline(x=x_likelihood_threshold, color='b', linestyle='--')
+        ax4.annotate(' Selected threshold', xy=(x_likelihood_threshold, ax4.get_ylim()[-1] * 0.95), color='b')
         # ax3.set_xscale('symlog')
         # ax4.sharey(ax2)
         # plt.xticks(x1)
