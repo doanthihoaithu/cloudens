@@ -388,7 +388,66 @@ def generate_latex_training_inference_time(grid_search_results_csv_path):
         f.write(latex_table)
         print(f'Latex table saved to {latex_table_file}')
 
+def generate_latex_full_table(grid_search_results_csv_path):
+    save_dir = os.path.dirname(grid_search_results_csv_path)
+    df = pd.read_csv(grid_search_results_csv_path)
 
+    max_reward_fn_normalized_idx =df.groupby(['http_code', 'aggregation', 'null_padding_feature', 'post_processing_strategy', 'model'])[
+        'reward_fn_normalized'].transform(max) == df['reward_fn_normalized']
+    max_reward_fn_normalized_df = df[max_reward_fn_normalized_idx].loc[:,
+                                  ['post_processing_strategy', 'http_code', 'aggregation', 'model', 'fill_nan_value',
+                                   'null_padding_feature', 'standard_normalized', 'reward_fn_normalized',
+                                   'detection_counters', 'confusion_matrix']].sort_values(
+        by=['post_processing_strategy', 'http_code', 'aggregation', 'model', 'null_padding_feature', 'fill_nan_value'],
+        ascending=False)
+
+    visualize_df = pd.DataFrame()
+    visualize_df["Post-processing strategy"] = max_reward_fn_normalized_df['post_processing_strategy']
+    visualize_df['Subset'] = '\\texttt{' + max_reward_fn_normalized_df['http_code'] + ' ' + max_reward_fn_normalized_df[
+        'aggregation'] + '}'
+    visualize_df['Model'] = np.where(max_reward_fn_normalized_df['null_padding_feature'],
+                                     max_reward_fn_normalized_df['model'] + '*', max_reward_fn_normalized_df['model'])
+    visualize_df['Fill NaN'] = max_reward_fn_normalized_df['fill_nan_value']
+    visualize_df[['TN', 'FP', 'FN', 'TP']] = max_reward_fn_normalized_df['confusion_matrix'].apply(
+        lambda x: pd.Series(extract_point_metrics(x)))
+    visualize_df['FPR'] = visualize_df['FP'] / (visualize_df['FP'] + visualize_df['TP']) * 100
+    visualize_df['Standard Profile'] = max_reward_fn_normalized_df['standard_normalized']
+    visualize_df['Low FN Profile'] = max_reward_fn_normalized_df['reward_fn_normalized']
+    visualize_df[['Issue Tracker', 'Instant Messenger', 'Test Log']] = max_reward_fn_normalized_df[
+        'detection_counters'].apply(lambda x: pd.Series(extract_detected_anomaly_ids(x)))
+
+    csv_full_data_low_fn_priority_file_path = os.path.join(save_dir, 'full_data_low_fn_priority.csv')
+    visualize_df.to_csv(csv_full_data_low_fn_priority_file_path, index=False)
+    print(f'Training inference time for visualization saved to {csv_full_data_low_fn_priority_file_path}')
+
+    latex_table = visualize_df.to_latex(
+        index=False,
+        caption="ClouDens vs GRU performance on different feature subsets with different anomaly scoring stategies.",
+        label="tab:full_data",
+        escape=False,
+        float_format="{:0.2f}".format,
+    )
+    print(latex_table)
+    latex_table_file = os.path.join(save_dir, 'latex_table_full_data_low_fn_priority.tex')
+    with open(latex_table_file, 'w') as f:
+        f.write(latex_table)
+        print(f'Latex table saved to {latex_table_file}')
+
+
+def extract_detected_anomaly_ids(dictionary):
+    # print(type(dictionary))
+    dictionary = ast.literal_eval(dictionary)
+    # {'issue_detected': 0, 'issue_detected_ids': [], 'im_detected': 4, 'im_detected_ids': [6, 7, 14, 17], 'TestLog_detected': 0, 'TestLog_detected_ids': [], 'gt_issue_ids': [3, 12, 13], 'gt_im_ids': [0, 5, 6, 7, 8, 9, 14, 16, 17], 'gt_TestLog_ids': [1, 2, 4, 10, 11, 15, 18], 'tp': 4, 'tn': 0, 'fp': 16, 'fn': 15}
+    issue_detected_ids = dictionary.get('issue_detected_ids')
+    im_detected_ids = dictionary.get('im_detected_ids')
+    TestLog_detected_ids = dictionary.get('TestLog_detected_ids')
+    # print(issue_detected_ids, im_detected_ids, TestLog_detected_ids)
+    return issue_detected_ids, im_detected_ids, TestLog_detected_ids
+
+def extract_point_metrics(dictionary):
+    # print(dictionary)
+    tn, fp, fn, tp = np.fromstring(dictionary[1:-1], dtype=int, sep=', ')
+    return tn, fp, fn, tp
 
 
 def process_detection_counters(detection_counters_list):

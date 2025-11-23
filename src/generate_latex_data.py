@@ -11,7 +11,7 @@ import torch
 from tqdm import tqdm
 
 from ibm_dataset_loader import IBMDatasetLoader
-from plotting_module import generate_latex_training_inference_time
+from plotting_module import generate_latex_training_inference_time, generate_latex_full_table
 from utils import set_random_seed, get_project_root
 
 # Configure logging
@@ -54,6 +54,7 @@ def main(cfg: DictConfig):
     grid_search_combine_file_path = os.path.join(combined_figure_save_dir, f'combined_grid_search_results.csv')
 
     generate_latex_training_inference_time(grid_search_combine_file_path)
+    generate_latex_full_table(grid_search_combine_file_path)
     # generate_figure_for_fpr(plotting_config)
 
 
