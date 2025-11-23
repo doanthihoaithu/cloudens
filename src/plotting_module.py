@@ -139,6 +139,9 @@ def generate_figure_for_fpr(plotting_config):
     total_graph_dfs = []
     total_gru_dfs = []
 
+    combined_figure_save_dir = os.path.join(get_project_root(), plotting_config.output_dir, f'window_{window_size}')
+    os.makedirs(combined_figure_save_dir, exist_ok=True)
+
     for code, aggregation, fill_nan_value, null_padding_feature, null_padding_target, nab_profile in itertools.product(http_codes, aggregations,
                                                                                                            fill_nan_values,
                                                                                                            null_padding_features,
@@ -318,8 +321,7 @@ def generate_figure_for_fpr(plotting_config):
         # fig.tight_layout()
         fig.autofmt_xdate()
 
-        combined_figure_save_dir = os.path.join(get_project_root(),plotting_config.output_dir, f'window_{window_size}')
-        os.makedirs(combined_figure_save_dir, exist_ok=True)
+
         combined_file_name = f'{feature_subset}_fill_nan_with_{fill_nan_value}_{model_config_1}_{model_name_2}_{nab_profile}_combined.png'
 
         fig.savefig(os.path.join(combined_figure_save_dir, combined_file_name), bbox_inches='tight')
@@ -336,17 +338,55 @@ def generate_figure_for_fpr(plotting_config):
         print(f'Figure saved to {path2}')
 
     total_graph_results_df = pd.concat(total_graph_dfs, ignore_index=True)
+    total_graph_results_df.drop_duplicates(inplace=True)
     total_gru_results_df = pd.concat(total_gru_dfs, ignore_index=True)
     total_gru_results_df.drop_duplicates(inplace=True)
     combined_df = pd.concat([total_graph_results_df, total_gru_results_df], axis=0, ignore_index=True)
+    combined_df['null_padding_feature'].fillna(False, inplace=True)
+    combined_df['null_padding_target'].fillna(False, inplace=True)
     print(f'combined_df shape: {combined_df.shape}')
     anomaly_marks, detected_anomaly_ids = process_detection_counters(
         combined_df['detection_counters'].tolist())
 
     print(anomaly_marks.shape, detected_anomaly_ids.shape, combined_df.shape)
     combined_df[anomaly_marks] = detected_anomaly_ids
-    combined_df.to_csv(os.path.join(combined_figure_save_dir,'combined_grid_search_results.csv'), index=False)
+    combined_df.to_csv(os.path.join(combined_figure_save_dir,f'combined_grid_search_results.csv'), index=False)
     print(f'Combined grid search results saved to {combined_figure_save_dir}')
+    generate_latex_training_inference_time(combined_df, combined_figure_save_dir)
+
+def generate_latex_training_inference_time(grid_search_results_df, save_dir):
+    time_df = grid_search_results_df[['model', 'http_code', 'aggregation', 'fill_nan_value', 'null_padding_feature', 'training_time',
+                  'inference_time', ]].groupby(
+        ['model', 'http_code', 'aggregation', 'fill_nan_value', 'null_padding_feature']).mean().groupby(
+        ['model', 'http_code', 'aggregation', 'null_padding_feature']).mean()
+    time_df = time_df.reset_index()
+    visualize_df = time_df.sort_values(by=['http_code', 'aggregation', 'model'], ascending=False)
+    refactor_visualize_df = pd.DataFrame()
+    refactor_visualize_df['Subset'] = '\\texttt{' + visualize_df['http_code'] + ' ' + visualize_df['aggregation'] + '}'
+    refactor_visualize_df['Model'] = np.where(visualize_df['null_padding_feature'], visualize_df['model'] + '*',
+                                              visualize_df['model'])
+    refactor_visualize_df['Training (seconds)'] = visualize_df['training_time']
+    refactor_visualize_df['Inference (seconds)'] = visualize_df['inference_time']
+
+    csv_training_inference_time_file_path = os.path.join(save_dir, 'training_inference_time.csv')
+    refactor_visualize_df.to_csv(csv_training_inference_time_file_path, index=False)
+    print(f'Training inference time for visualization saved to {csv_training_inference_time_file_path}')
+    latex_table = refactor_visualize_df.to_latex(
+        index=False,
+        caption="Training and Inference time on different subsets",
+        label="tab:training_inference_time",
+        escape=False,
+        float_format="{:0.2f}".format,
+        column_format='llrr'
+    )
+    print(latex_table)
+    latex_table_file = os.path.join(save_dir, 'latex_table_training_inference_time.tex')
+    with open(latex_table_file, 'w') as f:
+        f.write(latex_table)
+        print(f'Latex table saved to {latex_table_file}')
+
+
+
 
 def process_detection_counters(detection_counters_list):
     # Example
