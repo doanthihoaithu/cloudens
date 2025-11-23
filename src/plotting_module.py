@@ -350,11 +350,14 @@ def generate_figure_for_fpr(plotting_config):
 
     print(anomaly_marks.shape, detected_anomaly_ids.shape, combined_df.shape)
     combined_df[anomaly_marks] = detected_anomaly_ids
-    combined_df.to_csv(os.path.join(combined_figure_save_dir,f'combined_grid_search_results.csv'), index=False)
+    grid_search_combine_file_path = os.path.join(combined_figure_save_dir,f'combined_grid_search_results.csv')
+    combined_df.to_csv(grid_search_combine_file_path, index=False)
     print(f'Combined grid search results saved to {combined_figure_save_dir}')
-    generate_latex_training_inference_time(combined_df, combined_figure_save_dir)
+    generate_latex_training_inference_time(grid_search_combine_file_path)
 
-def generate_latex_training_inference_time(grid_search_results_df, save_dir):
+def generate_latex_training_inference_time(grid_search_results_csv_path):
+    save_dir = os.path.dirname(grid_search_results_csv_path)
+    grid_search_results_df = pd.read_csv(grid_search_results_csv_path)
     time_df = grid_search_results_df[['model', 'http_code', 'aggregation', 'fill_nan_value', 'null_padding_feature', 'training_time',
                   'inference_time', ]].groupby(
         ['model', 'http_code', 'aggregation', 'fill_nan_value', 'null_padding_feature']).mean().groupby(
