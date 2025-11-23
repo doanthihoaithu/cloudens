@@ -392,46 +392,50 @@ def generate_latex_full_table(grid_search_results_csv_path):
     save_dir = os.path.dirname(grid_search_results_csv_path)
     df = pd.read_csv(grid_search_results_csv_path)
 
-    max_reward_fn_normalized_idx =df.groupby(['http_code', 'aggregation', 'null_padding_feature', 'post_processing_strategy', 'model'])[
-        'reward_fn_normalized'].transform(max) == df['reward_fn_normalized']
-    max_reward_fn_normalized_df = df[max_reward_fn_normalized_idx].loc[:,
-                                  ['post_processing_strategy', 'http_code', 'aggregation', 'model', 'fill_nan_value',
-                                   'null_padding_feature', 'standard_normalized', 'reward_fn_normalized',
-                                   'detection_counters', 'confusion_matrix']].sort_values(
-        by=['post_processing_strategy', 'http_code', 'aggregation', 'model', 'null_padding_feature', 'fill_nan_value'],
-        ascending=False)
+    priority_modes = ['standard', 'reward_fn']
+    for priority_mode in priority_modes:
+        column_to_find_max = 'reward_fn_normalized' if priority_mode == 'reward_fn' else 'standard_normalized'
 
-    visualize_df = pd.DataFrame()
-    visualize_df["Post-processing strategy"] = max_reward_fn_normalized_df['post_processing_strategy']
-    visualize_df['Subset'] = '\\texttt{' + max_reward_fn_normalized_df['http_code'] + ' ' + max_reward_fn_normalized_df[
-        'aggregation'] + '}'
-    visualize_df['Model'] = np.where(max_reward_fn_normalized_df['null_padding_feature'],
-                                     max_reward_fn_normalized_df['model'] + '*', max_reward_fn_normalized_df['model'])
-    visualize_df['Fill NaN'] = max_reward_fn_normalized_df['fill_nan_value']
-    visualize_df[['TN', 'FP', 'FN', 'TP']] = max_reward_fn_normalized_df['confusion_matrix'].apply(
-        lambda x: pd.Series(extract_point_metrics(x)))
-    visualize_df['FPR'] = visualize_df['FP'] / (visualize_df['FP'] + visualize_df['TP']) * 100
-    visualize_df['Standard Profile'] = max_reward_fn_normalized_df['standard_normalized']
-    visualize_df['Low FN Profile'] = max_reward_fn_normalized_df['reward_fn_normalized']
-    visualize_df[['Issue Tracker', 'Instant Messenger', 'Test Log']] = max_reward_fn_normalized_df[
-        'detection_counters'].apply(lambda x: pd.Series(extract_detected_anomaly_ids(x)))
+        max_reward_fn_normalized_idx =df.groupby(['http_code', 'aggregation', 'null_padding_feature', 'post_processing_strategy', 'model'])[
+            column_to_find_max].transform(max) == df[column_to_find_max]
+        max_reward_fn_normalized_df = (df[max_reward_fn_normalized_idx].loc[:,
+                                      ['post_processing_strategy', 'http_code', 'aggregation', 'model', 'fill_nan_value',
+                                       'null_padding_feature', 'standard_normalized', 'reward_fn_normalized',
+                                       'detection_counters', 'confusion_matrix']]
+                                    .sort_values(by=['post_processing_strategy', 'http_code', 'aggregation', 'model', 'null_padding_feature', 'fill_nan_value'],
+            ascending=False))
 
-    csv_full_data_low_fn_priority_file_path = os.path.join(save_dir, 'full_data_low_fn_priority.csv')
-    visualize_df.to_csv(csv_full_data_low_fn_priority_file_path, index=False)
-    print(f'Training inference time for visualization saved to {csv_full_data_low_fn_priority_file_path}')
+        visualize_df = pd.DataFrame()
+        visualize_df["Post-processing strategy"] = max_reward_fn_normalized_df['post_processing_strategy']
+        visualize_df['Subset'] = '\\texttt{' + max_reward_fn_normalized_df['http_code'] + ' ' + max_reward_fn_normalized_df[
+            'aggregation'] + '}'
+        visualize_df['Model'] = np.where(max_reward_fn_normalized_df['null_padding_feature'],
+                                         max_reward_fn_normalized_df['model'] + '*', max_reward_fn_normalized_df['model'])
+        visualize_df['Fill NaN'] = max_reward_fn_normalized_df['fill_nan_value']
+        visualize_df[['TP', 'TN', 'FP', 'FN']] = max_reward_fn_normalized_df['confusion_matrix'].apply(
+            lambda x: pd.Series(extract_point_metrics(x)))
+        visualize_df['FPR'] = visualize_df['FP'] / (visualize_df['FP'] + visualize_df['TP']) * 100
+        visualize_df['Standard Profile'] = max_reward_fn_normalized_df['standard_normalized']
+        visualize_df['Low FN Profile'] = max_reward_fn_normalized_df['reward_fn_normalized']
+        visualize_df[['Issue Tracker', 'Instant Messenger', 'Test Log']] = max_reward_fn_normalized_df[
+            'detection_counters'].apply(lambda x: pd.Series(extract_detected_anomaly_ids(x)))
 
-    latex_table = visualize_df.to_latex(
-        index=False,
-        caption="ClouDens vs GRU performance on different feature subsets with different anomaly scoring stategies.",
-        label="tab:full_data",
-        escape=False,
-        float_format="{:0.2f}".format,
-    )
-    print(latex_table)
-    latex_table_file = os.path.join(save_dir, 'latex_table_full_data_low_fn_priority.tex')
-    with open(latex_table_file, 'w') as f:
-        f.write(latex_table)
-        print(f'Latex table saved to {latex_table_file}')
+        csv_full_data_low_fn_priority_file_path = os.path.join(save_dir, f'full_data_{priority_mode}_priority.csv')
+        visualize_df.to_csv(csv_full_data_low_fn_priority_file_path, index=False)
+        print(f'Training inference time for visualization saved to {csv_full_data_low_fn_priority_file_path}')
+
+        latex_table = visualize_df.to_latex(
+            index=False,
+            caption="ClouDens vs GRU performance on different feature subsets with different anomaly scoring stategies.",
+            label="tab:full_data",
+            escape=False,
+            float_format="{:0.2f}".format,
+        )
+        print(latex_table)
+        latex_table_file = os.path.join(save_dir, f'latex_table_full_data_{priority_mode}_priority.tex')
+        with open(latex_table_file, 'w') as f:
+            f.write(latex_table)
+            print(f'Latex table saved to {latex_table_file}')
 
 
 def extract_detected_anomaly_ids(dictionary):
@@ -447,7 +451,8 @@ def extract_detected_anomaly_ids(dictionary):
 def extract_point_metrics(dictionary):
     # print(dictionary)
     tn, fp, fn, tp = np.fromstring(dictionary[1:-1], dtype=int, sep=', ')
-    return tn, fp, fn, tp
+    # TP TN FP FN order
+    return tp,tn,fp, fn
 
 
 def process_detection_counters(detection_counters_list):
