@@ -40,8 +40,6 @@ def main(cfg: DictConfig):
     data_preparation_config = cfg.data_preparation_pipeline
     print(data_preparation_config)
 
-    plotting_config = cfg.plotting
-
     # model: ['GRU', 'A3TGCN']
     # slide_win: ${evaluation.slide_win}
     # subset:
@@ -49,6 +47,7 @@ def main(cfg: DictConfig):
     #   aggregations: ['count', 'avg','min','max']
     # null_padding_feature: ${evaluation.null_padding_feature}
     # null_padding_target: ${evaluation.null_padding_target}
+    plotting_config = cfg.plotting
     window_size = plotting_config.slide_win
     combined_figure_save_dir = os.path.join(get_project_root(), plotting_config.output_dir, f'window_{window_size}')
     grid_search_combine_file_path = os.path.join(combined_figure_save_dir, f'combined_grid_search_results.csv')

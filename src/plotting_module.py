@@ -196,6 +196,7 @@ def generate_figure_for_fpr(plotting_config):
         cloudens_grid_search_df_1['aggregation'] = aggregation
         cloudens_grid_search_df_1['training_time'] = training_time_df['training_time'].values[0]
         cloudens_grid_search_df_1['inference_time'] = inference_time_df['inference_time'].values[0]
+        cloudens_grid_search_df_1['result_dir_from_project_root'] = os.path.dirname(gridsearch_file_1).removeprefix(str(get_project_root()))
 
         cloudens_grid_search_df_2 = pd.read_csv(gridsearch_file_2)
         cloudens_grid_search_df_2['model'] = model_name_2
@@ -207,7 +208,7 @@ def generate_figure_for_fpr(plotting_config):
         inference_time_df = pd.read_csv(os.path.join(os.path.dirname(gridsearch_file_2), f'inference_time.csv'))
         cloudens_grid_search_df_2['training_time'] = training_time_df['training_time'].values[0]
         cloudens_grid_search_df_2['inference_time'] = inference_time_df['inference_time'].values[0]
-
+        cloudens_grid_search_df_2['result_dir_from_project_root'] = os.path.dirname(gridsearch_file_2).removeprefix(str(get_project_root()))
         cloudens_grid_search_df = pd.concat([cloudens_grid_search_df_1, cloudens_grid_search_df_2], axis=0,
                                             ignore_index=True)
 
