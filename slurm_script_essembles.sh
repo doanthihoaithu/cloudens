@@ -12,7 +12,7 @@
 
 module load python
 source torch210/bin/activate
-python src/run_ensemble_approach.py
+python src/run_ensemble_approach_new.py
 deactivate
 
 
