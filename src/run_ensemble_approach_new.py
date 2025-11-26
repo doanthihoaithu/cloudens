@@ -28,7 +28,7 @@ def analyze_reconstruction_errors_essembles(cfg):
     project_root_dir = get_project_root()
     trained_models_dir = os.path.join(project_root_dir, experiment_config.model_save_path)
     # os.makedirs(trained_models_dir, exist_ok=True)  # Ensure the directory exists
-    slide_win = ensembles_config.slide_win
+    slide_win = experiment_config.slide_win
     ensemble_model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', 'ensemble')
     # os.makedirs(ensemble_model_dir, exist_ok=True)
     # # fill_nan_values = ensembles_config.fill_nan_values
