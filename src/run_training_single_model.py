@@ -384,7 +384,16 @@ def grid_search_new(data_loader, reconstruction_errors, experiment_config, mahal
             'accuracy',
             'standard_raw',
             'reward_fn_raw',
+            'model',
+            'fill_nan_value',
+            'null_padding_feature',
+            'null_padding_target'
             ]
+
+    model = experiment_config.use_model
+    null_padding_feature = experiment_config.null_padding_feature
+    null_padding_target = experiment_config.null_padding_target
+    fill_nan_value = experiment_config.fill_nan
     result_df = pd.DataFrame(columns=columns)
     post_processing_strategies = experiment_config.post_processing_strategies
     topks = experiment_config.topks
@@ -568,6 +577,10 @@ def grid_search_new(data_loader, reconstruction_errors, experiment_config, mahal
             'f1': f1,
             'detection_counters': detection_counters,
             'accuracy': accuracy,
+            'model' : model,
+            'fill_nan_value': fill_nan_value,
+            'null_padding_feature': null_padding_feature,
+            'null_padding_target': null_padding_target
             # conf_matrix, mcc, is_anomalies, likelihoods, results_df, raw_nab_score,
         }
         result_df.loc[len(result_df)] = new_row
