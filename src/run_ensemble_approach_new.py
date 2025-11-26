@@ -95,6 +95,7 @@ def analyze_reconstruction_errors_essembles(cfg):
                 selected_model = list(itertools.product(http_codes, aggregations))[0]
                 # num_ensembles = len(selected_models)
 
+                data_preparation_config = cfg.data_preparation_pipeline
                 http_code, aggregation = selected_model
                 data_preparation_config.features_prep.filter.http_codes = [http_code]
                 data_preparation_config.features_prep.filter.aggregations = [aggregation]
@@ -242,7 +243,7 @@ def analyze_reconstruction_errors_essembles(cfg):
                     top1_NAB_standard_index = grid_search_df['NAB_standard_rank'].idxmin()
                     top1_NAB_reward_fn_index = grid_search_df['NAB_reward_fn_rank'].idxmin()
                     # top1_NAB_reward_fn_max_index = grid_search_df[grid_search_df['post_processing_strategy'] == 'max']['NAB_reward_fn_rank'].idxmin()
-                    top1_NAB_reward_fn_max_index = top1_NAB_reward_fn_index
+                    # top1_NAB_reward_fn_max_index = top1_NAB_reward_fn_index
                     top1_NAB_reward_fn_likelihood_index = \
                     grid_search_df[grid_search_df['post_processing_strategy'] == 'likelihood'][
                         'NAB_reward_fn_rank'].idxmin()
@@ -252,7 +253,7 @@ def analyze_reconstruction_errors_essembles(cfg):
 
                     print('Top1 NAB according to strategy',
                           top1_NAB_reward_fn_likelihood_index,
-                          top1_NAB_reward_fn_max_index,
+                          # top1_NAB_reward_fn_max_index,
                           top1_NAB_reward_fn_mahalanobis_index)
 
                     # if grid_search_params == None:
@@ -265,16 +266,16 @@ def analyze_reconstruction_errors_essembles(cfg):
                 grid_search_params[selected_group_mode] = grid_search_df.iloc[[top1_NAB_standard_index,
                                                                                top1_NAB_reward_fn_index,
                                                                                top1_NAB_reward_fn_likelihood_index,
-                                                                               top1_NAB_reward_fn_max_index,
+                                                                               # top1_NAB_reward_fn_max_index,
                                                                                top1_NAB_reward_fn_mahalanobis_index
                                                                                ],:].to_dict(orient='records')
-                combined_three_strategies_labels = label_essemble_df.values[:,[
+                combined_two_strategies_labels = label_essemble_df.values[:,[
                                                                                 top1_NAB_reward_fn_likelihood_index,
-                                                                                top1_NAB_reward_fn_max_index,
+                                                                                # top1_NAB_reward_fn_max_index,
                                                                                 top1_NAB_reward_fn_mahalanobis_index
                                                                                 ]].any(axis=-1, keepdims=True).astype(int)
                 label_dictionary[selected_group_mode] = np.concatenate([label_essemble_df.values[:, [top1_NAB_standard_index,top1_NAB_reward_fn_index]],
-                                                                 combined_three_strategies_labels],axis=-1)
+                                                                 combined_two_strategies_labels],axis=-1)
 
                 # is_anomalies, likelihoods, reconstruction_error = label_reconstruction_errors(reconstruction_errors, )
                 # Call grid search or other functions
@@ -316,6 +317,10 @@ def analyze_reconstruction_errors_essembles(cfg):
                 'accuracy',
                 'standard_raw',
                 'reward_fn_raw',
+                'model',
+                'fill_nan_value',
+                'null_padding_feature',
+                'null_padding_target',
             ]
             ensemble_result_df = pd.DataFrame(columns=columns)
 
@@ -391,6 +396,10 @@ def analyze_reconstruction_errors_essembles(cfg):
                             'f1': grid_search_param['f1'],
                             'detection_counters': grid_search_param['detection_counters'],
                             'accuracy': grid_search_param['accuracy'],
+                            'model': grid_search_param['model'],
+                            'fill_nan_value': grid_search_param['fill_nan_value'],
+                            'null_padding_feature': grid_search_param['null_padding_feature'],
+                            'null_padding_target': grid_search_param['null_padding_target']
                             # conf_matrix, mcc, is_anomalies, likelihoods, results_df, raw_nab_score,
                         }
                         ensemble_result_df.loc[len(ensemble_result_df)] = new_row
