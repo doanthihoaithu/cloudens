@@ -438,6 +438,27 @@ def generate_latex_full_table(grid_search_results_csv_path):
             f.write(latex_table)
             print(f'Latex table saved to {latex_table_file}')
 
+def wrap_text_by_multirowcell(text, n_row):
+    return '\multirowcell{' + str(n_row) +'}[0pt][l]{' + text + '}'
+
+def rename_columns_for_latex_display(df):
+    header_rows = 3
+    row_rows = 2
+    columns = df.columns.tolist()
+    new_columns = []
+    for column in columns:
+        column = column.replace(' ', '\\\\')
+        new_columns.append(wrap_text_by_multirowcell(column, header_rows))
+
+    row_list = []
+    for i in range(header_rows -1):
+        row_list.append([np.nan] * df.shape[1])
+    for index, row in df.iterrows():
+        row_list.append(row.values.tolist())
+        for j in range(row_rows-1):
+            row_list.append([np.nan] * df.shape[1])
+    new_df = pd.DataFrame(row_list, columns=new_columns)
+    return new_df
 def generate_latex_ensemble_table(essemble_result_dir):
     os.makedirs(os.path.join(essemble_result_dir, 'latex'), exist_ok=True)
     dfs = []
@@ -447,7 +468,8 @@ def generate_latex_ensemble_table(essemble_result_dir):
             combination_id = f[f.find('no_group'):-4]
             subsets = [f.replace('no_group_','').replace('_',' ') for f in combination_id.split('+')]
             subsets = ['\\texttt{' + f + '}' for f in subsets]
-            combination_id = ','.join(subsets)
+            combination_id = ' \\ '.join(subsets)
+            combination_id = wrap_text_by_multirowcell(combination_id, n_row=len(subsets))
             df.insert(0, 'priority_selection', None)
             df.insert(0,'combination', combination_id)
             df.insert(0,'num_subsets', len(subsets))
@@ -464,7 +486,6 @@ def generate_latex_ensemble_table(essemble_result_dir):
     for priority_mode in priority_modes:
         priority_df = total_combination_df[total_combination_df['priority_selection'] == priority_mode]
         priority_df = priority_df.sort_values(by=['num_subsets','reward_fn_normalized', 'standard_normalized'], ascending=(1,0,0))
-
         # column_to_find_max = 'reward_fn_normalized' if priority_mode == 'reward_fn' else 'standard_normalized'
         #
         # max_reward_fn_normalized_idx =df.groupby(['http_code', 'aggregation', 'null_padding_feature', 'post_processing_strategy', 'model'])[
@@ -477,8 +498,8 @@ def generate_latex_ensemble_table(essemble_result_dir):
         #     ascending=False))
 
         visualize_df = pd.DataFrame()
+        visualize_df['No. Subsets'] = priority_df['num_subsets']
         visualize_df['Subsets'] = priority_df['combination']
-        visualize_df['Number of Subsets'] = priority_df['num_subsets']
         # visualize_df["Post-processing strategy"] = max_reward_fn_normalized_df['post_processing_strategy']
         # visualize_df['Subset'] = '\\texttt{' + max_reward_fn_normalized_df['http_code'] + ' ' + max_reward_fn_normalized_df[
         #     'aggregation'] + '}'
@@ -492,6 +513,7 @@ def generate_latex_ensemble_table(essemble_result_dir):
         visualize_df['Low FN Profile'] = priority_df['reward_fn_normalized']
         visualize_df[['Issue Tracker', 'Instant Messenger', 'Test Log']] = priority_df[
             'detection_counters'].apply(lambda x: pd.Series(extract_detected_anomaly_ids(x)))
+        visualize_df['Avg.Alerts per day'] = (visualize_df['TP'] + visualize_df['FP'])/92
 
         csv_full_data_priority_file_path = os.path.join(essemble_result_dir,'latex',
                                                         f'essemble_full_data_{priority_mode}_priority.csv')
@@ -500,17 +522,18 @@ def generate_latex_ensemble_table(essemble_result_dir):
         csv_short_data_priority_file_path = os.path.join(essemble_result_dir,'latex',
                                                         f'essemble_short_data_{priority_mode}_priority.csv')
 
-        id_max_list = [visualize_df[visualize_df['Number of Subsets'] == n]
+        id_max_list = [visualize_df[visualize_df['No. Subsets'] == n]
                        ['Low FN Profile' if priority_mode == 'reward_fn' else 'Standard Profile'].idxmax()
-                       for n in visualize_df['Number of Subsets'].unique()]
+                       for n in visualize_df['No. Subsets'].unique()]
         visualize_df.loc[id_max_list,:].to_csv(csv_short_data_priority_file_path, index=False)
 
-        latex_table = visualize_df.to_latex(
+        latex_table = rename_columns_for_latex_display(visualize_df).to_latex(
             index=False,
             caption="Performance with different ensemble configurations.",
             label="tab:ensemble_configurations",
             escape=False,
             float_format="{:0.2f}".format,
+            na_rep=''
         )
         print(latex_table)
         latex_table_file = os.path.join(essemble_result_dir, 'latex', f'latex_ensemble_table_full_data_{priority_mode}_priority.tex')
@@ -519,12 +542,13 @@ def generate_latex_ensemble_table(essemble_result_dir):
             print(f'Latex ensemble table saved to {latex_table_file}')
             f.close()
 
-        latex_table = visualize_df.loc[id_max_list,:].to_latex(
+        latex_table = rename_columns_for_latex_display(visualize_df.loc[id_max_list,:]).to_latex(
             index=False,
             caption="Performance with different ensemble configurations.",
             label="tab:ensemble_configurations",
             escape=False,
             float_format="{:0.2f}".format,
+            na_rep=''
         )
         print(latex_table)
         latex_table_file = os.path.join(essemble_result_dir, 'latex',
