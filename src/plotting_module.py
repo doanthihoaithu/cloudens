@@ -444,9 +444,11 @@ def generate_latex_ensemble_table(essemble_result_dir):
         if 'ensemble_final_result' in f and f.endswith('.csv'):
             df = pd.read_csv(os.path.join(essemble_result_dir, f))
             combination_id = f[f.find('no_group'):-4]
-            combination_id = ','.join([f.replace('no_group_','') for f in combination_id.split('+')])
+            subsets = [f.replace('no_group_','') for f in combination_id.split('+')]
+            combination_id = ','.join(subsets)
             df.insert(0, 'priority_selection', None)
             df.insert(0,'combination', combination_id)
+            df.insert(0,'num_subsets', len(subsets))
             ensemble_record_index = df[df['post_processing_strategy'].isna()].index
             assert len(ensemble_record_index) == 3
             df.loc[ensemble_record_index[0], 'priority_selection'] = 'standard'
@@ -473,7 +475,8 @@ def generate_latex_ensemble_table(essemble_result_dir):
         #     ascending=False))
 
         visualize_df = pd.DataFrame()
-        visualize_df['Subset'] = priority_df['combination']
+        visualize_df['Subsets'] = priority_df['combination']
+        visualize_df['Number of Subsets'] = priority_df['num_subsets']
         # visualize_df["Post-processing strategy"] = max_reward_fn_normalized_df['post_processing_strategy']
         # visualize_df['Subset'] = '\\texttt{' + max_reward_fn_normalized_df['http_code'] + ' ' + max_reward_fn_normalized_df[
         #     'aggregation'] + '}'
