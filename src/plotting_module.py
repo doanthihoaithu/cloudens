@@ -516,6 +516,22 @@ def generate_latex_ensemble_table(essemble_result_dir):
         with open(latex_table_file, 'w') as f:
             f.write(latex_table)
             print(f'Latex ensemble table saved to {latex_table_file}')
+            f.close()
+
+        latex_table = visualize_df.loc[id_max_list,:].to_latex(
+            index=False,
+            caption="Performance with different ensemble configurations.",
+            label="tab:ensemble_configurations",
+            escape=False,
+            float_format="{:0.2f}".format,
+        )
+        print(latex_table)
+        latex_table_file = os.path.join(essemble_result_dir, 'latex',
+                                        f'latex_ensemble_table_short_data_{priority_mode}_priority.tex')
+        with open(latex_table_file, 'w') as f:
+            f.write(latex_table)
+            print(f'Latex ensemble table saved to {latex_table_file}')
+            f.close()
 def extract_detected_anomaly_ids(dictionary):
     # print(type(dictionary))
     dictionary = ast.literal_eval(dictionary)
