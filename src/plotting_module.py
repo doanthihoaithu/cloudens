@@ -462,7 +462,7 @@ def generate_latex_ensemble_table(essemble_result_dir):
     for priority_mode in priority_modes:
 
         priority_df = total_combination_df[total_combination_df['priority_selection'] == priority_mode]
-        priority_df = priority_df.sort_values(by=['reward_fn_normalized', 'standard_normalized'], ascending=False)
+        priority_df = priority_df.sort_values(by=['num_subsets','reward_fn_normalized', 'standard_normalized'], ascending=(1,0,0))
         # column_to_find_max = 'reward_fn_normalized' if priority_mode == 'reward_fn' else 'standard_normalized'
         #
         # max_reward_fn_normalized_idx =df.groupby(['http_code', 'aggregation', 'null_padding_feature', 'post_processing_strategy', 'model'])[
