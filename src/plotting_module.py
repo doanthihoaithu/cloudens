@@ -453,11 +453,11 @@ def rename_columns_for_latex_display(df):
     for i in range(header_rows -1):
         row_list.append([np.nan] * df.shape[1])
     for index, row in df.iterrows():
-        row['Issue Tracker'] = f'{len(row["Issue Tracker"])}/3 \\\\' + '[' + ','.join(map(str,row["Issue Tracker"]))+ ']'
+        row['Issue Tracker'] = f'{len(row["Issue Tracker"])}/3 \\\\' + ' \\text{[' + ','.join(map(str,row["Issue Tracker"]))+ ']}'
         row['Issue Tracker'] = wrap_text_by_multirowcell(row["Issue Tracker"], 2)
-        row['Instant Messenger'] = f'{len(row["Instant Messenger"])}/9 \\\\' + '[' + ','.join(map(str,row["Instant Messenger"]))+ ']'
+        row['Instant Messenger'] = f'{len(row["Instant Messenger"])}/9 \\\\' + ' \\text{[' + ','.join(map(str,row["Instant Messenger"]))+ ']}'
         row['Instant Messenger'] = wrap_text_by_multirowcell(row['Instant Messenger'], 2)
-        row['Test Log'] = f'{len(row["Test Log"])}/7 \\\\' + '[' + ','.join(map(str,row['Test Log'])) + ']'
+        row['Test Log'] = f'{len(row["Test Log"])}/7 \\\\' + ' \\text{[' + ','.join(map(str,row['Test Log'])) + ']}'
         row['Test Log'] = wrap_text_by_multirowcell(row['Test Log'], 2)
         row_list.append(row.values.tolist())
         row_rows = max(row['No. Subsets'],2)
