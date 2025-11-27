@@ -438,7 +438,71 @@ def generate_latex_full_table(grid_search_results_csv_path):
             f.write(latex_table)
             print(f'Latex table saved to {latex_table_file}')
 
+def generate_latex_ensemble_table(essemble_result_dir):
+    dfs = []
+    for f in os.listdir(essemble_result_dir):
+        if 'ensemble_final_result' in f and f.endswith('.csv'):
+            df = pd.read_csv(os.path.join(essemble_result_dir, f))
+            combination_id = f[f.find('no_group'):-4]
+            combination_id = ','.join([f.replace('no_group_','') for f in combination_id.split('+')])
+            df.insert(0, 'priority_selection', None)
+            df.insert(0,'combination', combination_id)
+            ensemble_record_index = df[df['post_processing_strategy'].isna()].index
+            assert len(ensemble_record_index) == 3
+            df.loc[ensemble_record_index[0], 'priority_selection'] = 'standard'
+            df.loc[ensemble_record_index[1], 'priority_selection'] = 'reward_fn'
+            # df.loc[ensemble_record_index[2], 'priority_selection'] = 'two_strategy_aggregation'
 
+            dfs.append(df[df['priority_selection'].notna()])
+    total_combination_df = pd.concat(dfs, ignore_index=True)
+
+    priority_modes = ['standard', 'reward_fn']
+    for priority_mode in priority_modes:
+
+        priority_df = total_combination_df[total_combination_df['priority_selection'] == priority_mode]
+        priority_df = priority_df.sort_values(by=['reward_fn_normalized', 'standard_normalized'], ascending=False)
+        # column_to_find_max = 'reward_fn_normalized' if priority_mode == 'reward_fn' else 'standard_normalized'
+        #
+        # max_reward_fn_normalized_idx =df.groupby(['http_code', 'aggregation', 'null_padding_feature', 'post_processing_strategy', 'model'])[
+        #     column_to_find_max].transform(max) == df[column_to_find_max]
+        # max_reward_fn_normalized_df = (df[max_reward_fn_normalized_idx].loc[:,
+        #                               ['post_processing_strategy', 'http_code', 'aggregation', 'model', 'fill_nan_value',
+        #                                'null_padding_feature', 'standard_normalized', 'reward_fn_normalized',
+        #                                'detection_counters', 'confusion_matrix']]
+        #                             .sort_values(by=['post_processing_strategy', 'http_code', 'aggregation', 'model', 'null_padding_feature', 'fill_nan_value'],
+        #     ascending=False))
+
+        visualize_df = pd.DataFrame()
+        visualize_df['Subset'] = priority_df['combination']
+        # visualize_df["Post-processing strategy"] = max_reward_fn_normalized_df['post_processing_strategy']
+        # visualize_df['Subset'] = '\\texttt{' + max_reward_fn_normalized_df['http_code'] + ' ' + max_reward_fn_normalized_df[
+        #     'aggregation'] + '}'
+        # visualize_df['Model'] = np.where(max_reward_fn_normalized_df['null_padding_feature'],
+        #                                  max_reward_fn_normalized_df['model'] + '*', max_reward_fn_normalized_df['model'])
+        # visualize_df['Fill NaN'] = max_reward_fn_normalized_df['fill_nan_value']
+        visualize_df[['TP', 'TN', 'FP', 'FN']] = priority_df['confusion_matrix'].apply(
+            lambda x: pd.Series(extract_point_metrics(x)))
+        visualize_df['FPR'] = visualize_df['FP'] / (visualize_df['FP'] + visualize_df['TP']) * 100
+        visualize_df['Standard Profile'] = priority_df['standard_normalized']
+        visualize_df['Low FN Profile'] = priority_df['reward_fn_normalized']
+        visualize_df[['Issue Tracker', 'Instant Messenger', 'Test Log']] = priority_df[
+            'detection_counters'].apply(lambda x: pd.Series(extract_detected_anomaly_ids(x)))
+
+        csv_full_data_low_fn_priority_file_path = os.path.join(essemble_result_dir, f'essemble_full_data_{priority_mode}_priority.csv')
+        visualize_df.to_csv(csv_full_data_low_fn_priority_file_path, index=False)
+
+        latex_table = visualize_df.to_latex(
+            index=False,
+            caption="Performance with different ensemble configurations.",
+            label="tab:ensemble_configurations",
+            escape=False,
+            float_format="{:0.2f}".format,
+        )
+        print(latex_table)
+        latex_table_file = os.path.join(essemble_result_dir, f'latex_ensemble_table_full_data_{priority_mode}_priority.tex')
+        with open(latex_table_file, 'w') as f:
+            f.write(latex_table)
+            print(f'Latex ensemble table saved to {latex_table_file}')
 def extract_detected_anomaly_ids(dictionary):
     # print(type(dictionary))
     dictionary = ast.literal_eval(dictionary)

@@ -11,7 +11,8 @@ import torch
 from tqdm import tqdm
 
 from ibm_dataset_loader import IBMDatasetLoader
-from plotting_module import generate_latex_training_inference_time, generate_latex_full_table
+from plotting_module import generate_latex_training_inference_time, generate_latex_full_table, \
+    generate_latex_ensemble_table
 from utils import set_random_seed, get_project_root
 
 # Configure logging
@@ -54,6 +55,15 @@ def main(cfg: DictConfig):
 
     generate_latex_training_inference_time(grid_search_combine_file_path)
     generate_latex_full_table(grid_search_combine_file_path)
+
+
+    experiment_config = cfg.evaluation
+    ensemble_combine_dir = os.path.join(get_project_root(),
+                                        experiment_config.model_save_path,
+                                        f'window_{window_size}',
+                                        'ensemble')
+    os.makedirs(ensemble_combine_dir, exist_ok=True)
+    generate_latex_ensemble_table(ensemble_combine_dir)
     # generate_figure_for_fpr(plotting_config)
 
 
