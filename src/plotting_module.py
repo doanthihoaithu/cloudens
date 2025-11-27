@@ -445,7 +445,8 @@ def generate_latex_ensemble_table(essemble_result_dir):
         if 'ensemble_final_result' in f and f.endswith('.csv'):
             df = pd.read_csv(os.path.join(essemble_result_dir, f))
             combination_id = f[f.find('no_group'):-4]
-            subsets = [f.replace('no_group_','') for f in combination_id.split('+')]
+            subsets = [f.replace('no_group_','').replace('_',' ') for f in combination_id.split('+')]
+            subsets = ['\\texttt{' + f + '}' for f in subsets]
             combination_id = ','.join(subsets)
             df.insert(0, 'priority_selection', None)
             df.insert(0,'combination', combination_id)
