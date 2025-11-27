@@ -468,7 +468,7 @@ def generate_latex_ensemble_table(essemble_result_dir):
             combination_id = f[f.find('no_group'):-4]
             subsets = [f.replace('no_group_','').replace('_',' ') for f in combination_id.split('+')]
             subsets = ['\\texttt{' + f + '}' for f in subsets]
-            combination_id = ' \\ '.join(subsets)
+            combination_id = ' \\\\ '.join(subsets)
             combination_id = wrap_text_by_multirowcell(combination_id, n_row=len(subsets))
             df.insert(0, 'priority_selection', None)
             df.insert(0,'combination', combination_id)
