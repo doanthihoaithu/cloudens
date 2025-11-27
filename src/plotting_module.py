@@ -460,9 +460,9 @@ def generate_latex_ensemble_table(essemble_result_dir):
 
     priority_modes = ['standard', 'reward_fn']
     for priority_mode in priority_modes:
-
         priority_df = total_combination_df[total_combination_df['priority_selection'] == priority_mode]
         priority_df = priority_df.sort_values(by=['num_subsets','reward_fn_normalized', 'standard_normalized'], ascending=(1,0,0))
+
         # column_to_find_max = 'reward_fn_normalized' if priority_mode == 'reward_fn' else 'standard_normalized'
         #
         # max_reward_fn_normalized_idx =df.groupby(['http_code', 'aggregation', 'null_padding_feature', 'post_processing_strategy', 'model'])[
@@ -491,8 +491,17 @@ def generate_latex_ensemble_table(essemble_result_dir):
         visualize_df[['Issue Tracker', 'Instant Messenger', 'Test Log']] = priority_df[
             'detection_counters'].apply(lambda x: pd.Series(extract_detected_anomaly_ids(x)))
 
-        csv_full_data_low_fn_priority_file_path = os.path.join(essemble_result_dir, f'essemble_full_data_{priority_mode}_priority.csv')
-        visualize_df.to_csv(csv_full_data_low_fn_priority_file_path, index=False)
+        csv_full_data_priority_file_path = os.path.join(essemble_result_dir,'latex',
+                                                        f'essemble_full_data_{priority_mode}_priority.csv')
+        visualize_df.to_csv(csv_full_data_priority_file_path, index=False)
+
+        csv_short_data_priority_file_path = os.path.join(essemble_result_dir,'latex',
+                                                        f'essemble_short_data_{priority_mode}_priority.csv')
+
+        id_max_list = [visualize_df[visualize_df['Number of Subsets'] == n]
+                       ['Low FN Profile' if priority_mode == 'reward_fn' else 'Standard Profile'].idxmax()
+                       for n in visualize_df['Number of Subsets'].unique()]
+        visualize_df.loc[id_max_list,:].to_csv(csv_short_data_priority_file_path, index=False)
 
         latex_table = visualize_df.to_latex(
             index=False,
@@ -502,7 +511,7 @@ def generate_latex_ensemble_table(essemble_result_dir):
             float_format="{:0.2f}".format,
         )
         print(latex_table)
-        latex_table_file = os.path.join(essemble_result_dir, f'latex_ensemble_table_full_data_{priority_mode}_priority.tex')
+        latex_table_file = os.path.join(essemble_result_dir, 'latex', f'latex_ensemble_table_full_data_{priority_mode}_priority.tex')
         with open(latex_table_file, 'w') as f:
             f.write(latex_table)
             print(f'Latex ensemble table saved to {latex_table_file}')
