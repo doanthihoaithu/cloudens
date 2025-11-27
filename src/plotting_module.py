@@ -443,7 +443,6 @@ def wrap_text_by_multirowcell(text, n_row):
 
 def rename_columns_for_latex_display(df):
     header_rows = 3
-    row_rows = 2
     columns = df.columns.tolist()
     new_columns = []
     for column in columns:
@@ -455,6 +454,7 @@ def rename_columns_for_latex_display(df):
         row_list.append([np.nan] * df.shape[1])
     for index, row in df.iterrows():
         row_list.append(row.values.tolist())
+        row_rows = row['No. Subsets']
         for j in range(row_rows-1):
             row_list.append([np.nan] * df.shape[1])
     new_df = pd.DataFrame(row_list, columns=new_columns)
