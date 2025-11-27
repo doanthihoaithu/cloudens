@@ -439,6 +439,7 @@ def generate_latex_full_table(grid_search_results_csv_path):
             print(f'Latex table saved to {latex_table_file}')
 
 def generate_latex_ensemble_table(essemble_result_dir):
+    os.makedirs(os.path.join(essemble_result_dir, 'latex'), exist_ok=True)
     dfs = []
     for f in os.listdir(essemble_result_dir):
         if 'ensemble_final_result' in f and f.endswith('.csv'):
