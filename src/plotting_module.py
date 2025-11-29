@@ -455,7 +455,7 @@ def generate_latex_selected_table(grid_search_results_csv_path):
                                        'standard_normalized', 'reward_fn_normalized',
                                        'detection_counters', 'confusion_matrix',
                                        'anomaly_threshold','long_window','short_window']]
-                                    .sort_values(by=['http_code', 'aggregation', 'model', 'null_padding_feature', 'fill_nan_value','post_processing_strategy'],
+                                    .sort_values(by=['http_code', 'aggregation', 'model', 'null_padding_feature', 'post_processing_strategy', 'fill_nan_value'],
             ascending=False))
 
         max_reward_fn_normalized_df['long_window'] = max_reward_fn_normalized_df['long_window'].astype(str)
