@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from ibm_dataset_loader import IBMDatasetLoader
 from plotting_module import generate_latex_training_inference_time, generate_latex_full_table, \
-    generate_latex_ensemble_table
+    generate_latex_ensemble_table, generate_latex_selected_table
 from utils import set_random_seed, get_project_root
 
 # Configure logging
@@ -55,6 +55,7 @@ def main(cfg: DictConfig):
 
     generate_latex_training_inference_time(grid_search_combine_file_path)
     generate_latex_full_table(grid_search_combine_file_path)
+    generate_latex_selected_table(grid_search_combine_file_path)
 
 
     experiment_config = cfg.evaluation
@@ -64,6 +65,8 @@ def main(cfg: DictConfig):
                                         'ensemble')
     os.makedirs(ensemble_combine_dir, exist_ok=True)
     generate_latex_ensemble_table(ensemble_combine_dir)
+
+
     # generate_figure_for_fpr(plotting_config)
 
 

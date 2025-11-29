@@ -437,9 +437,101 @@ def generate_latex_full_table(grid_search_results_csv_path):
         with open(latex_table_file, 'w') as f:
             f.write(latex_table)
             print(f'Latex table saved to {latex_table_file}')
+def generate_latex_selected_table(grid_search_results_csv_path):
+    save_dir = os.path.dirname(grid_search_results_csv_path)
+    df = pd.read_csv(grid_search_results_csv_path)
 
-def wrap_text_by_multirowcell(text, n_row):
-    return '\multirowcell{' + str(n_row) +'}[0pt][l]{' + text + '}'
+    df = df[(df['model'] == 'A3TGCN') & (df['null_padding_feature'] == True)]
+
+    priority_modes = ['standard', 'reward_fn']
+    for priority_mode in priority_modes:
+        column_to_find_max = 'reward_fn_normalized' if priority_mode == 'reward_fn' else 'standard_normalized'
+
+        max_reward_fn_normalized_idx =df.groupby(['http_code', 'aggregation', 'null_padding_feature', 'post_processing_strategy', 'model'])[
+            column_to_find_max].transform(max) == df[column_to_find_max]
+        max_reward_fn_normalized_df = (df[max_reward_fn_normalized_idx].loc[:,
+                                      ['http_code', 'aggregation', 'model', 'fill_nan_value',
+                                       'null_padding_feature', 'post_processing_strategy',
+                                       'standard_normalized', 'reward_fn_normalized',
+                                       'detection_counters', 'confusion_matrix',
+                                       'anomaly_threshold','long_window','short_window']]
+                                    .sort_values(by=['http_code', 'aggregation', 'model', 'null_padding_feature', 'fill_nan_value','post_processing_strategy'],
+            ascending=False))
+
+        max_reward_fn_normalized_df['long_window'] = max_reward_fn_normalized_df['long_window'].astype(str)
+        max_reward_fn_normalized_df['short_window'] = max_reward_fn_normalized_df['short_window'].astype(str)
+        max_reward_fn_normalized_df['anomaly_threshold'] = max_reward_fn_normalized_df['anomaly_threshold'].astype(str)
+        visualize_df = pd.DataFrame()
+        # visualize_df['Scoring hyper parameters'] = np.where(max_reward_fn_normalized_df['post_processing_strategy'] == 'likelihood',
+        #                                                     ('$W=' + max_reward_fn_normalized_df['long_window']
+        #                                                     + ',Wk='
+        #                                                     + max_reward_fn_normalized_df['short_window']
+        #                                                     + '$ \\\\ '
+        #                                                     + '$L_t='
+        #                                                     + max_reward_fn_normalized_df['anomaly_threshold']
+        #                                                     + '$')
+        #                                                 ,
+        #
+        #                                                     ('$\\epsilon='
+        #                                                     + max_reward_fn_normalized_df['anomaly_threshold']
+        #                                                     + '$')
+        #
+        #                                             )
+        # tmp_df = max_reward_fn_normalized_df.copy()
+        # visualize_df['Scoring hyper parameters'] = np.where(tmp_df['post_processing_strategy'] == 'likelihood',
+        #                                                     tmp_df['long_window'] + tmp_df['short_window'],
+        #                                                     tmp_df['anomaly_threshold']).values
+        visualize_df['Subset'] = '\\texttt{' + max_reward_fn_normalized_df['http_code'] + ' ' + max_reward_fn_normalized_df['aggregation'] + '}'
+        visualize_df['Model'] = np.where(max_reward_fn_normalized_df['null_padding_feature'],
+                                         max_reward_fn_normalized_df['model'] + '*', max_reward_fn_normalized_df['model'])
+        visualize_df['Fill NaN'] = max_reward_fn_normalized_df['fill_nan_value']
+        # visualize_df["Scoring strategy"] = max_reward_fn_normalized_df['post_processing_strategy']
+        visualize_df[['TP', 'TN', 'FP', 'FN']] = max_reward_fn_normalized_df['confusion_matrix'].apply(
+            lambda x: pd.Series(extract_point_metrics(x)))
+        visualize_df['FPR'] = visualize_df['FP'] / (visualize_df['FP'] + visualize_df['TP']) * 100
+        visualize_df['Standard Profile'] = max_reward_fn_normalized_df['standard_normalized']
+        visualize_df['Low FN Profile'] = max_reward_fn_normalized_df['reward_fn_normalized']
+        visualize_df[['Issue Tracker', 'Instant Messenger', 'Test Log']] = max_reward_fn_normalized_df[
+            'detection_counters'].apply(lambda x: pd.Series(extract_detected_anomaly_ids(x)))
+
+        scoring_hyper_parameters = np.where(max_reward_fn_normalized_df['post_processing_strategy'] == 'likelihood',
+                                            (
+                                             #        '$W=' + max_reward_fn_normalized_df['long_window']
+                                             # + ",W'="
+                                             # + max_reward_fn_normalized_df['short_window']
+                                             # + '$ \\\\ '
+                                             'Likelihood Function \\\\ $L_t='
+                                             + max_reward_fn_normalized_df['anomaly_threshold']
+                                             + '$'),
+                                            'Mahalanobis Distance \\\\ $\\epsilon=' + max_reward_fn_normalized_df['anomaly_threshold'] + '$'
+                                            )
+        visualize_df.insert(3,'Scoring hyper parameters', scoring_hyper_parameters)
+
+        csv_full_data_low_fn_priority_file_path = os.path.join(save_dir, f'short_data_{priority_mode}_priority.csv')
+        visualize_df.to_csv(csv_full_data_low_fn_priority_file_path, index=False)
+        print(f'Short table for different subsets for visualization saved to {csv_full_data_low_fn_priority_file_path}')
+
+        visualize_df.drop('Model', axis=1, inplace=True)
+
+        visualize_df = rename_columns_for_latex_display(visualize_df)
+
+        latex_table = visualize_df.to_latex(
+            index=False,
+            caption="ClouDens vs GRU performance on different feature subsets with different anomaly scoring stategies.",
+            label="tab:full_data",
+            escape=False,
+            float_format="{:0.2f}".format,
+            na_rep=''
+        )
+        print(latex_table)
+        latex_save_dir = os.path.join(save_dir, 'latex')
+        os.makedirs(latex_save_dir, exist_ok=True)
+        latex_table_file = os.path.join(latex_save_dir, f'latex_table_short_data_{priority_mode}_priority.tex')
+        with open(latex_table_file, 'w') as f:
+            f.write(latex_table)
+            print(f'Latex table saved to {latex_table_file}')
+def wrap_text_by_multirowcell(text, n_row, align='l'):
+    return '\multirowcell{' + str(n_row) +'}[0pt]'+ f'[{align}]' + '{' + text + '}'
 
 def rename_columns_for_latex_display(df):
     header_rows = 3
@@ -459,8 +551,14 @@ def rename_columns_for_latex_display(df):
         row['Instant Messenger'] = wrap_text_by_multirowcell(row['Instant Messenger'], 2)
         row['Test Log'] = f'{len(row["Test Log"])}/7 \\\\' + ' \\text{[' + ','.join(map(str,row['Test Log'])) + ']}'
         row['Test Log'] = wrap_text_by_multirowcell(row['Test Log'], 2)
+        if 'Scoring hyper parameters' in df.columns:
+            # renamed_column = wrap_text_by_multirowcell('Scoring hyper parameters', header_rows)
+            row['Scoring hyper parameters'] = wrap_text_by_multirowcell(row['Scoring hyper parameters'], 2, align='l')
         row_list.append(row.values.tolist())
-        row_rows = max(row['No. Subsets'],2)
+        if 'No. Subsets' in df.columns:
+            row_rows = max(row['No. Subsets'],2)
+        else:
+            row_rows = 2
         for j in range(row_rows-1):
             row_list.append([np.nan] * df.shape[1])
     new_df = pd.DataFrame(row_list, columns=new_columns)
