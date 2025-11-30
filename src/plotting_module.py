@@ -356,6 +356,26 @@ def generate_figure_for_fpr(plotting_config):
     print(f'Combined grid search results saved to {combined_figure_save_dir}')
     generate_latex_training_inference_time(grid_search_combine_file_path)
 
+    fix_fill_nan_methods = dict()
+    shorten_df = combined_df[(combined_df['model'] == 'A3TGCN') & (combined_df['null_padding_feature'] == True)]
+    max_reward_fn_index = shorten_df.groupby(['http_code','aggregation','fill_nan_value'])['reward_fn_normalized'].transform(max) == shorten_df['reward_fn_normalized']
+    shorten_df = shorten_df.loc[max_reward_fn_index,['http_code','aggregation','null_padding_feature','fill_nan_value']]
+    keep_rows = []
+    for key, value in combined_df.iterrows():
+        http_code = value['http_code']
+        aggregation = value['aggregation']
+        null_padding_feature = value['null_padding_feature']
+        fill_nan_value = value['fill_nan_value']
+        if shorten_df[(shorten_df['http_code'] == http_code) &
+                      (shorten_df['aggregation'] == aggregation) &
+                      (shorten_df['fill_nan_value'] == fill_nan_value)].shape[0] > 0:
+            keep_rows.append(value)
+    shorten_df = pd.DataFrame(keep_rows, columns=combined_df.columns)
+    grid_search_selected_fill_nan_file_path = os.path.join(combined_figure_save_dir, f'combined_grid_search_results_fix_fill_nan.csv')
+    shorten_df.to_csv(grid_search_selected_fill_nan_file_path, index=False)
+    print(f'Combined grid search results fix_nan saved to {grid_search_selected_fill_nan_file_path}')
+
+
 def generate_latex_training_inference_time(grid_search_results_csv_path):
     save_dir = os.path.dirname(grid_search_results_csv_path)
     grid_search_results_df = pd.read_csv(grid_search_results_csv_path)
