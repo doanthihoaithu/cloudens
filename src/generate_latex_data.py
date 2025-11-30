@@ -51,7 +51,9 @@ def main(cfg: DictConfig):
     plotting_config = cfg.plotting
     window_size = plotting_config.slide_win
     combined_figure_save_dir = os.path.join(get_project_root(), plotting_config.output_dir, f'window_{window_size}')
-    grid_search_combine_file_path = os.path.join(combined_figure_save_dir, f'combined_grid_search_results.csv')
+    # grid_search_combine_file_path = os.path.join(combined_figure_save_dir,
+    #                                              f'combined_grid_search_results_fix_fill_nan.csv')
+    grid_search_combine_file_path = os.path.join(combined_figure_save_dir, f'combined_grid_search_results_fix_fill_nan.csv')
 
     generate_latex_training_inference_time(grid_search_combine_file_path)
     generate_latex_full_table(grid_search_combine_file_path)
