@@ -146,7 +146,7 @@ def generate_figure_for_fdr(plotting_config):
                                                                                                            fill_nan_values,
                                                                                                            null_padding_features,
                                                                                                            null_padding_targets, nab_profiles):
-        y_right_label = 'Normalized NAB Reward Low FN Score' if nab_profile == 'low_fn' else 'Normalized NAB Standard Score'
+        y_right_label = 'Normalized NAB Low FN Score' if nab_profile == 'low_fn' else 'Normalized NAB Standard Score'
 
         feature_subset = f'no_group_{code}_{aggregation}'
         # model_name_1 = 'A3TGCN'
@@ -228,7 +228,7 @@ def generate_figure_for_fdr(plotting_config):
         fn_list = np.array(fn_list)
         tp_list = np.array(tp_list)
         cloudens_grid_search_df[['tn', 'fp', 'fn', 'tp']] = np.stack([tn_list, fp_list, fn_list, tp_list], axis=1)
-        cloudens_grid_search_df['false_positive_rate'] = (1 - cloudens_grid_search_df['tp'] / (
+        cloudens_grid_search_df['false_discovery_rate'] = (1 - cloudens_grid_search_df['tp'] / (
                     cloudens_grid_search_df['fp'] + cloudens_grid_search_df['tp'])) * 100
         cloudens_mahalanobis_df = cloudens_grid_search_df[
             cloudens_grid_search_df['post_processing_strategy'] == 'mahalanobis']
@@ -249,11 +249,11 @@ def generate_figure_for_fdr(plotting_config):
         ax3 = axes[1]
 
         x1 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'A3TGCN']['anomaly_threshold'].values
-        y1 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'A3TGCN']['false_positive_rate'].values
+        y1 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'A3TGCN']['false_discovery_rate'].values
         y2 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'A3TGCN']['reward_fn_normalized'].values
         y3 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'A3TGCN']['standard_normalized'].values
 
-        y12 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'GRU']['false_positive_rate'].values
+        y12 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'GRU']['false_discovery_rate'].values
         y22 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'GRU']['reward_fn_normalized'].values
         y32 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'GRU']['standard_normalized'].values
 
@@ -261,8 +261,8 @@ def generate_figure_for_fdr(plotting_config):
         ax1.plot(x1, y12, 'o--', label='GRU FDR', color='green')
         ax1.legend(loc='upper left')
         ax1.set_xticks(x1)
-        ax1.set_xlabel('Mahalanobis Distance Threshold')
-        ax1.set_ylabel('False Discovery Rate', color='g')
+        ax1.set_xlabel('Mahalanobis Distance Threshold',  fontdict=dict(fontsize=13))
+        ax1.set_ylabel('False Discovery Rate', color='g', fontdict=dict(fontsize=13))
         ax1.tick_params(axis='y', colors="green")
         # ax1.set_ylim([50, 100])
         # ax1.legend(loc='upper left')
@@ -273,7 +273,7 @@ def generate_figure_for_fdr(plotting_config):
         ax2.plot(x1, y22 if nab_profile == 'low_fn' else y32, 'o--', label='GRU NAB', color='blue')
         # ax2.plot(x1, y3, '*--', label='A3TGCN Standard', color='blue')
         # ax2.plot(x1, y32, '*--', label='GRU Standard', color='red')
-        ax2.set_ylabel(y_right_label, color='b')
+        ax2.set_ylabel(y_right_label, color='b', fontdict=dict(fontsize=13))
         ax2.tick_params(axis='y', colors="blue")
         # ax2.set_ylim([5, 30])
         # ax2.legend(loc='best')
@@ -283,11 +283,11 @@ def generate_figure_for_fdr(plotting_config):
         ax2.annotate(' Selected threshold', xy=(x_threshold, ax2.get_ylim()[-1] * 0.95), color='b')
 
         x2 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['anomaly_threshold'].iloc[1:].values
-        y4 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['false_positive_rate'].iloc[1:].values
+        y4 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['false_discovery_rate'].iloc[1:].values
         y5 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['reward_fn_normalized'].iloc[1:].values
         y6 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'A3TGCN']['standard_normalized'].iloc[1:].values
 
-        y42 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'GRU']['false_positive_rate'].iloc[1:].values
+        y42 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'GRU']['false_discovery_rate'].iloc[1:].values
         y52 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'GRU']['reward_fn_normalized'].iloc[1:].values
         y62 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'GRU']['standard_normalized'].iloc[1:].values
 
@@ -295,8 +295,8 @@ def generate_figure_for_fdr(plotting_config):
         ax3.plot(x2, y42, 'o--', label='GRU FDR', color='green')
         ax3.legend(loc='upper left')
         ax3.set_xticks(x2)
-        ax3.set_xlabel('Likelihood Function Threshold')
-        ax3.set_ylabel('False Discovery Rate', color='g')
+        ax3.set_xlabel('Likelihood Function Threshold',  fontdict=dict(fontsize=13))
+        ax3.set_ylabel('False Discovery Rate', color='g', fontdict=dict(fontsize=13))
         # ax3.legend(loc='upper left')
         ax3.legend(loc=(0.0, 1.04))
         ax3.tick_params(axis='y', colors="green")
@@ -308,7 +308,7 @@ def generate_figure_for_fdr(plotting_config):
         ax4.plot(x2, y52 if nab_profile == 'low_fn' else y62, 'o--', label='GRU NAB', color='blue')
         # ax4.plot(x2, y6, '*-', label='A3TGCN Standard', color='blue')
         # ax4.plot(x2, y62, '*--', label='GRU Standard', color='blue')
-        ax4.set_ylabel(y_right_label, color='b')
+        ax4.set_ylabel(y_right_label, color='b', fontdict=dict(fontsize=13))
         # ax4.legend(loc='upper right')
         ax4.legend(loc=(0.8, 1.04))
         ax4.tick_params(axis='y', colors="blue")
@@ -335,7 +335,7 @@ def generate_figure_for_fdr(plotting_config):
 
         path2 = os.path.join(combined_figure_save_dir, f'{feature_subset}_fill_nan_with_{fill_nan_value}_{model_config_1}_{model_name_2}_{nab_profile}_likelihood.png' )
         extent3 = ax3.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
-        fig.savefig(path2, bbox_inches=extent3.expanded(1.3, 1.5))
+        fig.savefig(path2, bbox_inches=extent3.expanded(1.295, 1.5))
         print(f'Figure saved to {path2}')
 
     total_graph_results_df = pd.concat(total_graph_dfs, ignore_index=True)
