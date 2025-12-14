@@ -123,11 +123,11 @@ def plot_results(results_df, is_anomalies, anomaly_windows, result_directory, fi
     # Show the plot
     plt.show()
 def generate_figure_for_fdr(plotting_config):
-    models = plotting_config.false_positive_rate.models
+    models = plotting_config.false_discovery_rate.models
     model_name_1 = 'A3TGCN' if 'A3TGCN' in models else 'GRU'
     model_name_2 = 'GRU' if 'GRU' in models else 'GRU'
-    http_codes = plotting_config.false_positive_rate.subsets.http_codes
-    aggregations = plotting_config.false_positive_rate.subsets.aggregations
+    http_codes = plotting_config.false_discovery_rate.subsets.http_codes
+    aggregations = plotting_config.false_discovery_rate.subsets.aggregations
     null_padding_features = plotting_config.null_padding_features
     null_padding_targets = [False]
     fill_nan_values= plotting_config.fill_nan_values

@@ -93,7 +93,7 @@ plotting:
   output_dir: 'plot_results'
   slide_win: ${evaluation.slide_win}
   model_save_path: "trained_models/"
-  false_positive_rate:
+  false_discovery_rate:
     models: ['GRU', 'A3TGCN']
     subsets:
       http_codes: ['5xx','4xx']
