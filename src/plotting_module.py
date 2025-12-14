@@ -122,7 +122,7 @@ def plot_results(results_df, is_anomalies, anomaly_windows, result_directory, fi
 
     # Show the plot
     plt.show()
-def generate_figure_for_fpr(plotting_config):
+def generate_figure_for_fdr(plotting_config):
     models = plotting_config.false_positive_rate.models
     model_name_1 = 'A3TGCN' if 'A3TGCN' in models else 'GRU'
     model_name_2 = 'GRU' if 'GRU' in models else 'GRU'
@@ -241,7 +241,7 @@ def generate_figure_for_fpr(plotting_config):
         fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(17, 5),
                                  # gridspec_kw={'width_ratios': [5, 5]}
                                  )
-        fig.suptitle(f'FPR vs NAB Score on the log subset "{code} {aggregation}"', fontsize=12, y=0.0)
+        fig.suptitle(f'FDR vs NAB Score on the log subset "{code} {aggregation}"', fontsize=12, y=0.0)
 
         plt.subplots_adjust(wspace=0.25)
 
@@ -257,12 +257,12 @@ def generate_figure_for_fpr(plotting_config):
         y22 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'GRU']['reward_fn_normalized'].values
         y32 = sorted_mahalanobis_df[sorted_mahalanobis_df['model'] == 'GRU']['standard_normalized'].values
 
-        ax1.plot(x1, y1, 'o-', label='A3TGCN FPR', color='green')
-        ax1.plot(x1, y12, 'o--', label='GRU FPR', color='green')
+        ax1.plot(x1, y1, 'o-', label='A3TGCN FDR', color='green')
+        ax1.plot(x1, y12, 'o--', label='GRU FDR', color='green')
         ax1.legend(loc='upper left')
         ax1.set_xticks(x1)
         ax1.set_xlabel('Mahalanobis Distance Threshold')
-        ax1.set_ylabel('False Positive Rate', color='g')
+        ax1.set_ylabel('False Discovery Rate', color='g')
         ax1.tick_params(axis='y', colors="green")
         # ax1.set_ylim([50, 100])
         # ax1.legend(loc='upper left')
@@ -291,12 +291,12 @@ def generate_figure_for_fpr(plotting_config):
         y52 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'GRU']['reward_fn_normalized'].iloc[1:].values
         y62 = sorted_likelihood_df[sorted_likelihood_df['model'] == 'GRU']['standard_normalized'].iloc[1:].values
 
-        ax3.plot(x2, y4, 'o-', label='A3TGCN FPR', color='green')
-        ax3.plot(x2, y42, 'o--', label='GRU FPR', color='green')
+        ax3.plot(x2, y4, 'o-', label='A3TGCN FDR', color='green')
+        ax3.plot(x2, y42, 'o--', label='GRU FDR', color='green')
         ax3.legend(loc='upper left')
         ax3.set_xticks(x2)
         ax3.set_xlabel('Likelihood Function Threshold')
-        ax3.set_ylabel('False Positive Rate', color='g')
+        ax3.set_ylabel('False Discovery Rate', color='g')
         # ax3.legend(loc='upper left')
         ax3.legend(loc=(0.0, 1.04))
         ax3.tick_params(axis='y', colors="green")
@@ -437,7 +437,7 @@ def generate_latex_full_table(grid_search_results_csv_path):
         visualize_df['Fill NaN'] = max_reward_fn_normalized_df['fill_nan_value']
         visualize_df[['TP', 'TN', 'FP', 'FN']] = max_reward_fn_normalized_df['confusion_matrix'].apply(
             lambda x: pd.Series(extract_point_metrics(x)))
-        visualize_df['FPR'] = visualize_df['FP'] / (visualize_df['FP'] + visualize_df['TP']) * 100
+        visualize_df['FDR'] = visualize_df['FP'] / (visualize_df['FP'] + visualize_df['TP']) * 100
         visualize_df['Standard Profile'] = max_reward_fn_normalized_df['standard_normalized']
         visualize_df['Low FN Profile'] = max_reward_fn_normalized_df['reward_fn_normalized']
         visualize_df[['Issue Tracker', 'Instant Messenger', 'Test Log']] = max_reward_fn_normalized_df[
@@ -510,7 +510,7 @@ def generate_latex_selected_table(grid_search_results_csv_path):
         # visualize_df["Scoring strategy"] = max_reward_fn_normalized_df['post_processing_strategy']
         visualize_df[['TP', 'TN', 'FP', 'FN']] = max_reward_fn_normalized_df['confusion_matrix'].apply(
             lambda x: pd.Series(extract_point_metrics(x)))
-        visualize_df['FPR'] = visualize_df['FP'] / (visualize_df['FP'] + visualize_df['TP']) * 100
+        visualize_df['FDR'] = visualize_df['FP'] / (visualize_df['FP'] + visualize_df['TP']) * 100
         visualize_df['Standard Profile'] = max_reward_fn_normalized_df['standard_normalized']
         visualize_df['Low FN Profile'] = max_reward_fn_normalized_df['reward_fn_normalized']
         visualize_df[['Issue Tracker', 'Instant Messenger', 'Test Log']] = max_reward_fn_normalized_df[
@@ -634,7 +634,7 @@ def generate_latex_ensemble_table(essemble_result_dir):
         # visualize_df['Fill NaN'] = max_reward_fn_normalized_df['fill_nan_value']
         visualize_df[['TP', 'TN', 'FP', 'FN']] = priority_df['confusion_matrix'].apply(
             lambda x: pd.Series(extract_point_metrics(x)))
-        visualize_df['FPR'] = visualize_df['FP'] / (visualize_df['FP'] + visualize_df['TP']) * 100
+        visualize_df['FDR'] = visualize_df['FP'] / (visualize_df['FP'] + visualize_df['TP']) * 100
         visualize_df['Standard Profile'] = priority_df['standard_normalized']
         visualize_df['Low FN Profile'] = priority_df['reward_fn_normalized']
         visualize_df[['Issue Tracker', 'Instant Messenger', 'Test Log']] = priority_df[

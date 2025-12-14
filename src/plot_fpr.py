@@ -10,7 +10,7 @@ import torch
 from tqdm import tqdm
 
 from ibm_dataset_loader import IBMDatasetLoader
-from plotting_module import generate_figure_for_fpr
+from plotting_module import generate_figure_for_fdr
 from utils import set_random_seed
 
 # Configure logging
@@ -49,7 +49,7 @@ def main(cfg: DictConfig):
     # null_padding_feature: ${evaluation.null_padding_feature}
     # null_padding_target: ${evaluation.null_padding_target}
 
-    generate_figure_for_fpr(plotting_config)
+    generate_figure_for_fdr(plotting_config)
 
 
 
