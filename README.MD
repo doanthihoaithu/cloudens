@@ -4,7 +4,7 @@
 ![python](https://img.shields.io/badge/python-3.12.2-blue.svg)
 
 
-This repository contains the official implementation of our paper submitted to **ICSE 2026 Research Track** with title **"ClouDens: A Scalable Ensemble Framework for Anomaly Detection in Large-Scale Cloud Systems"**.
+This repository contains the official implementation of our paper submitted to **IEEE Transactions on Software Engineering (TSE)** with title **"ClouDens: A Scalable Ensemble Framework for Robust Anomaly Detection in Large-Scale Cloud Systems"**.
 
 ClouDens is an ensemble-based anomaly detection framework built on spatio-temporal graph neural networks (ST-GNNs), 
 with features tailored for large-scale cloud telemetry.
