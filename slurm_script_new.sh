@@ -11,7 +11,7 @@
 #SBATCH --mail-user=thihoaithu.doan@gssi.it   # mail address
 
 module load python
-source torch210/bin/activate
+source torch210_new/bin/activate
 python src/run_training_single_model.py
 deactivate
 
