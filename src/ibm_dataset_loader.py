@@ -807,6 +807,18 @@ class IBMDatasetLoader(object):
             #               (index <= anomaly_windows['anomaly_window_end'])).any()
             # timestamp_and_label_df.at[index, 'is_anomaly'] = 1.0 if is_anomaly else 0.0
 
+        # Assign anomaly_index and anomaly_length for each contiguous anomalous block
+        is_anom = timestamp_and_label_df['is_anomaly']
+        block_id = (is_anom != is_anom.shift()).cumsum()
+        timestamp_and_label_df['anomaly_index'] = None
+        timestamp_and_label_df['anomaly_length'] = None
+        anomaly_counter = 0
+        for _, group in timestamp_and_label_df.groupby(block_id, sort=False):
+            if group['is_anomaly'].iloc[0] == 1.0:
+                anomaly_counter += 1
+                timestamp_and_label_df.loc[group.index, 'anomaly_index'] = anomaly_counter
+                timestamp_and_label_df.loc[group.index, 'anomaly_length'] = len(group)
+
         timestamp_and_label_file = os.path.join(self.pivoted_raw_data_dir, 'timestamps_and_labels.csv')
         timestamp_and_label_df.to_csv(timestamp_and_label_file, index=False)
         print('Saved timestamps and labels at', timestamp_and_label_file)
@@ -862,6 +874,7 @@ class IBMDatasetLoader(object):
         print(f'Min timestamp: {timestamp_df.index.min().strftime("%Y-%m-%d %H:%M:%S")}')
         print(f'Max timestamp: {timestamp_df.index.max().strftime("%Y-%m-%d %H:%M:%S")}')
         print(f'Number of anomaly rows: {timestamp_df["is_anomaly"].sum()}')
+
     def extract_column_details(self, columns):
         # Find out the number of columns (features) for various groups of status codes,
         # namely -1, 2XX, 3XX, 4XX, and 5XX

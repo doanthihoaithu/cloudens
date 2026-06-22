@@ -3,11 +3,125 @@ import itertools
 import json
 
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import pandas as pd
 import os
 import numpy as np
 
 from utils import get_project_root
+
+
+# ── Reconstruction Error & Mahalanobis Distance Plot ─────────────────────────
+
+def _anomaly_spans(labels, index):
+    """Return list of (t_start, t_end) for each contiguous anomalous block."""
+    arr = np.array(labels).ravel().astype(float)
+    arr = np.where(np.isnan(arr), 0.0, arr)   # treat NaN as normal
+    spans, in_block, start = [], False, None
+    for i, v in enumerate(arr):
+        if v == 1 and not in_block:
+            start, in_block = i, True
+        elif v != 1 and in_block:
+            spans.append((index[start], index[i - 1]))
+            in_block = False
+    if in_block:
+        spans.append((index[start], index[-1]))
+    return spans
+
+
+def plot_reconstruction_and_mahalanobis(
+    reconstruction_error_raw: np.ndarray,
+    mahalanobis_distances: np.ndarray,
+    test_index,
+    test_labels,
+    model_dir: str,
+    model_name: str,
+) -> str:
+    """
+    Plot per-timestep reconstruction error and scaled Mahalanobis distance on
+    two vertically stacked subplots sharing the same time axis.  Anomalous
+    periods are highlighted with a semi-transparent red band on both subplots.
+
+    Parameters
+    ----------
+    reconstruction_error_raw : np.ndarray [total, N, F]
+        Absolute per-timestep reconstruction / forecast error.
+    mahalanobis_distances : np.ndarray [total]
+        Raw Mahalanobis distance, one value per test timestep.
+    test_index : array-like [total]
+        Datetime (or integer) index for the x-axis.
+    test_labels : array-like [total]
+        Binary ground-truth anomaly labels (0 = normal, 1 = anomaly).
+    model_dir : str
+        Directory where inference_time.csv lives; figure is saved here.
+    model_name : str
+        Used in the figure title and filename.
+
+    Returns
+    -------
+    str  Path to the saved PNG file.
+    """
+    # ── Aggregate reconstruction error to 1-D ────────────────────────────────
+    recon_score = reconstruction_error_raw.mean(axis=-1).mean(axis=-1)   # [total]
+
+    # ── Scale Mahalanobis to [0, 1] ──────────────────────────────────────────
+    m_min, m_max = mahalanobis_distances.min(), mahalanobis_distances.max()
+    mahala_scaled = (mahalanobis_distances - m_min) / (m_max - m_min + 1e-12)
+
+    # ── Build time axis ───────────────────────────────────────────────────────
+    x = np.array(test_index)
+
+    # ── Find anomaly spans ────────────────────────────────────────────────────
+    spans = _anomaly_spans(test_labels, x)
+
+    # ── Draw ──────────────────────────────────────────────────────────────────
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(20, 7), sharex=True,
+        constrained_layout=True,
+    )
+
+    # — top: reconstruction error —
+    ax1.plot(x, recon_score, color='steelblue', linewidth=0.8, label='Recon error (mean)')
+    ax1.fill_between(x, 0, recon_score, alpha=0.25, color='steelblue')
+    ax1.set_ylabel('Reconstruction Error', fontsize=11)
+    ax1.set_title(f'{model_name}  —  Reconstruction Error & Mahalanobis Distance',
+                  fontsize=13, fontweight='bold', pad=8)
+    ax1.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
+
+    # — bottom: scaled Mahalanobis —
+    ax2.plot(x, mahala_scaled, color='darkorange', linewidth=0.8,
+             label='Mahalanobis (scaled [0,1])')
+    ax2.fill_between(x, 0, mahala_scaled, alpha=0.25, color='darkorange')
+    ax2.set_ylabel('Mahalanobis Distance [0,1]', fontsize=11)
+    ax2.set_xlabel('Time', fontsize=11)
+    ax2.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
+
+    # — highlight anomaly regions on both subplots —
+    anomaly_patch = None
+    for t_start, t_end in spans:
+        for ax in (ax1, ax2):
+            p = ax.axvspan(t_start, t_end, color='red', alpha=0.18, zorder=0)
+        anomaly_patch = p   # keep last for legend
+
+    # — legends —
+    recon_patch  = mpatches.Patch(color='steelblue',  alpha=0.7, label='Recon error (mean)')
+    mahala_patch = mpatches.Patch(color='darkorange', alpha=0.7, label='Mahalanobis (scaled [0,1])')
+    if anomaly_patch is not None:
+        anom_patch = mpatches.Patch(color='red', alpha=0.4, label='Ground-truth anomaly')
+        ax1.legend(handles=[recon_patch,  anom_patch], loc='upper right', fontsize=9)
+        ax2.legend(handles=[mahala_patch, anom_patch], loc='upper right', fontsize=9)
+    else:
+        ax1.legend(handles=[recon_patch],  loc='upper right', fontsize=9)
+        ax2.legend(handles=[mahala_patch], loc='upper right', fontsize=9)
+
+    ax2.tick_params(axis='x', rotation=30)
+
+    # ── Save ──────────────────────────────────────────────────────────────────
+    os.makedirs(model_dir, exist_ok=True)
+    out_path = os.path.join(model_dir, f'{model_name}_recon_mahalanobis.png')
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return out_path
 
 
 def plot_training_history(model_name, training_history, model_save_dir):

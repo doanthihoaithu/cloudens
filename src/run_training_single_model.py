@@ -21,7 +21,14 @@ from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_sc
 from ibm_dataset_loader import IBMDatasetLoader
 from model_wrappers.A3TGCNWrapper import A3TGCNWrapper
 from model_wrappers.GRUWrapper import GRUWrapper
-from plotting_module import plot_training_history
+from model_wrappers.GDNWrapper import GDNWrapper
+from model_wrappers.TranADWrapper import TranADWrapper
+from model_wrappers.OmniAnomalyWrapper import OmniAnomalyWrapper
+from model_wrappers.USADWrapper import USADWrapper
+from model_wrappers.MTADGATWrapper import MTADGATWrapper
+from model_wrappers.GSTPROWrapper import GSTPROWrapper
+from model_wrappers.AnomalyTransformerWrapper import AnomalyTransformerWrapper
+from plotting_module import plot_training_history, plot_reconstruction_and_mahalanobis
 from anomaly_likelihood import compute_anomaly_likelihood
 from nab_scoring import calculate_nab_score_with_window_based_tp_fn
 from utils import clear_folder, get_project_root, get_full_err_scores, set_random_seed, calculate_mahalanobis_distance, \
@@ -45,6 +52,37 @@ def load_wrapper(model_name, config, static_edge_index, static_edge_weight):
         return A3TGCNWrapper(node_features, null_padding_feature, null_padding_target, periods, static_edge_index, static_edge_weight, batch_size=batch_size, device=device)
     elif model_name == 'GRU':
         return GRUWrapper(num_nodes, node_features, hidden_units, layer_dim=1, batch_size=batch_size, device=device)
+    elif model_name == 'GDN':
+        return GDNWrapper(num_nodes, node_features, periods,
+                          embed_dim=64, hidden_dim=hidden_units * 2, topk=20,
+                          batch_size=batch_size, device=device)
+    elif model_name == 'TranAD':
+        return TranADWrapper(num_nodes, node_features, periods,
+                             d_model=64, nhead=4, n_layers=1,
+                             batch_size=batch_size, device=device)
+    elif model_name == 'OmniAnomaly':
+        return OmniAnomalyWrapper(num_nodes, node_features, periods,
+                                  hidden_dim=hidden_units * 2, latent_dim=16,
+                                  n_layers=2, beta=0.1,
+                                  batch_size=batch_size, device=device)
+    elif model_name == 'USAD':
+        return USADWrapper(num_nodes, node_features, periods,
+                           hidden_dim=hidden_units * 2, latent_dim=32,
+                           n_layers=1, alpha=0.5,
+                           batch_size=batch_size, device=device)
+    elif model_name == 'MTAD_GAT':
+        return MTADGATWrapper(num_nodes, node_features, periods,
+                              d_model=32, nhead=2, gru_hidden=hidden_units * 2,
+                              batch_size=batch_size, device=device)
+    elif model_name == 'GST_PRO':
+        return GSTPROWrapper(num_nodes, node_features, periods,
+                             embed_dim=32, hidden_dim=hidden_units * 2, K=2,
+                             batch_size=batch_size, device=device)
+    elif model_name == 'AnomalyTransformer':
+        return AnomalyTransformerWrapper(num_nodes, node_features, periods,
+                                         d_model=hidden_units * 2, nhead=4, n_layers=3,
+                                         lambda_=0.1,
+                                         batch_size=batch_size, device=device)
     # if model_name == 'ASTGCN':
     #     return ASTGCNWrapper(num_nodes, node_features, periods, static_edge_index, batch_size=batch_size, device=device)
     # if model_name == 'MTGNN':
@@ -95,7 +133,7 @@ def main(cfg: DictConfig):
     # })
 
     data_preparation_config = cfg.data_preparation_pipeline
-    if experiment_config.use_model == 'GRU':
+    if experiment_config.use_model in ('GRU', 'GDN', 'TranAD', 'OmniAnomaly', 'USAD', 'MTAD_GAT', 'GST_PRO', 'AnomalyTransformer'):
         data_preparation_config.null_padding_feature = False
         data_preparation_config.null_padding_target = False
 
@@ -113,6 +151,65 @@ def main(cfg: DictConfig):
     selected_group_mode = ibm_dataset_loader.selected_group_mode
 
     analyze_reconstruction_errors(ibm_dataset_loader, selected_group_mode, model_configs=model_configs, experiment_config=experiment_config)
+
+def _compute_pr_metrics(reconstruction_error_raw: np.ndarray,
+                        test_labels,
+                        sliding_window: int = 64) -> dict:
+    """
+    Compute AUC-PR and VUS-PR (FFVUS) from raw per-timestep reconstruction errors.
+
+    Parameters
+    ----------
+    reconstruction_error_raw : np.ndarray, shape [total, N, F]
+        Absolute reconstruction error from model.predict().
+    test_labels : array-like, shape [total]
+        Binary ground-truth anomaly labels (0 = normal, 1 = anomaly).
+    sliding_window : int
+        Temporal tolerance window for VUS (the FFVUS "slope" parameter).
+        VUS averages AUC-PR over window sizes 0 … sliding_window.
+
+    Returns
+    -------
+    dict with keys 'AUC_PR' and 'VUS_PR' (float, NaN on failure).
+    """
+    from sklearn.metrics import average_precision_score
+    from vus.analysis.robustness_eval import generate_curve
+
+    # Aggregate to a 1-D anomaly score: mean over N and F
+    scores = reconstruction_error_raw.mean(axis=-1).mean(axis=-1)   # [total]
+
+    # Min-max normalise to [0, 1] (required by VUS internals)
+    s_min, s_max = scores.min(), scores.max()
+    scores_norm = (scores - s_min) / (s_max - s_min + 1e-12)
+
+    # Align ground-truth labels; drop NaN positions
+    labels = np.array(test_labels).ravel().astype(float)
+    valid = ~np.isnan(labels)
+    labels = labels[valid].astype(int)
+    scores_norm = scores_norm[valid]
+
+    results = {'AUC_PR': float('nan'), 'VUS_PR': float('nan')}
+
+    if labels.sum() == 0:
+        log.warning('No positive labels found — AUC_PR and VUS_PR are undefined.')
+        return results
+
+    # AUC-PR
+    try:
+        results['AUC_PR'] = float(average_precision_score(labels, scores_norm))
+    except Exception as e:
+        log.warning(f'AUC-PR computation failed: {e}')
+
+    # VUS-PR  (FFVUS, slope = sliding_window)
+    try:
+        log.info(f'Computing VUS-PR with sliding_window={sliding_window} — this may take a moment …')
+        _, _, _, _, _, _, _, vus_pr = generate_curve(labels, scores_norm, sliding_window)
+        results['VUS_PR'] = float(vus_pr)
+    except Exception as e:
+        log.warning(f'VUS-PR computation failed: {e}')
+
+    return results
+
 
 def analyze_reconstruction_errors(data_loader, selected_group_mode, model_configs, experiment_config):
 
@@ -230,9 +327,12 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                 log.info(f"Reconstruction errors saved to {predictions_file}")
                 mse_reconstruction_error_file = os.path.join(os.path.dirname(predictions_file), 'mse_error.txt')
                 mse_reconstruction_error_raw = reconstruction_error_raw.mean(axis=-1).mean(axis=-1).mean(axis=-1)
-                with open(mse_reconstruction_error_file, 'w') as f:
-                    f.write(str(mse_reconstruction_error_raw))
-                    log.info(f"MSE reconstruction errors saved to {mse_reconstruction_error_file}")
+                pr_metrics = _compute_pr_metrics(reconstruction_error_raw, data_loader.test_labels)
+                with open(mse_reconstruction_error_file, 'w') as mse_f:
+                    mse_f.write(f"MSE={str(mse_reconstruction_error_raw)}\n")
+                    mse_f.write(f"AUC_PR={pr_metrics['AUC_PR']:.6f}\n")
+                    mse_f.write(f"VUS_PR={pr_metrics['VUS_PR']:.6f}\n")
+                    log.info(f"MSE, AUC_PR, VUS_PR (FFVUS slope=64) saved to {mse_reconstruction_error_file}")
                 mahalanobis_distances = calculate_mahalanobis_distance(reconstruction_error_raw)
                 mahalanobis_distances_file = os.path.join(os.path.dirname(predictions_file), 'mahalanobis.npy')
                 with open(mahalanobis_distances_file, 'wb') as f:
@@ -264,9 +364,12 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                 log.info(f"Reconstruction errors loaded from {predictions_file}")
                 mse_reconstruction_error_file = os.path.join(os.path.dirname(predictions_file), 'mse_error.txt')
                 mse_reconstruction_error_raw = reconstruction_error_raw.mean(axis=-1).mean(axis=-1).mean(axis=-1)
-                with open(mse_reconstruction_error_file, 'w') as f:
-                    f.write(str(mse_reconstruction_error_raw))
-                    log.info(f"MSE reconstruction errors saved to {mse_reconstruction_error_file}")
+                pr_metrics = _compute_pr_metrics(reconstruction_error_raw, data_loader.test_labels)
+                with open(mse_reconstruction_error_file, 'w') as mse_f:
+                    mse_f.write(f"MSE={str(mse_reconstruction_error_raw)}\n")
+                    mse_f.write(f"AUC_PR={pr_metrics['AUC_PR']:.6f}\n")
+                    mse_f.write(f"VUS_PR={pr_metrics['VUS_PR']:.6f}\n")
+                    log.info(f"MSE, AUC_PR, VUS_PR (FFVUS slope=64) saved to {mse_reconstruction_error_file}")
 
                 with open(is_nan_results_file, 'rb') as is_nan_results_f:
                     is_nan_results = np.load(is_nan_results_f, allow_pickle=True)
@@ -320,6 +423,16 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
 
         assert reconstruction_error_raw.shape[0] == mahalanobis_distances.shape[0]
         assert reconstruction_error_raw.shape[0] == len(data_loader.test_index)
+
+        plot_path = plot_reconstruction_and_mahalanobis(
+            reconstruction_error_raw=reconstruction_error_raw,
+            mahalanobis_distances=mahalanobis_distances,
+            test_index=data_loader.test_index,
+            test_labels=data_loader.test_labels,
+            model_dir=model_dir,
+            model_name=model,
+        )
+        log.info(f'Reconstruction & Mahalanobis plot saved to {plot_path}')
 
         # reconstruction_error_raw = refine_reconstruction_error_with_is_nan_mask(reconstruction_error_raw, data_loader.test_is_nan_mask.values.astype(bool))
         # is_anomalies, likelihoods, reconstruction_error = label_reconstruction_errors(reconstruction_errors, )
