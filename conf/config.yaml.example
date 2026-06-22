@@ -11,12 +11,15 @@ hydra:
 modeling:
   random_seed: 42
 
+supported_models: ['GRU','TranAD','AnomalyTransformer', 'T-GCN','ST-GCN','A3TGCN','GDN','MTAD-GAT','STformer'] # 'USAD'
+supported_slide_wins: [6, 12, 24, 48]
+
 evaluation:
   retrain: false
   retest:  false
   re_calculate_mahalanobis: false
   top_k_contribution: 5
-  use_model: 'A3TGCN' # 'A3TGCN' or 'GRU'
+  use_model: 'A3TGCN' # 'A3TGCN' or 'GRU', 'GDN', 'TranAD', 'OmniAnomaly', 'USAD','MTAD-GAT','GST_PRO','AnomalyTransformer'
   null_padding_feature: false
   null_padding_target: false
   train_batch_size: 16 # 16  # training batch size
@@ -25,7 +28,7 @@ evaluation:
   fill_nan: 'zero' # 'zero','mean', 'median'
   nab_scoring_profiles: [ "standard", "reward_fn" ] # Options: "standard", "reward_fn"
   model_save_path: "trained_models/"
-  epochs: 15
+  epochs: 5
   post_processing_strategies: ['likelihood', 'mahalanobis']
   topks: [1]
   distribution_anomaly_thresholds: [99.5, 99.6, 99.7, 99.8, 99.9]
@@ -104,7 +107,7 @@ plotting:
   nab_profiles: ['standard', 'low_fn']
 
 multiple_evaluation:
-  models: ['GRU','A3TGCN']
+  models: ['GRU','A3TGCN','GDN','TranAD']
 #  models: ['GRU']
   slide_wins: [6, 12]
 #  slide_wins: [6,8,12]
@@ -118,6 +121,41 @@ multiple_evaluation:
   null_padding_target: [true, false]
 
 model_configs:
+  AnomalyTransformer:
+    model_filename: 'AnomalyTransformer_model.pt'
+    slide_win: ${evaluation.slide_win}
+    null_padding_target: false
+    null_padding_feature: false
+  GST_PRO:
+    model_filename: 'GST_PRO_model.pt'
+    slide_win: ${evaluation.slide_win}
+    null_padding_target: false
+    null_padding_feature: false
+  MTAD_GAT:
+    model_filename: 'MTAD_GAT_model.pt'
+    slide_win: ${evaluation.slide_win}
+    null_padding_target: false
+    null_padding_feature: false
+  USAD:
+    model_filename: 'USAD_model.pt'
+    slide_win: ${evaluation.slide_win}
+    null_padding_target: false
+    null_padding_feature: false
+  OmniAnomaly:
+    model_filename: 'OmniAnomaly_model.pt'
+    slide_win: ${evaluation.slide_win}
+    null_padding_target: false
+    null_padding_feature: false
+  TranAD:
+    model_filename: 'TranAD_model.pt'
+    slide_win: ${evaluation.slide_win}
+    null_padding_target: false
+    null_padding_feature: false
+  GDN:
+    model_filename: 'GDN_model.pt'
+    slide_win: ${evaluation.slide_win}
+    null_padding_target: false
+    null_padding_feature: false
   GRU:
     model_filename: 'GRU_autoencoder.h5'
 #    encoding_dim: 32
