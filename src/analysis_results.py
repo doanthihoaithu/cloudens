@@ -111,6 +111,7 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
         axis.set_title(title, fontsize=10, fontweight='bold')
         axis.legend(title='Window', fontsize=7, title_fontsize=7,
                     loc='center left', bbox_to_anchor=(1.01, 0.5), ncol=1)
+        axis.set_yscale('log')
         axis.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
         axis.tick_params(axis='y', labelsize=8)
         axis.set_xticklabels(valid_models, rotation=30, ha='right', fontsize=8)
