@@ -3,7 +3,6 @@ import time
 
 import torch
 from torch.nn import GRU
-from torch_geometric_temporal import A3TGCN2, ASTGCN
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm

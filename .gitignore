@@ -8,6 +8,7 @@ conf/config.yaml
 *.out
 *.err
 torch210
+torch210_new
 src/testing.ipynb
 plot_results
 .codegraph

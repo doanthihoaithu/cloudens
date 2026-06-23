@@ -19,6 +19,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score, confusion_matrix, matthews_corrcoef
 
 from ibm_dataset_loader import IBMDatasetLoader
+from metrics.ffvus.ffvus_metrics import FFVUS
 from model_wrappers.A3TGCNWrapper import A3TGCNWrapper
 from model_wrappers.GRUWrapper import GRUWrapper
 from model_wrappers.GDNWrapper import GDNWrapper
@@ -173,7 +174,6 @@ def _compute_pr_metrics(reconstruction_error_raw: np.ndarray,
     dict with keys 'AUC_PR' and 'VUS_PR' (float, NaN on failure).
     """
     from sklearn.metrics import average_precision_score
-    from vus.analysis.robustness_eval import generate_curve
 
     # Aggregate to a 1-D anomaly score: mean over N and F
     scores = reconstruction_error_raw.mean(axis=-1).mean(axis=-1)   # [total]
@@ -203,7 +203,7 @@ def _compute_pr_metrics(reconstruction_error_raw: np.ndarray,
     # VUS-PR  (FFVUS, slope = sliding_window)
     try:
         log.info(f'Computing VUS-PR with sliding_window={sliding_window} — this may take a moment …')
-        _, _, _, _, _, _, _, vus_pr = generate_curve(labels, scores_norm, sliding_window)
+        vus_pr = FFVUS(slope=sliding_window).score(labels, scores_norm)['value']
         results['VUS_PR'] = float(vus_pr)
     except Exception as e:
         log.warning(f'VUS-PR computation failed: {e}')
