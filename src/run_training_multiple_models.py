@@ -62,7 +62,7 @@ def main(cfg: DictConfig):
 
     combination_list = []
     for model in models:
-        if model in ('GRU', 'GDN', 'TranAD', 'OmniAnomaly', 'USAD', 'MTAD_GAT', 'GST_PRO', 'AnomalyTransformer'):
+        if model in ('GRU', 'TranAD', 'AnomalyTransformer'):
             GRU_combinations = list(itertools.product([model], slide_wins,
                                             http_codes,
                                             aggregations,
@@ -96,7 +96,7 @@ def main(cfg: DictConfig):
         experiment_config = cfg.evaluation
         model_configs = cfg.model_configs
 
-        if experiment_config.use_model in ('GRU', 'GDN', 'TranAD', 'OmniAnomaly', 'USAD', 'MTAD_GAT', 'GST_PRO', 'AnomalyTransformer'):
+        if experiment_config.use_model in ('GRU','TranAD', 'AnomalyTransformer'):
             data_preparation_config.null_padding_feature = False
             data_preparation_config.null_padding_target = False
 

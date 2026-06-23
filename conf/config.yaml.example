@@ -15,11 +15,11 @@ supported_models: ['GRU','TranAD','AnomalyTransformer', 'T-GCN','ST-GCN','A3TGCN
 supported_sliding_windows: [6, 12, 24, 48]
 
 evaluation:
-  retrain: false
+  retrain: true
   retest:  false
   re_calculate_mahalanobis: false
   top_k_contribution: 5
-  use_model: 'A3TGCN' # 'A3TGCN' or 'GRU', 'GDN', 'TranAD', 'OmniAnomaly', 'USAD','MTAD-GAT','GST_PRO','AnomalyTransformer'
+  use_model: 'GRU' # 'A3TGCN' or 'GRU', 'GDN', 'TranAD', 'OmniAnomaly', 'USAD','MTAD-GAT','GST_PRO','AnomalyTransformer'
   null_padding_feature: false
   null_padding_target: false
   train_batch_size: 16 # 16  # training batch size
@@ -28,7 +28,7 @@ evaluation:
   fill_nan: 'zero' # 'zero','mean', 'median'
   nab_scoring_profiles: [ "standard", "reward_fn" ] # Options: "standard", "reward_fn"
   model_save_path: "trained_models/"
-  epochs: 5
+  epochs: 15
   post_processing_strategies: ['likelihood', 'mahalanobis']
   topks: [1]
   distribution_anomaly_thresholds: [99.5, 99.6, 99.7, 99.8, 99.9]
@@ -107,13 +107,13 @@ plotting:
   nab_profiles: ['standard', 'low_fn']
 
 multiple_evaluation:
-  models: ['GRU','A3TGCN','GDN','TranAD']
+  models: ['GRU','TranAD'] # 'A3TGCN','GDN',
 #  models: ['GRU']
-  slide_wins: [6, 12]
+  slide_wins: ${supported_sliding_windows}
 #  slide_wins: [6,8,12]
   subsets:
 #    http_codes: [ '5xx', '4xx']
-    http_codes: [ '5xx','4xx']
+    http_codes: [ '5xx','4xx','2xx']
     aggregations: [ 'count', 'avg','min','max' ]
 #    aggregations: ['max']
   fill_nan_values: ['zero','mean', 'median']
