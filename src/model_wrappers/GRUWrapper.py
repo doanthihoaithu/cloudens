@@ -87,6 +87,8 @@ class GRUWrapper:
 
         start_time = time.time()
 
+
+
         for epoch in range(epochs):
             model.train()
             step = 0
@@ -112,7 +114,7 @@ class GRUWrapper:
             print("Epoch {} train RMSE: {:.7f}, valid RMSE: {:.7f}".format(epoch, epoch_train_loss, epoch_valid_loss))
         end_time = time.time()
         training_time = end_time - start_time
-        history = {'epochs': epochs, 'train_losses': train_losses, 'valid_losses': valid_losses, 'training_time': training_time}
+        history = {'epochs': epochs,'train_losses': train_losses, 'valid_losses': valid_losses, 'training_time': training_time}
         self.history = history
         return history
 

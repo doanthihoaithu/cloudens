@@ -144,8 +144,13 @@ def plot_training_history(model_name, training_history, model_save_dir):
     plt.savefig(png_filepath, dpi=300)
 
     training_time_file_path = os.path.join(model_save_dir, f'{model_name}_training_time.csv')
+    training_history_file_path = os.path.join(model_save_dir, f'{model_name}_training_history.csv')
     pd.DataFrame(data=dict({'training_time': [training_history['training_time']], 'epochs': [epochs]})).to_csv(training_time_file_path)
+    pd.DataFrame(data=dict({'epochs': range(epochs),
+                            'train_losses':train_losses,
+                            'valid_losses':valid_losses})).to_csv(training_history_file_path, index=False)
     print('Saved training history to', png_filepath)
+    print('Saved training history to', training_time_file_path)
     print('Saved training time to ', training_time_file_path)
 def plot_results(results_df, is_anomalies, anomaly_windows, result_directory, file_name_prefix='', raw_nab_score=None,
                  normalized_nab_score=None, model='ANN'):
