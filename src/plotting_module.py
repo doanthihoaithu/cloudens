@@ -76,7 +76,7 @@ def plot_reconstruction_and_mahalanobis(
 
     # ── Draw ──────────────────────────────────────────────────────────────────
     fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(20, 7), sharex=True,
+        2, 1, figsize=(10, 10), sharex=True,
         constrained_layout=True,
     )
 
