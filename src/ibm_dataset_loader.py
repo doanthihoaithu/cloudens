@@ -156,6 +156,7 @@ class IBMDatasetLoader(object):
         scaler = MinMaxScaler()
         self.X_train_scaled = scaler.fit_transform(self.X_train_raw)
         self.X_test_scaled = scaler.transform(self.X_test_raw)
+        self.scaler = scaler
 
         assert self.X_train_scaled.shape == self.train_is_nan_mask.shape
         assert self.X_test_scaled.shape == self.test_is_nan_mask.shape
