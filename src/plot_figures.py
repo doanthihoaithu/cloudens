@@ -2,6 +2,7 @@ import itertools
 import os
 
 import hydra
+import matplotlib.dates as mdates
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
@@ -167,7 +168,7 @@ def plot_reconstruction_errors(dataloader, results_dir, model_name,
     ax.set_ylabel('Mean Reconstruction Error', fontsize=10)
     ax.set_title(
         f'{model_name} — Reconstruction Error on Test Set\n'
-        f'({http_code} / {aggregation} / fill={fill_nan} / win={slide_win})',
+        f'({http_code} / {aggregation} / imputation={fill_nan} / win={slide_win})',
         fontsize=11, fontweight='bold',
     )
     ax.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
@@ -455,6 +456,87 @@ def plot_only_multiple_node_series_zoom_in(dataloader, shown_nodes, out_dir=None
     return out_path
 
 
+def plot_only_time_series(dataloader, out_dir=None,
+                          zoom_periods=None
+                          ):
+    anomaly_windows_test = dataloader.anomaly_windows_test.copy()
+    anomaly_windows_test['anomaly_window_start'] = pd.to_datetime(
+        anomaly_windows_test['anomaly_window_start'])
+    anomaly_windows_test['anomaly_window_end'] = pd.to_datetime(
+        anomaly_windows_test['anomaly_window_end'])
+    index = dataloader.test_index
+
+    X_raw = dataloader.scaler.inverse_transform(dataloader.X_test_scaled)
+    mean_series = X_raw.mean(axis=1)
+    _ms_min, _ms_max = mean_series.min(), mean_series.max()
+    mean_series = (mean_series - _ms_min) / max(_ms_max - _ms_min, 1e-8)
+
+    T0 = min(len(mean_series), len(index))
+    plot_index = pd.to_datetime(index[:T0])
+    plot_series = mean_series[:T0]
+
+    fig, ax = plt.subplots(figsize=(12, 2.5), constrained_layout=True)
+
+    ax.plot(plot_index, plot_series, color='steelblue', linewidth=0.8)
+    _plot_source_spans(ax, anomaly_windows_test, alpha=0.3)
+
+    filt = dataloader.data_preparation_config.features_prep.filter
+    http_codes_used = ', '.join(filt.http_codes)
+    agg_used = ', '.join(filt.aggregations)
+
+    ax.set_xlabel('Timestamp', fontsize=FONT_SIZE)
+    ax.set_ylabel('Normalized Value [0,1]', fontsize=FONT_SIZE)
+    # ax.set_title(f'Sum of ${http_codes_used}\,{agg_used}$ subset accross all dimensions',
+    #              fontsize=FONT_SIZE)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+    ax.tick_params(axis='x', rotation=30, labelsize=FONT_SIZE - 1)
+    ax.tick_params(axis='y', labelsize=FONT_SIZE - 1)
+    ax.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
+
+    # zoom_periods: list of (start, end) tuples
+    _zoom_list = list(zoom_periods) if zoom_periods else []
+
+    for period_i, (zs, ze) in enumerate(_zoom_list):
+        zs = pd.to_datetime(zs)
+        ze = pd.to_datetime(ze)
+        mid = zs + (ze - zs) / 2
+
+        # Find anomaly windows that overlap with this period
+        overlapping_ids = [
+            str(aw_idx-6)
+            for aw_idx, win in anomaly_windows_test.iterrows()
+            if win['anomaly_window_start'] <= ze and win['anomaly_window_end'] >= zs
+        ]
+        annotation = (f'Anomaly {", ".join(overlapping_ids)}'
+                      if overlapping_ids else f'Period {period_i}')
+
+        ax.annotate(
+            annotation,
+            xy=(mid, 0.02),
+            xycoords=('data', 'axes fraction'),
+            xytext=(mid, 0.22),
+            textcoords=('data', 'axes fraction'),
+            fontsize=FONT_SIZE - 2,
+            color='red',
+            ha='center',
+            arrowprops=dict(arrowstyle='->', color='red', lw=1.0),
+        )
+
+    fig.legend(handles=_source_legend_handles(), loc='upper right',
+               bbox_to_anchor=(1.0, 1.15), ncol=len(_ANOMALY_SOURCE_COLORS),
+               fontsize=FONT_SIZE - 1, frameon=True)
+
+    save_dir = out_dir or '.'
+    os.makedirs(save_dir, exist_ok=True)
+    safe_http = http_codes_used.replace(',', '').replace(' ', '_')
+    safe_agg = agg_used.replace(',', '').replace(' ', '_')
+    out_path = os.path.join(save_dir, f'time_series_{safe_http}_{safe_agg}.png')
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'Saved time series plot to {out_path}')
+    return out_path
+
+
 def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategies,
                             http_codes, aggregations,
                             null_padding_features,
@@ -469,6 +551,8 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
 
     X_raw = dataloader.scaler.inverse_transform(dataloader.X_test_scaled)
     mean_series = X_raw.mean(axis=1)
+    _ms_min, _ms_max = mean_series.min(), mean_series.max()
+    mean_series = (mean_series - _ms_min) / max(_ms_max - _ms_min, 1e-8)
 
     for http_code in http_codes:
         for agg in aggregations:
@@ -522,11 +606,13 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                         maha = mahalanobis[:T]
                         idx = index[:T]
 
-                        # Reconstruction error panel: mean across all N×F dimensions
+                        # Reconstruction error panel: mean across all N×F dimensions, scaled to [0,1]
+                        _rm = recon.mean(axis=(1, 2))
+                        _rm = (_rm - _rm.min()) / max(_rm.max() - _rm.min(), 1e-8)
                         all_panels.append({
                             'type': 'recon',
                             'model': model,
-                            'series': recon.mean(axis=(1, 2)),
+                            'series': _rm,
                             'index': idx,
                         })
 
@@ -603,7 +689,7 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                 T0 = min(len(mean_series), len(index))
                 ax0.plot(index[:T0], mean_series[:T0], color='steelblue', linewidth=0.8)
                 _plot_source_spans(ax0, anomaly_windows_test, alpha=0.3)
-                ax0.set_ylabel('Mean Value', fontsize=FONT_SIZE)
+                ax0.set_ylabel('Mean Value [0,1]', fontsize=FONT_SIZE)
                 ax0.set_title('Averaged Time Series', fontsize=FONT_SIZE)
                 ax0.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
                 ax0.tick_params(axis='y', labelsize=FONT_SIZE - 1)
@@ -618,7 +704,7 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
 
                     if panel['type'] == 'recon':
                         ax.plot(idx, panel['series'], color='steelblue', linewidth=0.8)
-                        ax.set_ylabel('Recon Error', fontsize=FONT_SIZE)
+                        ax.set_ylabel('Recon Error [0,1]', fontsize=FONT_SIZE)
                         ax.set_title(f'{panel["model"]} — Reconstruction Error (mean)',
                                      fontsize=FONT_SIZE)
 
@@ -684,7 +770,7 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                 axes[-1].tick_params(axis='x', rotation=30, labelsize=FONT_SIZE - 1)
 
                 fig.suptitle(
-                    f'Detected Anomalies — {http_code} / {agg} / fill_nan={fill_nan}',
+                    f'Detected Anomalies — {http_code} / {agg} / imputation={fill_nan}',
                     fontsize=FONT_SIZE + 2, fontweight='bold',
                 )
 
@@ -697,6 +783,560 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                 fig.savefig(out_path, dpi=150, bbox_inches='tight')
                 plt.close(fig)
                 print(f'Saved detected anomalies plot to {out_path}')
+
+                # ── Zoom-in figures: one per (strategy × span), per-model subplots ─
+                model_list = list(dict.fromkeys(
+                    p['model'] for p in all_panels if p['type'] == 'score'))
+                all_recon_panels = [p for p in all_panels if p['type'] == 'recon']
+
+                for a3_panel in all_panels:
+                    if a3_panel['type'] != 'score' or a3_panel['model'] != 'A3TGCN':
+                        continue
+                    strategy = a3_panel['strategy']
+                    a3_idx = np.array(a3_panel['index'])
+                    unique_mask_raw = a3_panel.get('unique_mask')
+                    if unique_mask_raw is None:
+                        continue
+                    gt_mask_z = labels[:len(a3_idx)].astype(bool)
+                    unique_true = unique_mask_raw & gt_mask_z
+                    if not unique_true.any():
+                        continue
+
+                    strat_score_panels = [p for p in all_panels
+                                          if p['type'] == 'score' and p['strategy'] == strategy]
+
+                    for span_i, (t_start, t_end) in enumerate(
+                            _anomaly_spans(unique_true.astype(float), a3_idx)):
+                        pad = pd.Timedelta(hours=6)
+                        zoom_start = pd.Timestamp(t_start) - pad
+                        zoom_end = pd.Timestamp(t_end) + pad
+
+                        def _zmask(arr_idx, _zs=zoom_start, _ze=zoom_end):
+                            ai = np.array(arr_idx, dtype='datetime64[ns]')
+                            return ((ai >= np.datetime64(_zs, 'ns')) &
+                                    (ai <= np.datetime64(_ze, 'ns')))
+
+                        # Build per-model row list: (model, kind, panel)
+                        model_row_specs = []
+                        for m in model_list:
+                            rp = next((p for p in all_recon_panels if p['model'] == m), None)
+                            sp = next((p for p in strat_score_panels if p['model'] == m), None)
+                            if rp:
+                                model_row_specs.append((m, 'recon', rp))
+                            if sp:
+                                model_row_specs.append((m, 'score', sp))
+
+                        n_zoom_rows = 1 + len(model_row_specs)
+                        fig_z, axes_z = plt.subplots(
+                            n_zoom_rows, 1,
+                            figsize=(14, 3 * n_zoom_rows),
+                            sharex=True,
+                            constrained_layout=True,
+                        )
+                        if n_zoom_rows == 1:
+                            axes_z = [axes_z]
+
+                        # Row 0: averaged time series
+                        T0 = min(len(mean_series), len(index))
+                        ts_idx = np.array(index[:T0])
+                        zm0 = _zmask(ts_idx)
+                        ax_z0 = axes_z[0]
+                        ax_z0.plot(ts_idx[zm0], mean_series[:T0][zm0],
+                                   color='steelblue', linewidth=0.8)
+                        _plot_source_spans(ax_z0, anomaly_windows_test, alpha=0.3)
+                        ax_z0.set_xlim(zoom_start, zoom_end)
+                        ax_z0.set_ylabel('Mean Value [0,1]', fontsize=FONT_SIZE)
+                        ax_z0.set_title('Averaged Time Series', fontsize=FONT_SIZE)
+                        ax_z0.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
+                        ax_z0.tick_params(axis='y', labelsize=FONT_SIZE - 1)
+
+                        # One subplot per (model, kind)
+                        for row_z, (m, kind, panel) in enumerate(model_row_specs, start=1):
+                            ax_z = axes_z[row_z]
+                            p_idx = np.array(panel['index'])
+                            zm = _zmask(p_idx)
+                            _plot_source_spans(ax_z, anomaly_windows_test, alpha=0.2)
+                            ax_z.set_xlim(zoom_start, zoom_end)
+
+                            if kind == 'recon':
+                                ax_z.plot(p_idx[zm], panel['series'][zm],
+                                          color='steelblue', linewidth=0.9)
+                                ax_z.set_ylabel('Recon Error [0,1]', fontsize=FONT_SIZE)
+                                ax_z.set_title(f'{m} — Reconstruction Error',
+                                               fontsize=FONT_SIZE)
+
+                            else:  # score
+                                sc = panel['scores']
+                                det = panel['is_anomalies'].astype(bool)
+                                gt = labels[:len(p_idx)].astype(bool)
+                                ax_z.plot(p_idx[zm], sc[zm],
+                                          color='steelblue', linewidth=0.9)
+                                tp_z = det & gt
+                                fp_z = det & ~gt
+                                if (tp_z & zm).any():
+                                    ax_z.scatter(p_idx[tp_z & zm], sc[tp_z & zm],
+                                                 color='red', s=8, zorder=3)
+                                if (fp_z & zm).any():
+                                    ax_z.scatter(p_idx[fp_z & zm], sc[fp_z & zm],
+                                                 color='darkorange', s=8, zorder=3)
+                                if m == 'A3TGCN':
+                                    u_raw = panel.get('unique_mask')
+                                    if u_raw is not None:
+                                        u_true_z = u_raw & gt
+                                        if (u_true_z & zm).any():
+                                            ax_z.scatter(p_idx[u_true_z & zm],
+                                                         sc[u_true_z & zm],
+                                                         color='green', s=20,
+                                                         zorder=4, marker='*')
+                                ax_z.set_ylabel('Score', fontsize=FONT_SIZE)
+                                ax_z.set_title(f'{m} — {strategy}', fontsize=FONT_SIZE)
+
+                            ax_z.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
+                            ax_z.tick_params(axis='y', labelsize=FONT_SIZE - 1)
+
+                        axes_z[-1].set_xlabel('Time', fontsize=FONT_SIZE)
+                        axes_z[-1].tick_params(axis='x', rotation=30,
+                                               labelsize=FONT_SIZE - 1)
+                        fig_z.suptitle(
+                            f'Zoom-in — {strategy} — '
+                            f'{http_code} / {agg} / imputation={fill_nan}\n'
+                            f'{t_start} → {t_end}',
+                            fontsize=FONT_SIZE, fontweight='bold',
+                        )
+
+                        zoom_legend = [
+                            plt.Line2D([0], [0], color='steelblue', linewidth=1.2,
+                                       label='Score / Recon Error'),
+                            plt.Line2D([0], [0], color='red', marker='o',
+                                       markersize=4, linestyle='None',
+                                       label='True detected'),
+                            plt.Line2D([0], [0], color='darkorange', marker='o',
+                                       markersize=4, linestyle='None',
+                                       label='False detected'),
+                            plt.Line2D([0], [0], color='green', marker='*',
+                                       markersize=7, linestyle='None',
+                                       label='True unique to A3TGCN'),
+                            *_source_legend_handles(),
+                        ]
+                        fig_z.legend(handles=zoom_legend, loc='center left',
+                                     bbox_to_anchor=(1.01, 0.5),
+                                     fontsize=FONT_SIZE - 1, frameon=True)
+
+                        zoom_path = os.path.join(
+                            save_dir,
+                            f'detected_anomalies_{http_code}_{agg}_{fill_nan}'
+                            f'_{strategy}_zoom_{span_i}.png',
+                        )
+                        fig_z.savefig(zoom_path, dpi=150, bbox_inches='tight')
+                        plt.close(fig_z)
+                        print(f'Saved zoom-in plot to {zoom_path}')
+
+                        # ── Combined zoom: all models overlaid in one subplot ──
+                        model_colors = {
+                            m: plt.colormaps['tab10'](i / max(len(model_list), 1))
+                            for i, m in enumerate(model_list)
+                        }
+                        n_comb_rows = 1 + (1 if all_recon_panels else 0) + 1
+                        fig_c, axes_c = plt.subplots(
+                            n_comb_rows, 1,
+                            figsize=(14, 3 * n_comb_rows),
+                            sharex=True,
+                            constrained_layout=True,
+                        )
+                        if n_comb_rows == 1:
+                            axes_c = [axes_c]
+
+                        # Row 0: averaged time series
+                        ax_c0 = axes_c[0]
+                        ax_c0.plot(ts_idx[zm0], mean_series[:T0][zm0],
+                                   color='steelblue', linewidth=0.8)
+                        _plot_source_spans(ax_c0, anomaly_windows_test, alpha=0.3)
+                        ax_c0.set_xlim(zoom_start, zoom_end)
+                        ax_c0.set_ylabel('Mean Value [0,1]', fontsize=FONT_SIZE)
+                        ax_c0.set_title('Averaged Time Series', fontsize=FONT_SIZE)
+                        ax_c0.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
+                        ax_c0.tick_params(axis='y', labelsize=FONT_SIZE - 1)
+
+                        row_c = 1
+                        # Row 1: all models' recon overlaid
+                        if all_recon_panels:
+                            ax_cr = axes_c[row_c]
+                            for rp in all_recon_panels:
+                                rp_idx = np.array(rp['index'])
+                                zm = _zmask(rp_idx)
+                                ax_cr.plot(rp_idx[zm], rp['series'][zm],
+                                           color=model_colors[rp['model']],
+                                           linewidth=0.9, label=rp['model'])
+                            _plot_source_spans(ax_cr, anomaly_windows_test, alpha=0.2)
+                            ax_cr.set_xlim(zoom_start, zoom_end)
+                            ax_cr.set_ylabel('Recon Error [0,1]', fontsize=FONT_SIZE)
+                            ax_cr.set_title('Reconstruction Error',
+                                            fontsize=FONT_SIZE)
+                            ax_cr.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
+                            ax_cr.tick_params(axis='y', labelsize=FONT_SIZE - 1)
+                            row_c += 1
+
+                        # Last row: all models' scores overlaid
+                        ax_cs = axes_c[row_c]
+                        for sp in strat_score_panels:
+                            sp_idx = np.array(sp['index'])
+                            zm = _zmask(sp_idx)
+                            sc = sp['scores']
+                            gt = labels[:len(sp_idx)].astype(bool)
+                            det = sp['is_anomalies'].astype(bool)
+                            col = model_colors[sp['model']]
+                            ax_cs.plot(sp_idx[zm], sc[zm], color=col,
+                                       linewidth=0.9, label=sp['model'])
+                            tp_z = det & gt
+                            fp_z = det & ~gt
+                            if (tp_z & zm).any():
+                                ax_cs.scatter(sp_idx[tp_z & zm], sc[tp_z & zm],
+                                              color='red', s=8, zorder=3)
+                            if (fp_z & zm).any():
+                                ax_cs.scatter(sp_idx[fp_z & zm], sc[fp_z & zm],
+                                              color='darkorange', s=8, zorder=3)
+                            if sp['model'] == 'A3TGCN':
+                                u_raw = sp.get('unique_mask')
+                                if u_raw is not None:
+                                    u_true_z = u_raw & gt
+                                    if (u_true_z & zm).any():
+                                        ax_cs.scatter(sp_idx[u_true_z & zm],
+                                                      sc[u_true_z & zm],
+                                                      color='green', s=20,
+                                                      zorder=4, marker='*')
+                        _plot_source_spans(ax_cs, anomaly_windows_test, alpha=0.2)
+                        ax_cs.set_xlim(zoom_start, zoom_end)
+                        ax_cs.set_ylabel('Score', fontsize=FONT_SIZE)
+                        ax_cs.set_title(f'Scores — {strategy}',
+                                        fontsize=FONT_SIZE)
+                        ax_cs.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
+                        ax_cs.tick_params(axis='y', labelsize=FONT_SIZE - 1)
+
+                        axes_c[-1].set_xlabel('Time', fontsize=FONT_SIZE)
+                        axes_c[-1].tick_params(axis='x', rotation=30,
+                                               labelsize=FONT_SIZE - 1)
+                        fig_c.suptitle(
+                            f'Zoom-in (combined) — {strategy} — '
+                            f'{http_code} / {agg} / imputation={fill_nan}\n'
+                            f'{t_start} → {t_end}',
+                            fontsize=FONT_SIZE, fontweight='bold',
+                        )
+                        comb_legend = (
+                            [plt.Line2D([0], [0], color=model_colors[m],
+                                        linewidth=1.2, label=m) for m in model_list]
+                            + [
+                                plt.Line2D([0], [0], color='red', marker='o',
+                                           markersize=4, linestyle='None',
+                                           label='True detected'),
+                                plt.Line2D([0], [0], color='darkorange', marker='o',
+                                           markersize=4, linestyle='None',
+                                           label='False detected'),
+                                plt.Line2D([0], [0], color='green', marker='*',
+                                           markersize=7, linestyle='None',
+                                           label='True unique to A3TGCN'),
+                                *_source_legend_handles(),
+                            ]
+                        )
+                        fig_c.legend(handles=comb_legend, loc='center left',
+                                     bbox_to_anchor=(1.01, 0.5),
+                                     fontsize=FONT_SIZE - 1, frameon=True)
+                        comb_path = os.path.join(
+                            save_dir,
+                            f'detected_anomalies_{http_code}_{agg}_{fill_nan}'
+                            f'_{strategy}_zoom_{span_i}_combined.png',
+                        )
+                        fig_c.savefig(comb_path, dpi=150, bbox_inches='tight')
+                        plt.close(fig_c)
+                        print(f'Saved combined zoom-in plot to {comb_path}')
+
+
+def plot_detected_anomalies_for_specific_periods(
+        dataloader, results_dir, models, imputation_strategies,
+        http_codes, aggregations,
+        null_padding_features,
+        null_padding_targets,
+        zoom_in_periods,
+        out_dir=None,
+        fix_scoring_parameters=None):
+
+    slide_win = dataloader.data_preparation_config.slide_win
+    index = dataloader.test_index
+    labels = np.array(dataloader.test_labels).ravel()
+    anomaly_windows_test = dataloader.anomaly_windows_test
+
+    X_raw = dataloader.scaler.inverse_transform(dataloader.X_test_scaled)
+    mean_series = X_raw.mean(axis=1)
+    _ms_min, _ms_max = mean_series.min(), mean_series.max()
+    mean_series = (mean_series - _ms_min) / max(_ms_max - _ms_min, 1e-8)
+
+    _zoom_list = [(pd.to_datetime(s), pd.to_datetime(e)) for s, e in zoom_in_periods]
+    n_periods = len(_zoom_list)
+    if n_periods == 0:
+        return
+
+    for http_code in http_codes:
+        for agg in aggregations:
+            for fill_nan in imputation_strategies:
+                for null_padding_feature, null_padding_target in itertools.product(
+                        null_padding_features, null_padding_targets):
+                    all_panels = []
+
+                    for model in models:
+                        model_folder = model
+                        if model == 'A3TGCN':
+                            if null_padding_feature and null_padding_target:
+                                model_folder = f'{model}_null_padding_both'
+                            elif null_padding_feature:
+                                model_folder = f'{model}_null_padding_feature'
+                            elif null_padding_target:
+                                model_folder = f'{model}_null_padding_target'
+
+                        model_dir = os.path.join(
+                            results_dir,
+                            f'window_{slide_win}',
+                            f'no_group_{http_code}_{agg}',
+                            f'fill_nan_with_{fill_nan}',
+                            model_folder,
+                        )
+                        recon_path = os.path.join(model_dir, 'reconstruction_errors.npy')
+                        maha_path = os.path.join(model_dir, 'mahalanobis.npy')
+                        required_exists = os.path.exists(recon_path)
+                        if fix_scoring_parameters is None:
+                            csv_path = os.path.join(model_dir, f'{model}_grid_search.csv')
+                            required_exists = required_exists and os.path.exists(csv_path)
+                        if not required_exists:
+                            print(f'Skipping {model}: missing files in {model_dir}')
+                            continue
+
+                        reconstruction_errors = np.load(recon_path)
+                        mahalanobis_dist = (np.load(maha_path) if os.path.exists(maha_path)
+                                            else np.zeros(len(reconstruction_errors)))
+                        if fix_scoring_parameters is None:
+                            grid_df = pd.read_csv(csv_path)
+
+                        T = min(len(reconstruction_errors), len(index))
+                        recon = reconstruction_errors[:T]
+                        maha = mahalanobis_dist[:T]
+                        idx = index[:T]
+
+                        _rm = recon.mean(axis=(1, 2))
+                        _rm = (_rm - _rm.min()) / max(_rm.max() - _rm.min(), 1e-8)
+                        all_panels.append({'type': 'recon', 'model': model,
+                                           'series': _rm, 'index': idx})
+
+                        for strategy in ['likelihood', 'mahalanobis']:
+                            if fix_scoring_parameters is not None:
+                                if strategy not in fix_scoring_parameters:
+                                    continue
+                                params = fix_scoring_parameters[strategy]
+                                anomaly_threshold = float(params['anomaly_threshold'])
+                                topk = int(params['topk'])
+                                long_window = params.get('long_window', None)
+                                short_window = params.get('short_window', None)
+                            else:
+                                strat_df = grid_df[grid_df['post_processing_strategy'] == strategy]
+                                if strat_df.empty:
+                                    continue
+                                best_row = strat_df.loc[strat_df['NAB_reward_fn_rank'].idxmin()]
+                                anomaly_threshold = float(best_row['anomaly_threshold'])
+                                topk = int(best_row['topk'])
+                                lw = best_row.get('long_window', None)
+                                sw = best_row.get('short_window', None)
+                                long_window = None if pd.isna(lw) else int(lw)
+                                short_window = None if pd.isna(sw) else int(sw)
+
+                            is_anom, likelihoods, _, _ = label_reconstruction_errors(
+                                idx, recon, maha, strategy, topk,
+                                anomaly_threshold, long_window, short_window,
+                            )
+                            all_panels.append({
+                                'type': 'score', 'model': model, 'strategy': strategy,
+                                'scores': likelihoods, 'is_anomalies': is_anom.values,
+                                'index': idx,
+                            })
+
+                    if not all_panels:
+                        print(f'No results for {http_code}/{agg}/{fill_nan}')
+                        continue
+
+                    # A3TGCN unique mask per strategy
+                    for panel in all_panels:
+                        if panel['type'] != 'score' or panel['model'] != 'A3TGCN':
+                            continue
+                        strategy = panel['strategy']
+                        n_t = len(panel['is_anomalies'])
+                        others_union = np.zeros(n_t, dtype=bool)
+                        for other in all_panels:
+                            if (other['type'] == 'score' and other['model'] != 'A3TGCN'
+                                    and other['strategy'] == strategy):
+                                o_len = min(len(other['is_anomalies']), n_t)
+                                others_union[:o_len] |= other['is_anomalies'][:o_len].astype(bool)
+                        panel['unique_mask'] = panel['is_anomalies'].astype(bool) & ~others_union
+
+                    # Build ordered row specs: time_series row is index 0;
+                    # then per model: recon + per-strategy scores
+                    model_list = list(dict.fromkeys(
+                        p['model'] for p in all_panels if p['type'] == 'score'))
+                    strategies = list(dict.fromkeys(
+                        p['strategy'] for p in all_panels if p['type'] == 'score'))
+                    row_specs = []
+                    for m in model_list:
+                        rp = next((p for p in all_panels
+                                   if p['type'] == 'recon' and p['model'] == m), None)
+                        if rp:
+                            row_specs.append(('recon', m, rp))
+                        for strat in strategies:
+                            sp = next((p for p in all_panels
+                                       if p['type'] == 'score' and p['model'] == m
+                                       and p['strategy'] == strat), None)
+                            if sp:
+                                row_specs.append(('score', m, strat, sp))
+
+                    # Fixed rows: time series | recon (all models) | per-strategy (all models)
+                    model_colors = {
+                        m: plt.colormaps['tab10'](i / max(len(model_list), 1))
+                        for i, m in enumerate(model_list)
+                    }
+                    recon_panels = [p for p in all_panels if p['type'] == 'recon']
+                    # Row labels: 0=ts, 1=recon, 2..=strategies
+                    row_labels = (['Recon Error [0,1]'] +
+                                  [s.capitalize() for s in strategies])
+                    n_rows = 1 + len(row_labels)
+                    T0 = min(len(mean_series), len(index))
+                    ts_idx = np.array(index[:T0])
+
+                    fig, axes = plt.subplots(
+                        n_rows, n_periods,
+                        figsize=(4 * n_periods, 2 * n_rows),
+                        sharex='col',
+                        constrained_layout=True,
+                    )
+                    if n_rows == 1:
+                        axes = axes[np.newaxis, :]
+                    if n_periods == 1:
+                        axes = axes[:, np.newaxis]
+
+                    for col, (zoom_start, zoom_end) in enumerate(_zoom_list):
+                        def _zmask(arr_idx, _zs=zoom_start, _ze=zoom_end):
+                            ai = np.array(arr_idx, dtype='datetime64[ns]')
+                            return ((ai >= np.datetime64(pd.Timestamp(_zs), 'ns')) &
+                                    (ai <= np.datetime64(pd.Timestamp(_ze), 'ns')))
+
+                        overlapping_ids = [
+                            str(aw_idx-6)
+                            for aw_idx, win in anomaly_windows_test.iterrows()
+                            if (pd.Timestamp(win['anomaly_window_start']) <= zoom_end
+                                and pd.Timestamp(win['anomaly_window_end']) >= zoom_start)
+                        ]
+                        period_label = (f'Anomaly {", ".join(overlapping_ids)}'
+                                        if overlapping_ids else f'Period {col}')
+
+                        # Choose formatter based on zoom span width
+                        _span_hours = (zoom_end - zoom_start).total_seconds() / 3600
+                        _fmt = (mdates.DateFormatter('%d %H:%M') if _span_hours <= 72
+                                else mdates.DateFormatter('%m-%d'))
+
+                        def _style(ax, ylabel=None, title=None,
+                                   _f=_fmt):
+                            _plot_source_spans(ax, anomaly_windows_test, alpha=0.2)
+                            ax.set_xlim(zoom_start, zoom_end)
+                            ax.xaxis.set_major_formatter(_f)
+                            ax.ticklabel_format(axis='y', style='sci',
+                                                scilimits=(-2, 4), useMathText=False)
+                            ax.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
+                            ax.tick_params(axis='x', rotation=30, labelsize=FONT_SIZE - 2)
+                            ax.tick_params(axis='y', labelsize=FONT_SIZE - 1)
+                            if col == 0 and ylabel:
+                                ax.set_ylabel(ylabel, fontsize=FONT_SIZE)
+                            if title:
+                                ax.set_title(title, fontsize=FONT_SIZE - 1)
+
+                        def _lbl(row, _c=col):
+                            return f'({chr(ord("a") + row * n_periods + _c)}) '
+
+                        # Row 0: averaged time series
+                        ax0 = axes[0, col]
+                        zm0 = _zmask(ts_idx)
+                        ax0.plot(ts_idx[zm0], mean_series[:T0][zm0],
+                                 color='steelblue', linewidth=0.8)
+                        _style(ax0, ylabel='Mean Value [0,1]', title=_lbl(0) + period_label)
+
+                        # Row 1: all models' recon overlaid
+                        ax_r = axes[1, col]
+                        for rp in recon_panels:
+                            p_idx = np.array(rp['index'])
+                            zm = _zmask(p_idx)
+                            ax_r.plot(p_idx[zm], rp['series'][zm],
+                                      color=model_colors[rp['model']],
+                                      linewidth=0.8, label=rp['model'])
+                        _style(ax_r, ylabel='Recon Error [0,1]',
+                               title=_lbl(1) + 'Reconstruction Error')
+
+                        # Rows 2+: one per strategy, all models overlaid
+                        for strat_i, strat in enumerate(strategies):
+                            ax_s = axes[2 + strat_i, col]
+                            strat_panels = [p for p in all_panels
+                                            if p['type'] == 'score' and p['strategy'] == strat]
+                            for sp in strat_panels:
+                                m = sp['model']
+                                p_idx = np.array(sp['index'])
+                                zm = _zmask(p_idx)
+                                sc = sp['scores']
+                                gt = labels[:len(p_idx)].astype(bool)
+                                det = sp['is_anomalies'].astype(bool)
+                                col_m = model_colors[m]
+                                ax_s.plot(p_idx[zm], sc[zm], color=col_m,
+                                          linewidth=0.8, label=m)
+                                tp_z = det & gt
+                                fp_z = det & ~gt
+                                if (tp_z & zm).any():
+                                    ax_s.scatter(p_idx[tp_z & zm], sc[tp_z & zm],
+                                                 color='red', s=25, zorder=3)
+                                if (fp_z & zm).any():
+                                    ax_s.scatter(p_idx[fp_z & zm], sc[fp_z & zm],
+                                                 color='darkorange', s=25, zorder=3)
+                                if m == 'A3TGCN':
+                                    u_raw = sp.get('unique_mask')
+                                    if u_raw is not None:
+                                        u_true_z = u_raw & gt
+                                        if (u_true_z & zm).any():
+                                            ax_s.scatter(p_idx[u_true_z & zm],
+                                                         sc[u_true_z & zm],
+                                                         color='green', s=50,
+                                                         zorder=4, marker='*')
+                            _style(ax_s, ylabel='Score',
+                                   title=_lbl(2 + strat_i) + f'{strat.capitalize()}')
+
+                    legend_handles = (
+                        [plt.Line2D([0], [0], color=model_colors[m], linewidth=1.2, label=m)
+                         for m in model_list]
+                        + [
+                            plt.Line2D([0], [0], color='red', marker='o', markersize=7,
+                                       linestyle='None', label='True Positive'),
+                            plt.Line2D([0], [0], color='darkorange', marker='o', markersize=7,
+                                       linestyle='None', label='False Positive'),
+                            plt.Line2D([0], [0], color='green', marker='*', markersize=10,
+                                       linestyle='None', label='True Positive only detected by A3TGCN'),
+                        ]
+                    )
+                    fig.legend(handles=legend_handles, loc='lower center',
+                               bbox_to_anchor=(0.5, -0.05),
+                               ncol=len(legend_handles),
+                               fontsize=FONT_SIZE - 1, frameon=True)
+                    fig.suptitle(
+                        f'Anomaly Detection — {http_code} / {agg} / imputation={fill_nan}',
+                        fontsize=FONT_SIZE + 1, fontweight='bold',
+                    )
+
+                    save_dir = out_dir or '.'
+                    os.makedirs(save_dir, exist_ok=True)
+                    out_path = os.path.join(
+                        save_dir,
+                        f'detected_anomalies_periods_{http_code}_{agg}_{fill_nan}.png',
+                    )
+                    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+                    plt.close(fig)
+                    print(f'Saved periods plot to {out_path}')
 
 
 @hydra.main(config_path="../conf", config_name="config.yaml")
@@ -795,12 +1435,27 @@ def main(cfg: DictConfig):
         }
 
     }
-    plot_detected_anomalies(dataloader, results_dir, shown_models, missing_imputation_stategies, http_codes, aggregations,
+    # plot_detected_anomalies(dataloader, results_dir, shown_models, missing_imputation_stategies, http_codes, aggregations,
+    #                         null_padding_features,
+    #                         null_padding_targets,
+    #                         output_dir,
+    #                         fix_scoring_parameters=fix_scoring_parameters)
+
+    zoom_in_periods = [
+        (pd.Timestamp('2024-03-07 00:00:00'), pd.Timestamp('2024-03-07 12:00:00')),
+        # (pd.Timestamp('2024-03-13 00:00:00'), pd.Timestamp('2024-03-13 23:00:00')),
+        (pd.Timestamp('2024-03-19 06:00:00'), pd.Timestamp('2024-03-19 16:00:00')),
+        (pd.Timestamp('2024-05-31 10:00:00'), pd.Timestamp('2024-05-31 21:00:00')),
+    ]
+
+
+    plot_only_time_series(dataloader, output_dir, zoom_periods=zoom_in_periods)
+    plot_detected_anomalies_for_specific_periods(dataloader, results_dir, shown_models, missing_imputation_stategies, http_codes, aggregations,
                             null_padding_features,
                             null_padding_targets,
+                            zoom_in_periods,
                             output_dir,
                             fix_scoring_parameters=fix_scoring_parameters)
-
 
 
 if __name__ == '__main__':

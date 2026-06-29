@@ -1,3 +1,4 @@
+import itertools
 import os
 
 import hydra
@@ -10,16 +11,38 @@ from utils import get_project_root
 
 
 def plot_computation_time(results_dir, supported_models, supported_sliding_windows,
-                          imputation_strategies, http_codes, aggregations, graph_models):
-    index_columns = ['model_name', 'is_graph_model', 'sliding_window', 'http_code', 'aggregation', 'imputation_strategy']
+                          imputation_strategies, http_codes, aggregations, graph_models,
+                          null_padding_features,
+                          null_padding_targets,
+                          ):
+    index_columns = ['model_name', 'is_graph_model', 'sliding_window', 'http_code', 'aggregation', 'imputation_strategy',
+                     'null_padding_feature',
+                     'null_padding_target']
     merged_df = pd.DataFrame()
     merged_results_dir = os.path.join(results_dir, 'merged_results')
     os.makedirs(merged_results_dir, exist_ok=True)
 
     # Collect times keyed by (http_code, agg) subset → model → window
     subsets = [(hc, agg) for hc in http_codes for agg in aggregations]
-    train_data = {s: {m: {w: [] for w in supported_sliding_windows} for m in supported_models} for s in subsets}
-    infer_data = {s: {m: {w: [] for w in supported_sliding_windows} for m in supported_models} for s in subsets}
+
+    extended_supported_models = []
+    for m in supported_models:
+        if m not in graph_models:
+            extended_supported_models.append(m)
+        else:
+            for (null_padding_feature, null_padding_target) in itertools.product(null_padding_features,null_padding_targets):
+                if null_padding_feature == False and null_padding_target == False:
+                    new_name = m
+                elif null_padding_feature == True and null_padding_target == False:
+                    new_name = f'{m}_null_padding_feature'
+                elif null_padding_feature == False and null_padding_target == True:
+                    new_name = f'{m}_null_padding_target'
+                else:
+                    new_name = f'{m}_null_padding_both'
+                extended_supported_models.append(new_name)
+
+    train_data = {s: {m: {w: [] for w in supported_sliding_windows} for m in extended_supported_models} for s in subsets}
+    infer_data = {s: {m: {w: [] for w in supported_sliding_windows} for m in extended_supported_models} for s in subsets}
 
     for window in supported_sliding_windows:
         for http_code in http_codes:
@@ -27,48 +50,68 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
                 subset = (http_code, agg)
                 for imputation in imputation_strategies:
                     for model in supported_models:
-                        base = dict(
-                            model_name=model,
-                            is_graph_model=model in graph_models,
-                            sliding_window=window,
-                            http_code=http_code,
-                            aggregation=agg,
-                            imputation_strategy=imputation,
-                        )
-                        training_time_csv_path = os.path.join(
-                            get_project_root(),
-                            results_dir,
-                            f'window_{window}',
-                            f'no_group_{http_code}_{agg}',
-                            f'fill_nan_with_{imputation}',
-                            model,
-                            f'{model}_training_time.csv'
-                        )
-                        inference_time_csv_path = os.path.join(
-                            get_project_root(),
-                            results_dir,
-                            f'window_{window}',
-                            f'no_group_{http_code}_{agg}',
-                            f'fill_nan_with_{imputation}',
-                            model,
-                            f'inference_time.csv'
-                        )
+                        if model not in graph_models:
+                            null_padding_combinations = itertools.product([False],[False])
+                        else:
+                            null_padding_combinations = itertools.product(null_padding_features,null_padding_targets)
 
-                        if os.path.exists(training_time_csv_path):
-                            df = pd.read_csv(training_time_csv_path)
-                            t = df['training_time'].values[0]
-                            train_data[subset][model][window].append(t)
-                            row_df = pd.DataFrame([{**base, 'training_time': t, 'epochs': df['epochs'].values[0]}])
-                            row_df.set_index(index_columns, inplace=True)
-                            merged_df = row_df.combine_first(merged_df)
+                        for (null_padding_feature, null_padding_target) in null_padding_combinations:
 
-                        if os.path.exists(inference_time_csv_path):
-                            inference_df = pd.read_csv(inference_time_csv_path, index_col=0)
-                            t = inference_df['inference_time'].values[0]
-                            infer_data[subset][model][window].append(t)
-                            row_df = pd.DataFrame([{**base, 'inference_time': t}])
-                            row_df.set_index(index_columns, inplace=True)
-                            merged_df = row_df.combine_first(merged_df)
+                            if model not in graph_models:
+                                model_folder = model
+                            else:
+                                if null_padding_feature == False and null_padding_target == False:
+                                    model_folder = model
+                                elif null_padding_feature == True and null_padding_target == False:
+                                    model_folder = f'{model}_null_padding_feature'
+                                elif null_padding_feature == False and null_padding_target == True:
+                                    model_folder = f'{model}_null_padding_target'
+                                else:
+                                    model_folder = f'{model}_null_padding_both'
+                            base = dict(
+                                model_name=model,
+                                is_graph_model=model in graph_models,
+                                sliding_window=window,
+                                http_code=http_code,
+                                aggregation=agg,
+                                imputation_strategy=imputation,
+                                null_padding_feature=null_padding_feature,
+                                null_padding_target=null_padding_target,
+                            )
+                            training_time_csv_path = os.path.join(
+                                get_project_root(),
+                                results_dir,
+                                f'window_{window}',
+                                f'no_group_{http_code}_{agg}',
+                                f'fill_nan_with_{imputation}',
+                                model_folder,
+                                f'{model}_training_time.csv'
+                            )
+                            inference_time_csv_path = os.path.join(
+                                get_project_root(),
+                                results_dir,
+                                f'window_{window}',
+                                f'no_group_{http_code}_{agg}',
+                                f'fill_nan_with_{imputation}',
+                                model_folder,
+                                f'inference_time.csv'
+                            )
+
+                            if os.path.exists(training_time_csv_path):
+                                df = pd.read_csv(training_time_csv_path)
+                                t = df['training_time'].values[0]
+                                train_data[subset][model_folder][window].append(t)
+                                row_df = pd.DataFrame([{**base, 'training_time': t, 'epochs': df['epochs'].values[0]}])
+                                row_df.set_index(index_columns, inplace=True)
+                                merged_df = row_df.combine_first(merged_df)
+
+                            if os.path.exists(inference_time_csv_path):
+                                inference_df = pd.read_csv(inference_time_csv_path, index_col=0)
+                                t = inference_df['inference_time'].values[0]
+                                infer_data[subset][model_folder][window].append(t)
+                                row_df = pd.DataFrame([{**base, 'inference_time': t}])
+                                row_df.set_index(index_columns, inplace=True)
+                                merged_df = row_df.combine_first(merged_df)
 
     csv_saved_path = os.path.join(merged_results_dir, 'computation_time_comparision.csv')
     merged_df.to_csv(csv_saved_path, index=True)
@@ -91,14 +134,14 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
 
         train_means = {
             m: {w: np.mean(vs) if vs else np.nan for w, vs in train_data[subset][m].items()}
-            for m in supported_models
+            for m in extended_supported_models
         }
         infer_means = {
             m: {w: np.mean(vs) if vs else np.nan for w, vs in infer_data[subset][m].items()}
-            for m in supported_models
+            for m in extended_supported_models
         }
 
-        valid_models = [m for m in supported_models
+        valid_models = [m for m in extended_supported_models
                         if not all(np.isnan(v) for v in train_means[m].values())]
         x = np.arange(len(valid_models))
 
@@ -147,9 +190,16 @@ def main(cfg: DictConfig):
     missing_imputation_stategies = ['zero','mean','median']
     http_codes = ['5xx','4xx','2xx']
     aggregations = ['count','avg','min','max']
+    null_padding_features = [True, False]
+    null_padding_targets = [True, False]
     results_dir = cfg.evaluation.model_save_path
     results_dir = os.path.join(get_project_root(), results_dir)
-    plot_computation_time(results_dir, supported_models, supported_sliding_windows, missing_imputation_stategies, http_codes, aggregations, graph_models)
+    plot_computation_time(results_dir, supported_models, supported_sliding_windows,
+                          missing_imputation_stategies,
+                          http_codes, aggregations, graph_models,
+                          null_padding_features,
+                          null_padding_targets
+                          )
 
 
 if __name__ == '__main__':
