@@ -10,11 +10,11 @@ from omegaconf import DictConfig
 from utils import get_project_root
 
 
-def plot_computation_time(results_dir, supported_models, supported_sliding_windows,
-                          imputation_strategies, http_codes, aggregations, graph_models,
-                          null_padding_features,
-                          null_padding_targets,
-                          ):
+def merge_computation_time(results_dir, supported_models, supported_sliding_windows,
+                           imputation_strategies, http_codes, aggregations, graph_models,
+                           null_padding_features,
+                           null_padding_targets,
+                           ):
     index_columns = ['model_name', 'is_graph_model', 'sliding_window', 'http_code', 'aggregation', 'imputation_strategy',
                      'null_padding_feature',
                      'null_padding_target']
@@ -117,7 +117,77 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
     merged_df.to_csv(csv_saved_path, index=True)
     print(f'Merged CSV saved to {csv_saved_path}')
 
-    # One row per (http_code, agg) subset; 2 columns: training time | inference time
+    return plot_computation_time(results_dir, supported_models, supported_sliding_windows,
+                                 http_codes, aggregations, graph_models,
+                                 null_padding_features, null_padding_targets)
+
+
+def plot_computation_time(results_dir, supported_models, supported_sliding_windows,
+                          http_codes, aggregations, graph_models,
+                          null_padding_features, null_padding_targets):
+    merged_results_dir = os.path.join(results_dir, 'merged_results')
+    csv_path = os.path.join(merged_results_dir, 'computation_time_comparision.csv')
+    if not os.path.exists(csv_path):
+        print(f'CSV not found at {csv_path}; run merge_computation_time first')
+        return None
+
+    df = pd.read_csv(csv_path)
+
+    # Reconstruct extended model list (same ordering as merge_computation_time)
+    extended_supported_models = []
+    for m in supported_models:
+        if m not in graph_models:
+            extended_supported_models.append(m)
+        else:
+            for (npf, npt) in itertools.product(null_padding_features, null_padding_targets):
+                if not npf and not npt:
+                    new_name = m
+                elif npf and not npt:
+                    new_name = f'{m}_null_padding_feature'
+                elif not npf and npt:
+                    new_name = f'{m}_null_padding_target'
+                else:
+                    new_name = f'{m}_null_padding_both'
+                extended_supported_models.append(new_name)
+
+    subsets = [(hc, agg) for hc in http_codes for agg in aggregations]
+    train_data = {s: {m: {w: [] for w in supported_sliding_windows} for m in extended_supported_models} for s in subsets}
+    infer_data = {s: {m: {w: [] for w in supported_sliding_windows} for m in extended_supported_models} for s in subsets}
+
+    for _, row in df.iterrows():
+        model_name = row['model_name']
+        npf = str(row['null_padding_feature']).strip().lower() == 'true'
+        npt = str(row['null_padding_target']).strip().lower() == 'true'
+        http_code = row['http_code']
+        agg = row['aggregation']
+        window = int(row['sliding_window'])
+        subset = (http_code, agg)
+
+        if subset not in train_data:
+            continue
+
+        if model_name not in graph_models:
+            model_folder = model_name
+        else:
+            if not npf and not npt:
+                model_folder = model_name
+            elif npf and not npt:
+                model_folder = f'{model_name}_null_padding_feature'
+            elif not npf and npt:
+                model_folder = f'{model_name}_null_padding_target'
+            else:
+                model_folder = f'{model_name}_null_padding_both'
+
+        if model_folder not in train_data[subset]:
+            continue
+        if window not in train_data[subset][model_folder]:
+            continue
+
+        if 'training_time' in row and pd.notna(row['training_time']):
+            train_data[subset][model_folder][window].append(float(row['training_time']))
+        if 'inference_time' in row and pd.notna(row['inference_time']):
+            infer_data[subset][model_folder][window].append(float(row['inference_time']))
+
     n_rows = len(subsets)
     n_windows = len(supported_sliding_windows)
     bar_width = 0.7 / n_windows
@@ -153,7 +223,8 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
                          bar_width, label=f'Win {window}', color=colors[i])
 
         row_label = f'{http_code} / {agg}'
-        for ax, ylabel in [(ax_train, 'Training Time (s)\n[log scale]'), (ax_infer, 'Inference Time (s)\n[log scale]')]:
+        for ax, ylabel in [(ax_train, 'Training Time (s)\n[log scale]'),
+                           (ax_infer, 'Inference Time (s)\n[log scale]')]:
             ax.set_xticks(x)
             ax.set_xticklabels(valid_models if valid_models else [], rotation=30, ha='right', fontsize=8)
             ax.set_yscale('log')
@@ -164,7 +235,6 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
         ax_train.set_title(f'Training Time — {row_label}', fontsize=9, fontweight='bold')
         ax_infer.set_title(f'Inference Time — {row_label}', fontsize=9, fontweight='bold')
 
-    # Single shared legend at the top — same color palette visible once for all subplots
     legend_handles = [
         plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'Win {w}')
         for i, w in enumerate(supported_sliding_windows)
@@ -186,7 +256,8 @@ def main(cfg: DictConfig):
     supported_models  = cfg.supported_models
     supported_sliding_windows = cfg.supported_sliding_windows
 
-    graph_models = ['T-GCN','ST-GCN','A3TGCN','GDN','MTAD-GAT','STformer']
+    # graph_models = ['T-GCN','ST-GCN','A3TGCN','GDN','MTAD-GAT','STformer']
+    graph_models = ['A3TGCN']
     missing_imputation_stategies = ['zero','mean','median']
     http_codes = ['5xx','4xx','2xx']
     aggregations = ['count','avg','min','max']
@@ -194,12 +265,17 @@ def main(cfg: DictConfig):
     null_padding_targets = [True, False]
     results_dir = cfg.evaluation.model_save_path
     results_dir = os.path.join(get_project_root(), results_dir)
+    merge_computation_time(results_dir, supported_models, supported_sliding_windows,
+                           missing_imputation_stategies,
+                           http_codes, aggregations, graph_models,
+                           null_padding_features,
+                           null_padding_targets
+                           )
+
     plot_computation_time(results_dir, supported_models, supported_sliding_windows,
-                          missing_imputation_stategies,
                           http_codes, aggregations, graph_models,
                           null_padding_features,
-                          null_padding_targets
-                          )
+                          null_padding_targets)
 
 
 if __name__ == '__main__':
