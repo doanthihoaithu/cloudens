@@ -251,6 +251,93 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
     return out_path
 
 
+def load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
+        proposed_model_detail, results_dir, supported_sliding_windows,
+        http_codes, aggregations, missing_imputation_strategies,
+):
+    model_name = proposed_model_detail['proposed_model_name']
+    null_padding_feature = proposed_model_detail['null_padding_feature']
+    null_padding_target = proposed_model_detail['null_padding_target']
+    is_graph = proposed_model_detail['is_graph']
+
+    if not is_graph:
+        model_folder = model_name
+    elif null_padding_feature and not null_padding_target:
+        model_folder = f'{model_name}_null_padding_feature'
+    elif not null_padding_feature and null_padding_target:
+        model_folder = f'{model_name}_null_padding_target'
+    elif null_padding_feature and null_padding_target:
+        model_folder = f'{model_name}_null_padding_both'
+    else:
+        model_folder = model_name
+
+    nab_profiles = ['standard', 'reward_fn']
+    scoring_strategies = ['likelihood', 'mahalanobis']
+
+    records = []
+    for window in supported_sliding_windows:
+        for http_code in http_codes:
+            for agg in aggregations:
+                for imputation in missing_imputation_strategies:
+                    grid_search_csv_path = os.path.join(
+                        results_dir,
+                        f'window_{window}',
+                        f'no_group_{http_code}_{agg}',
+                        f'fill_nan_with_{imputation}',
+                        model_folder,
+                        f'{model_name}_grid_search.csv'
+                    )
+                    if not os.path.exists(grid_search_csv_path):
+                        continue
+
+                    df = pd.read_csv(grid_search_csv_path)
+
+                    for strategy in scoring_strategies:
+                        strategy_df = df[df['post_processing_strategy'] == strategy]
+                        if strategy_df.empty:
+                            continue
+
+                        for profile in nab_profiles:
+                            normalized_column = f'{profile}_normalized'
+                            # NAB_{profile}_rank in the grid search csv ranks rows across all
+                            # scoring strategies combined, so it is recomputed here scoped to
+                            # this strategy's rows; the top row is thus guaranteed rank == 1.
+                            strategy_rank = strategy_df[normalized_column].rank(ascending=False)
+                            best_idx = strategy_rank.idxmin()
+                            best_row = strategy_df.loc[best_idx]
+                            records.append(dict(
+                                sliding_window=window,
+                                http_code=http_code,
+                                aggregation=agg,
+                                imputation_strategy=imputation,
+                                nab_profile=profile,
+                                post_processing_strategy=strategy,
+                                long_window=best_row['long_window'],
+                                short_window=best_row['short_window'],
+                                anomaly_threshold=best_row['anomaly_threshold'],
+                                topk=best_row['topk'],
+                                rank=strategy_rank.loc[best_idx],
+                                precision=best_row['precision'],
+                                recall=best_row['recall'],
+                                f1=best_row['f1'],
+                                accuracy=best_row['accuracy'],
+                                standard_raw=best_row['standard_raw'],
+                                reward_fn_raw=best_row['reward_fn_raw'],
+                                standard_normalized=best_row['standard_normalized'],
+                                reward_fn_normalized=best_row['reward_fn_normalized'],
+                            ))
+
+    optimal_hyperparameters_df = pd.DataFrame(records)
+
+    merged_results_dir = os.path.join(results_dir, 'merged_results')
+    os.makedirs(merged_results_dir, exist_ok=True)
+    csv_saved_path = os.path.join(merged_results_dir, f'{model_name}_optimal_scoring_hyperparameters.csv')
+    optimal_hyperparameters_df.to_csv(csv_saved_path, index=False)
+    print(f'Optimal scoring hyperparameters CSV saved to {csv_saved_path}')
+
+    return optimal_hyperparameters_df
+
+
 @hydra.main(config_path="../conf", config_name="config.yaml")
 def main(cfg: DictConfig):
     supported_models  = cfg.supported_models
@@ -276,6 +363,23 @@ def main(cfg: DictConfig):
                           http_codes, aggregations, graph_models,
                           null_padding_features,
                           null_padding_targets)
+
+    proposed_model_name = 'A3TGCN'
+    proposed_model_detail = dict(
+        proposed_model_name = proposed_model_name,
+        null_padding_feature = True,
+        null_padding_target = False,
+        is_graph = proposed_model_name in graph_models,
+    )
+
+    load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
+        proposed_model_detail,
+        results_dir,
+        supported_sliding_windows,
+        http_codes,
+        aggregations,
+        missing_imputation_stategies,
+    )
 
 
 if __name__ == '__main__':

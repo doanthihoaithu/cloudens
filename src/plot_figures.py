@@ -1304,7 +1304,7 @@ def plot_detected_anomalies_for_specific_periods(
                                                          sc[u_true_z & zm],
                                                          color='green', s=50,
                                                          zorder=4, marker='*')
-                            _style(ax_s, ylabel='Score',
+                            _style(ax_s, ylabel='Score [0,1]',
                                    title=_lbl(2 + strat_i) + f'{strat.capitalize()}')
 
                     legend_handles = (
@@ -1450,12 +1450,15 @@ def main(cfg: DictConfig):
 
 
     plot_only_time_series(dataloader, output_dir, zoom_periods=zoom_in_periods)
-    plot_detected_anomalies_for_specific_periods(dataloader, results_dir, shown_models, missing_imputation_stategies, http_codes, aggregations,
-                            null_padding_features,
-                            null_padding_targets,
-                            zoom_in_periods,
-                            output_dir,
-                            fix_scoring_parameters=fix_scoring_parameters)
+    plot_detected_anomalies_for_specific_periods(dataloader, results_dir,
+                                                 shown_models,
+                                                 missing_imputation_stategies,
+                                                 http_codes, aggregations,
+                                                null_padding_features,
+                                                null_padding_targets,
+                                                zoom_in_periods,
+                                                output_dir,
+                                                fix_scoring_parameters=fix_scoring_parameters)
 
 
 if __name__ == '__main__':
