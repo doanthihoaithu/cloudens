@@ -443,8 +443,8 @@ def compare_model_performance_across_sliding_windows(
         optimal_hyperparameters_df, results_dir, supported_models, graph_models,
         supported_sliding_windows, http_codes, aggregations,
         missing_imputation_strategies, null_padding_features, null_padding_targets,
+        nab_profiles,
 ):
-    nab_profiles = ['standard', 'reward_fn']
     scoring_strategies = ['likelihood', 'mahalanobis']
     subplot_columns = list(itertools.product(scoring_strategies, nab_profiles))
 
@@ -639,6 +639,7 @@ def main(cfg: DictConfig):
     supported_sliding_windows = [6,12,18,24,30]
     null_padding_features= [True]
     null_padding_targets = [False]
+    nab_profiles = ['reward_fn']
     compare_model_performance_across_sliding_windows(
         optimal_hyperparameters_df,
         results_dir,
@@ -649,7 +650,8 @@ def main(cfg: DictConfig):
         aggregations,
         missing_imputation_stategies,
         null_padding_features,
-        null_padding_targets
+        null_padding_targets,
+        nab_profiles
     )
 
 
