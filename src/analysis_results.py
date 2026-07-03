@@ -1,3 +1,4 @@
+import colorsys
 import itertools
 import os
 
@@ -377,8 +378,21 @@ def compare_model_performance_across_sliding_windows(
 
     n_rows = len(subsets)
     n_cols = len(subplot_columns)
-    colors = plt.cm.tab10(np.linspace(0, 1, len(model_variants)))
-    model_colors = dict(zip([model_folder for _, model_folder in model_variants], colors))
+
+    # Each model family (base model name) gets a maximally distinct hue, evenly
+    # spaced around the color wheel; variants within a family (e.g. the graph
+    # model's null-padding variants) share that hue but differ in lightness so
+    # they read as related while still being distinguishable.
+    family_hues = np.linspace(0, 1, len(supported_models), endpoint=False)
+    model_colors = {}
+    for family_hue, model_name in zip(family_hues, supported_models):
+        family_variant_folders = [
+            model_folder for m, model_folder in model_variants if m == model_name
+        ]
+        lightness_values = np.linspace(0.35, 0.65, len(family_variant_folders))
+        for model_folder, lightness in zip(family_variant_folders, lightness_values):
+            model_colors[model_folder] = colorsys.hls_to_rgb(family_hue, lightness, 0.85)
+
     linestyles = {'zero': 'solid', 'mean': 'dashed', 'median': 'dotted'}
 
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows), squeeze=False)
