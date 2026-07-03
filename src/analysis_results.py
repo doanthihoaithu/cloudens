@@ -319,6 +319,8 @@ def load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and
                                 overal_rank=best_row[f'NAB_{profile}_rank'],
                                 standard_normalized=best_row['standard_normalized'],
                                 reward_fn_normalized=best_row['reward_fn_normalized'],
+                                confusion_matrix=best_row['confusion_matrix'],
+                                detection_counters=best_row['detection_counters'],
                                 precision=best_row['precision'],
                                 recall=best_row['recall'],
                                 f1=best_row['f1'],
