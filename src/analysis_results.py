@@ -513,7 +513,12 @@ def main(cfg: DictConfig):
         missing_imputation_stategies,
     )
 
-    supported_models = ['GRU','TranAD', 'A3TGCN']
+    supported_models = ['GRU','A3TGCN']
+    http_codes = ['5xx','4xx']
+    aggregations = ['count']
+    supported_sliding_windows = [6,12,18,24,30]
+    null_padding_features= [True]
+    null_padding_targets = [False]
     compare_model_performance_across_sliding_windows(
         optimal_hyperparameters_df,
         results_dir,
@@ -524,7 +529,7 @@ def main(cfg: DictConfig):
         aggregations,
         missing_imputation_stategies,
         null_padding_features,
-        null_padding_features
+        null_padding_targets
     )
 
 
