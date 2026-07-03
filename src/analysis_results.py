@@ -316,15 +316,15 @@ def load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and
                                 short_window=best_row['short_window'],
                                 anomaly_threshold=best_row['anomaly_threshold'],
                                 topk=best_row['topk'],
-                                rank=strategy_rank.loc[best_idx],
+                                overal_rank=best_row[f'NAB_{profile}_rank'],
+                                standard_normalized=best_row['standard_normalized'],
+                                reward_fn_normalized=best_row['reward_fn_normalized'],
                                 precision=best_row['precision'],
                                 recall=best_row['recall'],
                                 f1=best_row['f1'],
                                 accuracy=best_row['accuracy'],
                                 standard_raw=best_row['standard_raw'],
                                 reward_fn_raw=best_row['reward_fn_raw'],
-                                standard_normalized=best_row['standard_normalized'],
-                                reward_fn_normalized=best_row['reward_fn_normalized'],
                             ))
 
     optimal_hyperparameters_df = pd.DataFrame(records)
