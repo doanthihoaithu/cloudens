@@ -340,6 +340,136 @@ def load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and
     return optimal_hyperparameters_df
 
 
+def compare_model_performance_across_sliding_windows(
+        optimal_hyperparameters_df, results_dir, supported_models, graph_models,
+        supported_sliding_windows, http_codes, aggregations,
+        missing_imputation_strategies, null_padding_features, null_padding_targets,
+):
+    nab_profiles = ['standard', 'reward_fn']
+    scoring_strategies = ['likelihood', 'mahalanobis']
+    subplot_columns = list(itertools.product(scoring_strategies, nab_profiles))
+
+    subsets = sorted(set(
+        (hc, agg) for hc in http_codes for agg in aggregations
+        if not optimal_hyperparameters_df[
+            (optimal_hyperparameters_df['http_code'] == hc) &
+            (optimal_hyperparameters_df['aggregation'] == agg)
+        ].empty
+    ))
+
+    # (model_name, model_folder) pairs — graph models get one entry per
+    # null-padding combination, following the naming used in plot_computation_time
+    model_variants = []
+    for m in supported_models:
+        if m not in graph_models:
+            model_variants.append((m, m))
+        else:
+            for (npf, npt) in itertools.product(null_padding_features, null_padding_targets):
+                if not npf and not npt:
+                    model_folder = m
+                elif npf and not npt:
+                    model_folder = f'{m}_null_padding_feature'
+                elif not npf and npt:
+                    model_folder = f'{m}_null_padding_target'
+                else:
+                    model_folder = f'{m}_null_padding_both'
+                model_variants.append((m, model_folder))
+
+    n_rows = len(subsets)
+    n_cols = len(subplot_columns)
+    colors = plt.cm.tab10(np.linspace(0, 1, len(model_variants)))
+    model_colors = dict(zip([model_folder for _, model_folder in model_variants], colors))
+    linestyles = {'zero': 'solid', 'mean': 'dashed', 'median': 'dotted'}
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows), squeeze=False)
+
+    for row_idx, (http_code, agg) in enumerate(subsets):
+        for col_idx, (strategy, profile) in enumerate(subplot_columns):
+            ax = axes[row_idx][col_idx]
+            normalized_column = f'{profile}_normalized'
+
+            for model_name, model_folder in model_variants:
+                for imputation in missing_imputation_strategies:
+                    x_values = []
+                    y_values = []
+
+                    for window in supported_sliding_windows:
+                        opt_rows = optimal_hyperparameters_df[
+                            (optimal_hyperparameters_df['sliding_window'] == window) &
+                            (optimal_hyperparameters_df['http_code'] == http_code) &
+                            (optimal_hyperparameters_df['aggregation'] == agg) &
+                            (optimal_hyperparameters_df['imputation_strategy'] == imputation) &
+                            (optimal_hyperparameters_df['nab_profile'] == profile) &
+                            (optimal_hyperparameters_df['post_processing_strategy'] == strategy)
+                        ]
+                        if opt_rows.empty:
+                            continue
+                        opt_row = opt_rows.iloc[0]
+
+                        grid_search_csv_path = os.path.join(
+                            results_dir,
+                            f'window_{window}',
+                            f'no_group_{http_code}_{agg}',
+                            f'fill_nan_with_{imputation}',
+                            model_folder,
+                            f'{model_name}_grid_search.csv'
+                        )
+                        if not os.path.exists(grid_search_csv_path):
+                            continue
+
+                        model_df = pd.read_csv(grid_search_csv_path)
+                        matched_rows = model_df[
+                            (model_df['post_processing_strategy'] == strategy) &
+                            np.isclose(model_df['long_window'], opt_row['long_window']) &
+                            np.isclose(model_df['short_window'], opt_row['short_window']) &
+                            np.isclose(model_df['anomaly_threshold'], opt_row['anomaly_threshold']) &
+                            np.isclose(model_df['topk'], opt_row['topk'])
+                        ]
+                        if matched_rows.empty:
+                            continue
+
+                        x_values.append(window)
+                        y_values.append(matched_rows.iloc[0][normalized_column])
+
+                    if x_values:
+                        ax.plot(
+                            x_values, y_values, marker='o', markersize=4,
+                            color=model_colors[model_folder], linestyle=linestyles[imputation],
+                            label=f'{model_folder} ({imputation})',
+                        )
+
+            ax.set_title(f'{http_code}/{agg} — {strategy} — {profile}', fontsize=9, fontweight='bold')
+            ax.set_xlabel('Sliding window', fontsize=8)
+            ax.set_ylabel('NAB score', fontsize=8)
+            ax.set_xticks(supported_sliding_windows)
+            ax.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
+            ax.tick_params(labelsize=8)
+
+    model_legend_handles = [
+        plt.Line2D([0], [0], color=model_colors[model_folder], label=model_folder)
+        for _, model_folder in model_variants
+    ]
+    imputation_legend_handles = [
+        plt.Line2D([0], [0], color='black', linestyle=ls, label=imp)
+        for imp, ls in linestyles.items()
+    ]
+    fig.legend(
+        handles=model_legend_handles + imputation_legend_handles,
+        loc='upper center', bbox_to_anchor=(0.5, 1.02),
+        ncol=len(model_variants) + len(linestyles), fontsize=8, frameon=True,
+    )
+
+    fig.tight_layout()
+    merged_results_dir = os.path.join(results_dir, 'merged_results')
+    os.makedirs(merged_results_dir, exist_ok=True)
+    out_path = os.path.join(merged_results_dir, 'model_performance_across_sliding_windows.png')
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'Model performance comparison plot saved to {out_path}')
+
+    return out_path
+
+
 @hydra.main(config_path="../conf", config_name="config.yaml")
 def main(cfg: DictConfig):
     supported_models  = cfg.supported_models
@@ -374,13 +504,27 @@ def main(cfg: DictConfig):
         is_graph = proposed_model_name in graph_models,
     )
 
-    load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
+    optimal_hyperparameters_df = load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
         proposed_model_detail,
         results_dir,
         supported_sliding_windows,
         http_codes,
         aggregations,
         missing_imputation_stategies,
+    )
+
+    supported_models = ['GRU','TranAD', 'A3TGCN']
+    compare_model_performance_across_sliding_windows(
+        optimal_hyperparameters_df,
+        results_dir,
+        supported_models,
+        graph_models,
+        supported_sliding_windows,
+        http_codes,
+        aggregations,
+        missing_imputation_stategies,
+        null_padding_features,
+        null_padding_features
     )
 
 
