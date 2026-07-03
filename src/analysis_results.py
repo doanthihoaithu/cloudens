@@ -478,7 +478,7 @@ def main(cfg: DictConfig):
     # graph_models = ['T-GCN','ST-GCN','A3TGCN','GDN','MTAD-GAT','STformer']
     graph_models = ['A3TGCN']
     missing_imputation_stategies = ['zero','mean','median']
-    http_codes = ['5xx','4xx','2xx']
+    http_codes = ['5xx','4xx']
     aggregations = ['count','avg','min','max']
     null_padding_features = [True, False]
     null_padding_targets = [True, False]
