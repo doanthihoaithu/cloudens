@@ -341,6 +341,104 @@ def load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and
     return optimal_hyperparameters_df
 
 
+def load_shorten_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
+        proposed_model_detail, results_dir, supported_sliding_windows,
+        http_codes, aggregations, missing_imputation_strategies,
+):
+    model_name = proposed_model_detail['proposed_model_name']
+    null_padding_feature = proposed_model_detail['null_padding_feature']
+    null_padding_target = proposed_model_detail['null_padding_target']
+    is_graph = proposed_model_detail['is_graph']
+
+    if not is_graph:
+        model_folder = model_name
+    elif null_padding_feature and not null_padding_target:
+        model_folder = f'{model_name}_null_padding_feature'
+    elif not null_padding_feature and null_padding_target:
+        model_folder = f'{model_name}_null_padding_target'
+    elif null_padding_feature and null_padding_target:
+        model_folder = f'{model_name}_null_padding_both'
+    else:
+        model_folder = model_name
+
+    nab_profiles = ['standard', 'reward_fn']
+    scoring_strategies = ['likelihood', 'mahalanobis']
+
+    records = []
+    for window in supported_sliding_windows:
+        for http_code in http_codes:
+            for agg in aggregations:
+                # best (normalized_value, record) seen so far per (strategy, profile),
+                # compared across imputation strategies so only the winning one is kept
+                best_candidates = {}
+
+                for imputation in missing_imputation_strategies:
+                    grid_search_csv_path = os.path.join(
+                        results_dir,
+                        f'window_{window}',
+                        f'no_group_{http_code}_{agg}',
+                        f'fill_nan_with_{imputation}',
+                        model_folder,
+                        f'{model_name}_grid_search.csv'
+                    )
+                    if not os.path.exists(grid_search_csv_path):
+                        continue
+
+                    df = pd.read_csv(grid_search_csv_path)
+
+                    for strategy in scoring_strategies:
+                        strategy_df = df[df['post_processing_strategy'] == strategy]
+                        if strategy_df.empty:
+                            continue
+
+                        for profile in nab_profiles:
+                            normalized_column = f'{profile}_normalized'
+                            strategy_rank = strategy_df[normalized_column].rank(ascending=False)
+                            best_idx = strategy_rank.idxmin()
+                            best_row = strategy_df.loc[best_idx]
+                            normalized_value = best_row[normalized_column]
+
+                            key = (strategy, profile)
+                            if key in best_candidates and best_candidates[key][0] >= normalized_value:
+                                continue
+
+                            best_candidates[key] = (normalized_value, dict(
+                                sliding_window=window,
+                                http_code=http_code,
+                                aggregation=agg,
+                                imputation_strategy=imputation,
+                                nab_profile=profile,
+                                post_processing_strategy=strategy,
+                                long_window=best_row['long_window'],
+                                short_window=best_row['short_window'],
+                                anomaly_threshold=best_row['anomaly_threshold'],
+                                topk=best_row['topk'],
+                                overal_rank=best_row[f'NAB_{profile}_rank'],
+                                standard_normalized=best_row['standard_normalized'],
+                                reward_fn_normalized=best_row['reward_fn_normalized'],
+                                confusion_matrix=best_row['confusion_matrix'],
+                                detection_counters=best_row['detection_counters'],
+                                precision=best_row['precision'],
+                                recall=best_row['recall'],
+                                f1=best_row['f1'],
+                                accuracy=best_row['accuracy'],
+                                standard_raw=best_row['standard_raw'],
+                                reward_fn_raw=best_row['reward_fn_raw'],
+                            ))
+
+                records.extend(record for _, record in best_candidates.values())
+
+    shorten_optimal_hyperparameters_df = pd.DataFrame(records)
+
+    merged_results_dir = os.path.join(results_dir, 'merged_results')
+    os.makedirs(merged_results_dir, exist_ok=True)
+    csv_saved_path = os.path.join(merged_results_dir, f'{model_name}_shorten_optimal_scoring_hyperparameters.csv')
+    shorten_optimal_hyperparameters_df.to_csv(csv_saved_path, index=False)
+    print(f'Shorten optimal scoring hyperparameters CSV saved to {csv_saved_path}')
+
+    return shorten_optimal_hyperparameters_df
+
+
 def compare_model_performance_across_sliding_windows(
         optimal_hyperparameters_df, results_dir, supported_models, graph_models,
         supported_sliding_windows, http_codes, aggregations,
@@ -519,6 +617,14 @@ def main(cfg: DictConfig):
     )
 
     optimal_hyperparameters_df = load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
+        proposed_model_detail,
+        results_dir,
+        supported_sliding_windows,
+        http_codes,
+        aggregations,
+        missing_imputation_stategies,
+    )
+    shorten_optimal_hyperparameters_df = load_shorten_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
         proposed_model_detail,
         results_dir,
         supported_sliding_windows,
