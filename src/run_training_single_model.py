@@ -151,7 +151,7 @@ def main(cfg: DictConfig):
 
     selected_group_mode = ibm_dataset_loader.selected_group_mode
 
-    analyze_reconstruction_errors(ibm_dataset_loader, selected_group_mode, model_configs=model_configs, experiment_config=experiment_config)
+    analyze_reconstruction_errors(ibm_dataset_loader, selected_group_mode, model_configs=model_configs, experiment_config=experiment_config, random_seed=random_seed)
 
 def _compute_pr_metrics(reconstruction_error_raw: np.ndarray,
                         test_labels,
@@ -211,7 +211,7 @@ def _compute_pr_metrics(reconstruction_error_raw: np.ndarray,
     return results
 
 
-def analyze_reconstruction_errors(data_loader, selected_group_mode, model_configs, experiment_config):
+def analyze_reconstruction_errors(data_loader, selected_group_mode, model_configs, experiment_config, random_seed):
 
     mode = experiment_config.get('mode', 'single')
     if mode == 'single':
@@ -296,6 +296,11 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                 print(f"No trained model found for {model}, null padding {experiment_config.null_padding_target}. Training a new model...")
 
             clear_folder(model_dir)
+
+            # Re-seed right before constructing the model so every model's initial
+            # weights are deterministic from modeling.random_seed, independent of
+            # how much RNG state prior data loading/training in this process consumed.
+            set_random_seed(random_seed)
 
             graph_config = dict({"node_features": data_loader.get_num_node_features(),
                                  'slide_win': experiment_config.slide_win,

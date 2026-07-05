@@ -113,7 +113,7 @@ def main(cfg: DictConfig):
         selected_group_mode = ibm_dataset_loader.selected_group_mode
 
         analyze_reconstruction_errors(ibm_dataset_loader, selected_group_mode, model_configs=model_configs,
-                                      experiment_config=experiment_config)
+                                      experiment_config=experiment_config, random_seed=random_seed)
 
     # Extract experiment parameters
     # start_date = pd.Timestamp(cfg.train_test_config.experiment_parameters.start_date)
