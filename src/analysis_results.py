@@ -340,7 +340,7 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
     bar_width = 0.7 / n_windows
     colors = plt.cm.tab10(np.linspace(0, 0.45, n_windows))
 
-    fig, (ax_train, ax_infer) = plt.subplots(1, 2, figsize=(max(12, 0.9 * len(pairs)), 5))
+    fig, (ax_train, ax_infer) = plt.subplots(1, 2, figsize=(max(5, 0.5 * len(pairs)), 5))
 
     train_means = {
         p: {w: np.mean(vs) if vs else np.nan for w, vs in train_data[p].items()}
@@ -376,8 +376,8 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
         ax.tick_params(axis='y', labelsize=TICK_FONT_SIZE)
 
-    ax_train.set_title('Training Time — All (model, subset) pairs', fontsize=TITLE_FONT_SIZE, fontweight='bold')
-    ax_infer.set_title('Inference Time — All (model, subset) pairs', fontsize=TITLE_FONT_SIZE, fontweight='bold')
+    # ax_train.set_title('Training Time — All (model, subset) pairs', fontsize=TITLE_FONT_SIZE, fontweight='bold')
+    # ax_infer.set_title('Inference Time — All (model, subset) pairs', fontsize=TITLE_FONT_SIZE, fontweight='bold')
 
     legend_handles = [
         plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'Win {w}')
