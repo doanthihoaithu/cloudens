@@ -10,6 +10,9 @@ from omegaconf import DictConfig
 
 from utils import get_project_root
 
+ONE_COLUMN_FIGURE_WIDTH = 5
+TWO_COLUMN_FIGURE_WIDTH = 12
+
 
 def _merge_computation_time_data(results_dir, supported_models, supported_sliding_windows,
                                  imputation_strategies, http_codes, aggregations, graph_models,
@@ -141,7 +144,8 @@ AXIS_LABEL_FONT_SIZE = TITLE_FONT_SIZE - 3
 
 def plot_computation_time(results_dir, supported_models, supported_sliding_windows,
                           http_codes, aggregations, graph_models,
-                          null_padding_features, null_padding_targets):
+                          null_padding_features, null_padding_targets,
+                          is_one_column_figure=False):
     merged_results_dir = os.path.join(results_dir, 'merged_results')
     csv_path = os.path.join(merged_results_dir, 'computation_time_comparision.csv')
     if not os.path.exists(csv_path):
@@ -210,7 +214,8 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
     bar_width = 0.7 / n_windows
     colors = plt.cm.tab10(np.linspace(0, 0.45, n_windows))
 
-    fig, axes = plt.subplots(n_rows, 2, figsize=(12, 3 * n_rows))
+    figure_width = ONE_COLUMN_FIGURE_WIDTH if is_one_column_figure else TWO_COLUMN_FIGURE_WIDTH
+    fig, axes = plt.subplots(n_rows, 2, figsize=(figure_width, 3 * n_rows))
     if n_rows == 1:
         axes = axes[np.newaxis, :]
 
@@ -271,7 +276,8 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
 
 def plot_computation_time_combined(results_dir, supported_models, supported_sliding_windows,
                                    http_codes, aggregations, graph_models,
-                                   null_padding_features, null_padding_targets):
+                                   null_padding_features, null_padding_targets,
+                                   is_one_column_figure=False):
     merged_results_dir = os.path.join(results_dir, 'merged_results')
     csv_path = os.path.join(merged_results_dir, 'computation_time_comparision.csv')
     if not os.path.exists(csv_path):
@@ -340,7 +346,8 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
     bar_width = 0.7 / n_windows
     colors = plt.cm.tab10(np.linspace(0, 0.45, n_windows))
 
-    fig, (ax_train, ax_infer) = plt.subplots(1, 2, figsize=(max(5, 0.5 * len(pairs)), 5))
+    figure_width = ONE_COLUMN_FIGURE_WIDTH if is_one_column_figure else TWO_COLUMN_FIGURE_WIDTH
+    fig, (ax_train, ax_infer) = plt.subplots(1, 2, figsize=(figure_width, 5))
 
     train_means = {
         p: {w: np.mean(vs) if vs else np.nan for w, vs in train_data[p].items()}
@@ -749,13 +756,13 @@ def main(cfg: DictConfig):
                            )
     plot_computation_time(results_dir, supported_models, supported_sliding_windows,
                           http_codes, aggregations, graph_models,
-                          null_padding_features, null_padding_targets)
+                          null_padding_features, null_padding_targets, is_one_column_figure=True)
 
     aggregations=['count']
 
     plot_computation_time_combined(results_dir, supported_models, supported_sliding_windows,
                                    http_codes, aggregations, graph_models,
-                                   null_padding_features, null_padding_targets)
+                                   null_padding_features, null_padding_targets, is_one_column_figure=True)
 
     # plot_computation_time(results_dir, supported_models, supported_sliding_windows,
     #                       http_codes, aggregations, graph_models,
