@@ -154,6 +154,12 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
 
     df = pd.read_csv(csv_path)
 
+    # Average training/inference time over missing_imputation_strategies (column
+    # 'imputation_strategy') for each (model, null padding, subset, window) combination
+    group_cols = ['model_name', 'null_padding_feature', 'null_padding_target',
+                  'http_code', 'aggregation', 'sliding_window']
+    df = df.groupby(group_cols, as_index=False)[['training_time', 'inference_time']].mean()
+
     # Reconstruct extended model list (same ordering as merge_computation_time)
     extended_supported_models = []
     for m in supported_models:
@@ -285,6 +291,12 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         return None
 
     df = pd.read_csv(csv_path)
+
+    # Average training/inference time over missing_imputation_strategies (column
+    # 'imputation_strategy') for each (model, null padding, subset, window) combination
+    group_cols = ['model_name', 'null_padding_feature', 'null_padding_target',
+                  'http_code', 'aggregation', 'sliding_window']
+    df = df.groupby(group_cols, as_index=False)[['training_time', 'inference_time']].mean()
 
     # Reconstruct extended model list (same ordering as merge_computation_time)
     extended_supported_models = []
