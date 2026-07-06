@@ -123,6 +123,11 @@ def merge_computation_time(results_dir, supported_models, supported_sliding_wind
                                  null_padding_features, null_padding_targets)
 
 
+MODEL_DISPLAY_NAME_MAP = {
+    'A3TGCN_null_padding_feature': 'ClouDens',
+}
+
+
 def plot_computation_time(results_dir, supported_models, supported_sliding_windows,
                           http_codes, aggregations, graph_models,
                           null_padding_features, null_padding_targets):
@@ -227,7 +232,8 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
         for ax, ylabel in [(ax_train, 'Training Time (s)\n[log scale]'),
                            (ax_infer, 'Inference Time (s)\n[log scale]')]:
             ax.set_xticks(x)
-            ax.set_xticklabels(valid_models if valid_models else [], rotation=30, ha='right', fontsize=8)
+            display_labels = [MODEL_DISPLAY_NAME_MAP.get(m, m) for m in valid_models]
+            ax.set_xticklabels(display_labels, rotation=30, ha='right', fontsize=8)
             ax.set_yscale('log')
             ax.set_ylabel(ylabel, fontsize=8)
             ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
@@ -544,10 +550,11 @@ def compare_model_performance_across_sliding_windows(
                         y_values.append(matched_rows.iloc[0][normalized_column])
 
                     if x_values:
+                        display_name = MODEL_DISPLAY_NAME_MAP.get(model_folder, model_folder)
                         ax.plot(
                             x_values, y_values, marker='o', markersize=4,
                             color=model_colors[model_folder], linestyle=linestyles[imputation],
-                            label=f'{model_folder} ({imputation})',
+                            label=f'{display_name} ({imputation})',
                         )
 
             ax.set_title(f'{http_code}/{agg} — {strategy} — {profile}', fontsize=9, fontweight='bold')
@@ -558,7 +565,8 @@ def compare_model_performance_across_sliding_windows(
             ax.tick_params(labelsize=8)
 
     model_legend_handles = [
-        plt.Line2D([0], [0], color=model_colors[model_folder], label=model_folder)
+        plt.Line2D([0], [0], color=model_colors[model_folder],
+                   label=MODEL_DISPLAY_NAME_MAP.get(model_folder, model_folder))
         for _, model_folder in model_variants
     ]
     imputation_legend_handles = [
