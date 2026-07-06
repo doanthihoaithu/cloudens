@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgb
+from matplotlib.patches import FancyBboxPatch
 from omegaconf import DictConfig
 
 from utils import get_project_root
@@ -35,7 +36,7 @@ MODEL_FAMILY_HUE_MAP = {
     'GRU': 1 / 3,     # green
 }
 
-TITLE_FONT_SIZE = 9
+TITLE_FONT_SIZE = 11
 LEGEND_FONT_SIZE = TITLE_FONT_SIZE - 2
 TICK_FONT_SIZE = TITLE_FONT_SIZE - 2
 AXIS_LABEL_FONT_SIZE = TITLE_FONT_SIZE - 2
@@ -922,7 +923,7 @@ def plot_table_of_detected_anomalies(
                                          edgecolor='none'))
 
         if imputation_by_strategy:
-            imputations = ' '.join(f'{name}:{imp}' for name, imp in imputation_by_strategy.items())
+            imputations = '\n'.join(f'{name}:{imp}' for name, imp in imputation_by_strategy.items())
             row_labels[row_idx] = f'${text_subset_wrapper(http_code, agg)}$\n{imputations}'
 
     for anomaly_id in range(NUM_TESTING_ANOMALIES):
@@ -943,7 +944,7 @@ def plot_table_of_detected_anomalies(
                         np.array(undetected_color) * (1 - ANOMALY_GROUP_OPACITY)
         tick_label.set_bbox(dict(facecolor=blended_color, edgecolor='none', pad=1.5))
     ax.set_yticks(range(len(subsets)))
-    ax.set_yticklabels(row_labels, fontsize=TICK_FONT_SIZE)
+    ax.set_yticklabels(row_labels, fontsize=TICK_FONT_SIZE - 2)
     ax.set_xlabel('Ground-truth anomaly index', fontsize=AXIS_LABEL_FONT_SIZE)
 
     ax.set_xticks(np.arange(-0.5, NUM_TESTING_ANOMALIES, 1), minor=True)
@@ -958,8 +959,8 @@ def plot_table_of_detected_anomalies(
     ax.set_title(strategy_triangle_note, fontsize=TICK_FONT_SIZE)
 
     profile_display_name = NAB_PROFILE_DISPLAY_NAME_MAP.get(nab_profile, nab_profile)
-    fig.suptitle(f'Detected Anomalies — Window {sliding_window} — {profile_display_name}',
-                fontsize=TITLE_FONT_SIZE, fontweight='bold', y=1.28)
+    # fig.suptitle(f'Detected Anomalies — Window {sliding_window} — {profile_display_name}',
+    #             fontsize=TITLE_FONT_SIZE, fontweight='bold', y=1.28)
 
     legend_handles = [
         plt.Rectangle((0, 0), 1, 1, color=color, alpha=ANOMALY_GROUP_OPACITY,
@@ -968,7 +969,7 @@ def plot_table_of_detected_anomalies(
     ]
     fig.legend(handles=legend_handles, title='Anomaly Source',
               fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
-              loc='upper center', bbox_to_anchor=(0.5, 1.15),
+              loc='upper center', bbox_to_anchor=(0.5, 1.1),
               ncol=len(legend_handles), frameon=True)
 
     fig.tight_layout()
@@ -980,6 +981,143 @@ def plot_table_of_detected_anomalies(
     fig.savefig(out_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     print(f'Detected anomalies table saved to {out_path}')
+
+    return out_path
+
+
+# Color assigned to the winning scoring strategy's bar
+SCORING_STRATEGY_COLOR_MAP = {
+    'likelihood': 'steelblue',
+    'mahalanobis': 'indianred',
+}
+
+# Corner radius for rounded bars, in points (a physical unit independent of DPI
+# and of the data scale on either axis)
+BAR_CORNER_RADIUS_POINTS = 4
+
+
+def _round_bar_corners(bars, radius_points=BAR_CORNER_RADIUS_POINTS):
+    ax = bars.patches[0].axes
+
+    # rounding_size/mutation_aspect are both defined in data units, so a fixed
+    # physical radius (points, converted to pixels via the figure's DPI) is
+    # mapped separately per axis using the current data-to-display scale (x
+    # and y axes generally have different data ranges mapped over similar
+    # pixel extents, so a naive shared radius would look stretched)
+    radius_px = radius_points * ax.figure.dpi / 72.0
+    inv = ax.transData.inverted()
+    origin_disp = ax.transData.transform((0, 0))
+    origin_data = inv.transform(origin_disp)
+    radius_x_data = abs(inv.transform(origin_disp + [radius_px, 0])[0] - origin_data[0])
+    radius_y_data = abs(inv.transform(origin_disp + [0, radius_px])[1] - origin_data[1])
+    mutation_aspect = radius_y_data / radius_x_data if radius_x_data else 1
+
+    for rect in bars.patches:
+        x, y = rect.get_x(), min(rect.get_y(), rect.get_y() + rect.get_height())
+        width, height = rect.get_width(), abs(rect.get_height())
+        rounded = FancyBboxPatch(
+            (x, y), width, height,
+            boxstyle=f'round,pad=0,rounding_size={radius_x_data}',
+            mutation_aspect=mutation_aspect,
+            facecolor=rect.get_facecolor(), edgecolor=rect.get_edgecolor(),
+            linewidth=rect.get_linewidth(), zorder=rect.get_zorder(),
+        )
+        rect.remove()
+        ax.add_patch(rounded)
+
+
+def plot_nab_score_of_optimal_configuration(
+        optimal_hyperparameters_df, results_dir, sliding_window, nab_profile,
+        is_one_column_figure=False,
+):
+    scoring_strategies = ['likelihood', 'mahalanobis']
+    normalized_column = f'{nab_profile}_normalized'
+
+    profile_df = optimal_hyperparameters_df[
+        (optimal_hyperparameters_df['sliding_window'] == sliding_window) &
+        (optimal_hyperparameters_df['nab_profile'] == nab_profile)
+    ]
+
+    subsets = sorted(set(zip(profile_df['http_code'], profile_df['aggregation'])))
+    x_labels = [f'${text_subset_wrapper(hc, agg)}$' for hc, agg in subsets]
+
+    # scores/config_labels[strategy][subset_idx]; NaN where a strategy has no
+    # candidate rows for that subset
+    scores = {strategy: np.full(len(subsets), np.nan) for strategy in scoring_strategies}
+    config_labels = {strategy: [''] * len(subsets) for strategy in scoring_strategies}
+
+    for subset_idx, (http_code, agg) in enumerate(subsets):
+        subset_rows = profile_df[
+            (profile_df['http_code'] == http_code) & (profile_df['aggregation'] == agg)
+        ]
+
+        for strategy in scoring_strategies:
+            strategy_rows = subset_rows[subset_rows['post_processing_strategy'] == strategy]
+            if strategy_rows.empty:
+                continue
+
+            # Optimal configuration for this subset/strategy is the imputation_strategy
+            # whose selected hyperparameters score highest on the profile's normalized
+            # metric, considering every imputation_strategy present in strategy_rows
+            optimal_row = strategy_rows.loc[strategy_rows[normalized_column].idxmax()]
+            scores[strategy][subset_idx] = optimal_row[normalized_column]
+            config_labels[strategy][subset_idx] = optimal_row['imputation_strategy']
+
+    n_strategies = len(scoring_strategies)
+    bar_width = 0.7 / n_strategies
+    x = np.arange(len(x_labels))
+
+    figure_width = ONE_COLUMN_FIGURE_WIDTH if is_one_column_figure else TWO_COLUMN_FIGURE_WIDTH
+    fig, ax = plt.subplots(figsize=(figure_width, 2.5))
+
+    all_scores = np.concatenate(list(scores.values())) if x_labels else np.array([0])
+    valid_scores = all_scores[~np.isnan(all_scores)]
+    min_score = min(valid_scores.min(), 0) if len(valid_scores) else 0
+    max_score = valid_scores.max() if len(valid_scores) else 1
+    score_range = max_score - min_score
+    # Extend the lower limit further when there are negative bars so their
+    # value/config labels (drawn below the bar tip) have room and don't overlap
+    # the axis edge or x-tick labels
+    ylim_min = (min_score - 0.25 * score_range) if min_score < 0 else min_score
+    ax.set_ylim(ylim_min, max_score + 0.3 * score_range)
+
+    for i, strategy in enumerate(scoring_strategies):
+        offset = (i - n_strategies / 2 + 0.5) * bar_width
+        strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
+        bars = ax.bar(x + offset, scores[strategy], bar_width,
+                      color=SCORING_STRATEGY_COLOR_MAP.get(strategy, 'gray'),
+                      label=strategy_display_name)
+        bar_value_labels = [
+            '' if np.isnan(score) else f'{score:.2f}\n{imputation}'
+            for score, imputation in zip(scores[strategy], config_labels[strategy])
+        ]
+        ax.bar_label(bars, labels=bar_value_labels, fontsize=TICK_FONT_SIZE, padding=2)
+        _round_bar_corners(bars)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(x_labels, fontsize=TICK_FONT_SIZE, rotation=30)
+    ax.set_ylabel('NAB score', fontsize=AXIS_LABEL_FONT_SIZE, labelpad=-5)
+    ax.tick_params(axis='y', labelsize=TICK_FONT_SIZE)
+    ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
+
+    # matplotlib stacks a legend's title above its entries by default; using an
+    # invisible proxy handle as the title instead keeps everything on one row
+    legend_handles, legend_labels = ax.get_legend_handles_labels()
+    title_handle = plt.Line2D([], [], color='none')
+    fig.legend([title_handle] + legend_handles, ['Scoring strategy:'] + legend_labels,
+              fontsize=LEGEND_FONT_SIZE,
+              loc='upper center', bbox_to_anchor=(0.5, 1.08),
+              ncol=len(legend_labels) + 1, frameon=True, handletextpad=0.5)
+
+    fig.tight_layout()
+    merged_results_dir = os.path.join(results_dir, 'merged_results')
+    os.makedirs(merged_results_dir, exist_ok=True)
+    out_path = os.path.join(
+        merged_results_dir, f'nab_score_optimal_configuration_window_{sliding_window}_{nab_profile}.png'
+    )
+    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+    print(f'NAB score of optimal configuration plot saved to {out_path}')
 
     return out_path
 
@@ -1035,7 +1173,7 @@ def main(cfg: DictConfig):
         http_codes,
         aggregations,
         missing_imputation_stategies,
-        use_existing_file=False
+        use_existing_file=True
     )
     shorten_optimal_hyperparameters_df = load_shorten_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
         proposed_model_detail,
@@ -1044,7 +1182,7 @@ def main(cfg: DictConfig):
         http_codes,
         aggregations,
         missing_imputation_stategies,
-        use_existing_file=False
+        use_existing_file=True
     )
 
     supported_models = ['GRU','A3TGCN']
@@ -1079,6 +1217,13 @@ def main(cfg: DictConfig):
     nab_profile = 'reward_fn'
     sliding_window = 6
     plot_table_of_detected_anomalies(
+        shorten_optimal_hyperparameters_df,
+        results_dir,
+        sliding_window,
+        nab_profile,
+        is_one_column_figure=True
+    )
+    plot_nab_score_of_optimal_configuration(
         shorten_optimal_hyperparameters_df,
         results_dir,
         sliding_window,
