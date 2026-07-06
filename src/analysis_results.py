@@ -17,10 +17,10 @@ MODEL_DISPLAY_NAME_MAP = {
     'A3TGCN_null_padding_feature': 'ClouDens',
 }
 
-TITLE_FONT_SIZE = 11
-LEGEND_FONT_SIZE = TITLE_FONT_SIZE - 3
-TICK_FONT_SIZE = TITLE_FONT_SIZE - 3
-AXIS_LABEL_FONT_SIZE = TITLE_FONT_SIZE - 3
+TITLE_FONT_SIZE = 9
+LEGEND_FONT_SIZE = TITLE_FONT_SIZE - 2
+TICK_FONT_SIZE = TITLE_FONT_SIZE - 2
+AXIS_LABEL_FONT_SIZE = TITLE_FONT_SIZE - 2
 
 
 def _merge_computation_time_data(results_dir, supported_models, supported_sliding_windows,
@@ -381,9 +381,9 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         train_values = [train_means[p][window] for p in valid_pairs]
         infer_values = [infer_means[p][window] for p in valid_pairs]
         train_bars = ax_train.bar(x + offset, train_values,
-                                  bar_width, label=f'Win {window}', color=colors[i], alpha=0.3)
+                                  bar_width, label=f'Win {window}', color=colors[i], alpha=0.5)
         infer_bars = ax_infer.bar(x + offset, infer_values,
-                                  bar_width, label=f'Win {window}', color=colors[i], alpha=0.3)
+                                  bar_width, label=f'Win {window}', color=colors[i], alpha=0.5)
 
         # Label bars with their actual (pre-log-scaling) value, outside the bar
         ax_train.bar_label(train_bars, labels=[format_bar_value(v) for v in train_values],
@@ -404,14 +404,18 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         ax.set_xticks(x)
         ax.set_xticklabels(display_labels, rotation=90, ha='center', fontsize=TICK_FONT_SIZE)
         ax.set_yscale('log')
-        ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONT_SIZE)
+        # ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONT_SIZE)
         ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
         ax.tick_params(axis='y', labelsize=TICK_FONT_SIZE)
         ymin, ymax = ax.get_ylim()
         ax.set_ylim(ymin, ymax * 10)
 
-    # ax_train.set_title('Training Time — All (model, subset) pairs', fontsize=TITLE_FONT_SIZE, fontweight='bold')
-    # ax_infer.set_title('Inference Time — All (model, subset) pairs', fontsize=TITLE_FONT_SIZE, fontweight='bold')
+    ax_train.set_title('Training Time (s) [log scale]', fontsize=TITLE_FONT_SIZE,
+                       # fontweight='bold'
+                       )
+    ax_infer.set_title('Inference Time (s) [log scale]', fontsize=TITLE_FONT_SIZE,
+                       # fontweight='bold'
+                       )
 
     legend_handles = [
         plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'{w}', alpha=0.3)
@@ -420,12 +424,13 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
     fig.legend(handles=legend_handles,
                title='Window',
                fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
-               loc='upper center', bbox_to_anchor=(0.5, 1.1),
+               loc='upper center', bbox_to_anchor=(0.5, 1.0),
                ncol=n_windows, frameon=True)
 
     fig.tight_layout(rect=(0, 0, 1, 0.9))
+    fig.subplots_adjust(wspace=0.15)
     out_path = os.path.join(merged_results_dir, 'computation_time_comparision_combined.png')
-    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    fig.savefig(out_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     print(f'Combined computation time plot saved to {out_path}')
     return out_path
