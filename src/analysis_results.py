@@ -381,15 +381,17 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         train_values = [train_means[p][window] for p in valid_pairs]
         infer_values = [infer_means[p][window] for p in valid_pairs]
         train_bars = ax_train.bar(x + offset, train_values,
-                                  bar_width, label=f'Win {window}', color=colors[i])
+                                  bar_width, label=f'Win {window}', color=colors[i], alpha=0.3)
         infer_bars = ax_infer.bar(x + offset, infer_values,
-                                  bar_width, label=f'Win {window}', color=colors[i])
+                                  bar_width, label=f'Win {window}', color=colors[i], alpha=0.3)
 
-        # Label bars with their actual (pre-log-scaling) value
+        # Label bars with their actual (pre-log-scaling) value, outside the bar
         ax_train.bar_label(train_bars, labels=[format_bar_value(v) for v in train_values],
-                           fontsize=TICK_FONT_SIZE - 2, rotation=90, padding=2)
+                           fontsize=TICK_FONT_SIZE - 2, rotation=90, padding=2,
+                           label_type='edge')
         ax_infer.bar_label(infer_bars, labels=[format_bar_value(v) for v in infer_values],
-                           fontsize=TICK_FONT_SIZE - 2, rotation=90, padding=2)
+                           fontsize=TICK_FONT_SIZE - 2, rotation=90, padding=2,
+                           label_type='edge')
 
     def text_subset_wrapper(http_code, agg):
         return "\\mathtt{" + f'{http_code}\ {agg}' + "}"
@@ -405,12 +407,14 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONT_SIZE)
         ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
         ax.tick_params(axis='y', labelsize=TICK_FONT_SIZE)
+        ymin, ymax = ax.get_ylim()
+        ax.set_ylim(ymin, ymax * 10)
 
     # ax_train.set_title('Training Time — All (model, subset) pairs', fontsize=TITLE_FONT_SIZE, fontweight='bold')
     # ax_infer.set_title('Inference Time — All (model, subset) pairs', fontsize=TITLE_FONT_SIZE, fontweight='bold')
 
     legend_handles = [
-        plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'{w}')
+        plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'{w}', alpha=0.3)
         for i, w in enumerate(supported_sliding_windows)
     ]
     fig.legend(handles=legend_handles,
