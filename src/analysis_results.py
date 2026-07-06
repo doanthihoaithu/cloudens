@@ -373,12 +373,23 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
     valid_pairs = [p for p in pairs if not all(np.isnan(v) for v in train_means[p].values())]
     x = np.arange(len(valid_pairs))
 
+    def format_bar_value(v):
+        return '' if np.isnan(v) else f'{v:.1f}'
+
     for i, window in enumerate(supported_sliding_windows):
         offset = (i - n_windows / 2 + 0.5) * bar_width
-        ax_train.bar(x + offset, [train_means[p][window] for p in valid_pairs],
-                     bar_width, label=f'Win {window}', color=colors[i])
-        ax_infer.bar(x + offset, [infer_means[p][window] for p in valid_pairs],
-                     bar_width, label=f'Win {window}', color=colors[i])
+        train_values = [train_means[p][window] for p in valid_pairs]
+        infer_values = [infer_means[p][window] for p in valid_pairs]
+        train_bars = ax_train.bar(x + offset, train_values,
+                                  bar_width, label=f'Win {window}', color=colors[i])
+        infer_bars = ax_infer.bar(x + offset, infer_values,
+                                  bar_width, label=f'Win {window}', color=colors[i])
+
+        # Label bars with their actual (pre-log-scaling) value
+        ax_train.bar_label(train_bars, labels=[format_bar_value(v) for v in train_values],
+                           fontsize=TICK_FONT_SIZE - 2, rotation=90, padding=2)
+        ax_infer.bar_label(infer_bars, labels=[format_bar_value(v) for v in infer_values],
+                           fontsize=TICK_FONT_SIZE - 2, rotation=90, padding=2)
 
     def text_subset_wrapper(http_code, agg):
         return "\\mathtt{" + f'{http_code}\ {agg}' + "}"
