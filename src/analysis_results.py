@@ -381,12 +381,12 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         train_values = [train_means[p][window] for p in valid_pairs]
         infer_values = [infer_means[p][window] for p in valid_pairs]
         train_bars = ax_train.bar(x + offset, train_values,
-                                  bar_width, label=f'Win {window}', color=colors[i], alpha=0.5,
-                                  edgecolor=colors[i]
+                                  bar_width, label=f'Win {window}', color=colors[i], alpha=0.8,
+                                  # edgecolor=colors[i]
                                   )
         infer_bars = ax_infer.bar(x + offset, infer_values,
-                                  bar_width, label=f'Win {window}', color=colors[i], alpha=0.5,
-                                  edgecolor=colors[i]
+                                  bar_width, label=f'Win {window}', color=colors[i], alpha=0.8,
+                                  # edgecolor=colors[i]
                                   )
 
         # Label bars with their actual (pre-log-scaling) value, outside the bar
@@ -422,7 +422,7 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
                        )
 
     legend_handles = [
-        plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'{w}', alpha=0.3)
+        plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'{w}', alpha=0.8)
         for i, w in enumerate(supported_sliding_windows)
     ]
     fig.legend(handles=legend_handles,
