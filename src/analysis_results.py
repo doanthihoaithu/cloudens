@@ -137,7 +137,7 @@ MODEL_DISPLAY_NAME_MAP = {
     'A3TGCN_null_padding_feature': 'ClouDens',
 }
 
-TITLE_FONT_SIZE = 12
+TITLE_FONT_SIZE = 11
 LEGEND_FONT_SIZE = TITLE_FONT_SIZE
 TICK_FONT_SIZE = TITLE_FONT_SIZE - 3
 AXIS_LABEL_FONT_SIZE = TITLE_FONT_SIZE - 3
@@ -347,7 +347,7 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
     colors = plt.cm.tab10(np.linspace(0, 0.45, n_windows))
 
     figure_width = ONE_COLUMN_FIGURE_WIDTH if is_one_column_figure else TWO_COLUMN_FIGURE_WIDTH
-    fig, (ax_train, ax_infer) = plt.subplots(1, 2, figsize=(figure_width, 5))
+    fig, (ax_train, ax_infer) = plt.subplots(1, 2, figsize=(figure_width, 3))
 
     train_means = {
         p: {w: np.mean(vs) if vs else np.nan for w, vs in train_data[p].items()}
@@ -374,8 +374,8 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         f'{MODEL_DISPLAY_NAME_MAP.get(m, m)}\n${text_subset_wrapper(http_code, agg)}$'
         for ((http_code, agg), m) in valid_pairs
     ]
-    for ax, ylabel in [(ax_train, 'Training Time (s)\n[log scale]'),
-                       (ax_infer, 'Inference Time (s)\n[log scale]')]:
+    for ax, ylabel in [(ax_train, 'Training Time (s) [log scale]'),
+                       (ax_infer, 'Inference Time (s) [log scale]')]:
         ax.set_xticks(x)
         ax.set_xticklabels(display_labels, rotation=0, ha='right', fontsize=TICK_FONT_SIZE)
         ax.set_yscale('log')
@@ -390,7 +390,9 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'Win {w}')
         for i, w in enumerate(supported_sliding_windows)
     ]
-    fig.legend(handles=legend_handles, title='Window', fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
+    fig.legend(handles=legend_handles,
+               # title='Window',
+               fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
                loc='lower center', bbox_to_anchor=(0.5, -0.05),
                ncol=n_windows, frameon=True)
 
