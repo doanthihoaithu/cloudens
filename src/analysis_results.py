@@ -760,6 +760,7 @@ def main(cfg: DictConfig):
                            null_padding_features,
                            null_padding_targets
                            )
+    aggregations=['count']
     merge_computation_time_combined(results_dir, supported_models, supported_sliding_windows,
                            missing_imputation_stategies,
                            http_codes, aggregations, graph_models,
