@@ -11,11 +11,11 @@ from omegaconf import DictConfig
 from utils import get_project_root
 
 
-def merge_computation_time(results_dir, supported_models, supported_sliding_windows,
-                           imputation_strategies, http_codes, aggregations, graph_models,
-                           null_padding_features,
-                           null_padding_targets,
-                           ):
+def _merge_computation_time_data(results_dir, supported_models, supported_sliding_windows,
+                                 imputation_strategies, http_codes, aggregations, graph_models,
+                                 null_padding_features,
+                                 null_padding_targets,
+                                 ):
     index_columns = ['model_name', 'is_graph_model', 'sliding_window', 'http_code', 'aggregation', 'imputation_strategy',
                      'null_padding_feature',
                      'null_padding_target']
@@ -118,9 +118,35 @@ def merge_computation_time(results_dir, supported_models, supported_sliding_wind
     merged_df.to_csv(csv_saved_path, index=True)
     print(f'Merged CSV saved to {csv_saved_path}')
 
+    return csv_saved_path
+
+
+def merge_computation_time(results_dir, supported_models, supported_sliding_windows,
+                           imputation_strategies, http_codes, aggregations, graph_models,
+                           null_padding_features,
+                           null_padding_targets,
+                           ):
+    _merge_computation_time_data(results_dir, supported_models, supported_sliding_windows,
+                                 imputation_strategies, http_codes, aggregations, graph_models,
+                                 null_padding_features, null_padding_targets)
+
     return plot_computation_time(results_dir, supported_models, supported_sliding_windows,
                                  http_codes, aggregations, graph_models,
                                  null_padding_features, null_padding_targets)
+
+
+def merge_computation_time_combined(results_dir, supported_models, supported_sliding_windows,
+                                    imputation_strategies, http_codes, aggregations, graph_models,
+                                    null_padding_features,
+                                    null_padding_targets,
+                                    ):
+    _merge_computation_time_data(results_dir, supported_models, supported_sliding_windows,
+                                 imputation_strategies, http_codes, aggregations, graph_models,
+                                 null_padding_features, null_padding_targets)
+
+    return plot_computation_time_combined(results_dir, supported_models, supported_sliding_windows,
+                                          http_codes, aggregations, graph_models,
+                                          null_padding_features, null_padding_targets)
 
 
 MODEL_DISPLAY_NAME_MAP = {
@@ -255,6 +281,128 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f'Computation time plot saved to {out_path}')
+    return out_path
+
+
+def plot_computation_time_combined(results_dir, supported_models, supported_sliding_windows,
+                                   http_codes, aggregations, graph_models,
+                                   null_padding_features, null_padding_targets):
+    merged_results_dir = os.path.join(results_dir, 'merged_results')
+    csv_path = os.path.join(merged_results_dir, 'computation_time_comparision.csv')
+    if not os.path.exists(csv_path):
+        print(f'CSV not found at {csv_path}; run merge_computation_time_combined first')
+        return None
+
+    df = pd.read_csv(csv_path)
+
+    # Reconstruct extended model list (same ordering as merge_computation_time)
+    extended_supported_models = []
+    for m in supported_models:
+        if m not in graph_models:
+            extended_supported_models.append(m)
+        else:
+            for (npf, npt) in itertools.product(null_padding_features, null_padding_targets):
+                if not npf and not npt:
+                    new_name = m
+                elif npf and not npt:
+                    new_name = f'{m}_null_padding_feature'
+                elif not npf and npt:
+                    new_name = f'{m}_null_padding_target'
+                else:
+                    new_name = f'{m}_null_padding_both'
+                extended_supported_models.append(new_name)
+
+    # Unlike plot_computation_time, all subsets are pooled together per model/window
+    train_data = {m: {w: [] for w in supported_sliding_windows} for m in extended_supported_models}
+    infer_data = {m: {w: [] for w in supported_sliding_windows} for m in extended_supported_models}
+
+    subsets = set((hc, agg) for hc in http_codes for agg in aggregations)
+
+    for _, row in df.iterrows():
+        model_name = row['model_name']
+        npf = str(row['null_padding_feature']).strip().lower() == 'true'
+        npt = str(row['null_padding_target']).strip().lower() == 'true'
+        http_code = row['http_code']
+        agg = row['aggregation']
+        window = int(row['sliding_window'])
+
+        if (http_code, agg) not in subsets:
+            continue
+
+        if model_name not in graph_models:
+            model_folder = model_name
+        else:
+            if not npf and not npt:
+                model_folder = model_name
+            elif npf and not npt:
+                model_folder = f'{model_name}_null_padding_feature'
+            elif not npf and npt:
+                model_folder = f'{model_name}_null_padding_target'
+            else:
+                model_folder = f'{model_name}_null_padding_both'
+
+        if model_folder not in train_data:
+            continue
+        if window not in train_data[model_folder]:
+            continue
+
+        if 'training_time' in row and pd.notna(row['training_time']):
+            train_data[model_folder][window].append(float(row['training_time']))
+        if 'inference_time' in row and pd.notna(row['inference_time']):
+            infer_data[model_folder][window].append(float(row['inference_time']))
+
+    n_windows = len(supported_sliding_windows)
+    bar_width = 0.7 / n_windows
+    colors = plt.cm.tab10(np.linspace(0, 0.45, n_windows))
+
+    fig, (ax_train, ax_infer) = plt.subplots(1, 2, figsize=(12, 5))
+
+    train_means = {
+        m: {w: np.mean(vs) if vs else np.nan for w, vs in train_data[m].items()}
+        for m in extended_supported_models
+    }
+    infer_means = {
+        m: {w: np.mean(vs) if vs else np.nan for w, vs in infer_data[m].items()}
+        for m in extended_supported_models
+    }
+
+    valid_models = [m for m in extended_supported_models
+                    if not all(np.isnan(v) for v in train_means[m].values())]
+    x = np.arange(len(valid_models))
+
+    for i, window in enumerate(supported_sliding_windows):
+        offset = (i - n_windows / 2 + 0.5) * bar_width
+        ax_train.bar(x + offset, [train_means[m][window] for m in valid_models],
+                     bar_width, label=f'Win {window}', color=colors[i])
+        ax_infer.bar(x + offset, [infer_means[m][window] for m in valid_models],
+                     bar_width, label=f'Win {window}', color=colors[i])
+
+    display_labels = [MODEL_DISPLAY_NAME_MAP.get(m, m) for m in valid_models]
+    for ax, ylabel in [(ax_train, 'Training Time (s)\n[log scale]'),
+                       (ax_infer, 'Inference Time (s)\n[log scale]')]:
+        ax.set_xticks(x)
+        ax.set_xticklabels(display_labels, rotation=30, ha='right', fontsize=8)
+        ax.set_yscale('log')
+        ax.set_ylabel(ylabel, fontsize=8)
+        ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
+        ax.tick_params(axis='y', labelsize=8)
+
+    ax_train.set_title('Training Time — All subsets', fontsize=9, fontweight='bold')
+    ax_infer.set_title('Inference Time — All subsets', fontsize=9, fontweight='bold')
+
+    legend_handles = [
+        plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'Win {w}')
+        for i, w in enumerate(supported_sliding_windows)
+    ]
+    fig.legend(handles=legend_handles, title='Window', fontsize=8, title_fontsize=8,
+               loc='upper center', bbox_to_anchor=(0.5, 1.03),
+               ncol=n_windows, frameon=True)
+
+    fig.tight_layout()
+    out_path = os.path.join(merged_results_dir, 'computation_time_comparision_combined.png')
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'Combined computation time plot saved to {out_path}')
     return out_path
 
 
@@ -605,6 +753,12 @@ def main(cfg: DictConfig):
     results_dir = cfg.evaluation.model_save_path
     results_dir = os.path.join(get_project_root(), results_dir)
     merge_computation_time(results_dir, supported_models, supported_sliding_windows,
+                           missing_imputation_stategies,
+                           http_codes, aggregations, graph_models,
+                           null_padding_features,
+                           null_padding_targets
+                           )
+    merge_computation_time_combined(results_dir, supported_models, supported_sliding_windows,
                            missing_imputation_stategies,
                            http_codes, aggregations, graph_models,
                            null_padding_features,
