@@ -381,9 +381,13 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         train_values = [train_means[p][window] for p in valid_pairs]
         infer_values = [infer_means[p][window] for p in valid_pairs]
         train_bars = ax_train.bar(x + offset, train_values,
-                                  bar_width, label=f'Win {window}', color=colors[i], alpha=0.5)
+                                  bar_width, label=f'Win {window}', color=colors[i], alpha=0.5,
+                                  edgecolor=colors[i]
+                                  )
         infer_bars = ax_infer.bar(x + offset, infer_values,
-                                  bar_width, label=f'Win {window}', color=colors[i], alpha=0.5)
+                                  bar_width, label=f'Win {window}', color=colors[i], alpha=0.5,
+                                  edgecolor=colors[i]
+                                  )
 
         # Label bars with their actual (pre-log-scaling) value, outside the bar
         ax_train.bar_label(train_bars, labels=[format_bar_value(v) for v in train_values],
