@@ -130,29 +130,14 @@ def merge_computation_time(results_dir, supported_models, supported_sliding_wind
                                  imputation_strategies, http_codes, aggregations, graph_models,
                                  null_padding_features, null_padding_targets)
 
-    return plot_computation_time(results_dir, supported_models, supported_sliding_windows,
-                                 http_codes, aggregations, graph_models,
-                                 null_padding_features, null_padding_targets)
-
-
-def merge_computation_time_combined(results_dir, supported_models, supported_sliding_windows,
-                                    imputation_strategies, http_codes, aggregations, graph_models,
-                                    null_padding_features,
-                                    null_padding_targets,
-                                    ):
-    _merge_computation_time_data(results_dir, supported_models, supported_sliding_windows,
-                                 imputation_strategies, http_codes, aggregations, graph_models,
-                                 null_padding_features, null_padding_targets)
-
-    return plot_computation_time_combined(results_dir, supported_models, supported_sliding_windows,
-                                          http_codes, aggregations, graph_models,
-                                          null_padding_features, null_padding_targets)
-
-
 MODEL_DISPLAY_NAME_MAP = {
     'A3TGCN_null_padding_feature': 'ClouDens',
 }
 
+TITLE_FONT_SIZE = 12
+LEGEND_FONT_SIZE = TITLE_FONT_SIZE
+TICK_FONT_SIZE = TITLE_FONT_SIZE - 3
+AXIS_LABEL_FONT_SIZE = TITLE_FONT_SIZE - 3
 
 def plot_computation_time(results_dir, supported_models, supported_sliding_windows,
                           http_codes, aggregations, graph_models,
@@ -259,20 +244,20 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
                            (ax_infer, 'Inference Time (s)\n[log scale]')]:
             ax.set_xticks(x)
             display_labels = [MODEL_DISPLAY_NAME_MAP.get(m, m) for m in valid_models]
-            ax.set_xticklabels(display_labels, rotation=30, ha='right', fontsize=8)
+            ax.set_xticklabels(display_labels, rotation=30, ha='right', fontsize=TICK_FONT_SIZE)
             ax.set_yscale('log')
-            ax.set_ylabel(ylabel, fontsize=8)
+            ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONT_SIZE)
             ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
-            ax.tick_params(axis='y', labelsize=8)
+            ax.tick_params(axis='y', labelsize=TICK_FONT_SIZE)
 
-        ax_train.set_title(f'Training Time — {row_label}', fontsize=9, fontweight='bold')
-        ax_infer.set_title(f'Inference Time — {row_label}', fontsize=9, fontweight='bold')
+        ax_train.set_title(f'Training Time — {row_label}', fontsize=TITLE_FONT_SIZE, fontweight='bold')
+        ax_infer.set_title(f'Inference Time — {row_label}', fontsize=TITLE_FONT_SIZE, fontweight='bold')
 
     legend_handles = [
         plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'Win {w}')
         for i, w in enumerate(supported_sliding_windows)
     ]
-    fig.legend(handles=legend_handles, title='Window', fontsize=8, title_fontsize=8,
+    fig.legend(handles=legend_handles, title='Window', fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
                loc='upper center', bbox_to_anchor=(0.5, 1.01),
                ncol=n_windows, frameon=True)
 
@@ -376,31 +361,33 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         ax_infer.bar(x + offset, [infer_means[p][window] for p in valid_pairs],
                      bar_width, label=f'Win {window}', color=colors[i])
 
+    def text_subset_wrapper(http_code, agg):
+        return "\\mathtt{" + f'{http_code}\ {agg}' + "}"
     display_labels = [
-        f'{MODEL_DISPLAY_NAME_MAP.get(m, m)}\n{http_code}/{agg}'
+        f'{MODEL_DISPLAY_NAME_MAP.get(m, m)}\n${text_subset_wrapper(http_code, agg)}$'
         for ((http_code, agg), m) in valid_pairs
     ]
     for ax, ylabel in [(ax_train, 'Training Time (s)\n[log scale]'),
                        (ax_infer, 'Inference Time (s)\n[log scale]')]:
         ax.set_xticks(x)
-        ax.set_xticklabels(display_labels, rotation=30, ha='right', fontsize=8)
+        ax.set_xticklabels(display_labels, rotation=0, ha='right', fontsize=TICK_FONT_SIZE)
         ax.set_yscale('log')
-        ax.set_ylabel(ylabel, fontsize=8)
+        ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONT_SIZE)
         ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
-        ax.tick_params(axis='y', labelsize=8)
+        ax.tick_params(axis='y', labelsize=TICK_FONT_SIZE)
 
-    ax_train.set_title('Training Time — All (model, subset) pairs', fontsize=9, fontweight='bold')
-    ax_infer.set_title('Inference Time — All (model, subset) pairs', fontsize=9, fontweight='bold')
+    ax_train.set_title('Training Time — All (model, subset) pairs', fontsize=TITLE_FONT_SIZE, fontweight='bold')
+    ax_infer.set_title('Inference Time — All (model, subset) pairs', fontsize=TITLE_FONT_SIZE, fontweight='bold')
 
     legend_handles = [
         plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'Win {w}')
         for i, w in enumerate(supported_sliding_windows)
     ]
-    fig.legend(handles=legend_handles, title='Window', fontsize=8, title_fontsize=8,
-               loc='upper center', bbox_to_anchor=(0.5, 1.03),
+    fig.legend(handles=legend_handles, title='Window', fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
+               loc='lower center', bbox_to_anchor=(0.5, -0.05),
                ncol=n_windows, frameon=True)
 
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
     out_path = os.path.join(merged_results_dir, 'computation_time_comparision_combined.png')
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
@@ -760,18 +747,20 @@ def main(cfg: DictConfig):
                            null_padding_features,
                            null_padding_targets
                            )
-    aggregations=['count']
-    merge_computation_time_combined(results_dir, supported_models, supported_sliding_windows,
-                           missing_imputation_stategies,
-                           http_codes, aggregations, graph_models,
-                           null_padding_features,
-                           null_padding_targets
-                           )
-
     plot_computation_time(results_dir, supported_models, supported_sliding_windows,
                           http_codes, aggregations, graph_models,
-                          null_padding_features,
-                          null_padding_targets)
+                          null_padding_features, null_padding_targets)
+
+    aggregations=['count']
+
+    plot_computation_time_combined(results_dir, supported_models, supported_sliding_windows,
+                                   http_codes, aggregations, graph_models,
+                                   null_padding_features, null_padding_targets)
+
+    # plot_computation_time(results_dir, supported_models, supported_sliding_windows,
+    #                       http_codes, aggregations, graph_models,
+    #                       null_padding_features,
+    #                       null_padding_targets)
 
     proposed_model_name = 'A3TGCN'
     proposed_model_detail = dict(
