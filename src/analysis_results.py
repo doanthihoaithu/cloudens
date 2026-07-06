@@ -10,8 +10,17 @@ from omegaconf import DictConfig
 
 from utils import get_project_root
 
-ONE_COLUMN_FIGURE_WIDTH = 5
+ONE_COLUMN_FIGURE_WIDTH = 7
 TWO_COLUMN_FIGURE_WIDTH = 12
+
+MODEL_DISPLAY_NAME_MAP = {
+    'A3TGCN_null_padding_feature': 'ClouDens',
+}
+
+TITLE_FONT_SIZE = 11
+LEGEND_FONT_SIZE = TITLE_FONT_SIZE - 2
+TICK_FONT_SIZE = TITLE_FONT_SIZE - 3
+AXIS_LABEL_FONT_SIZE = TITLE_FONT_SIZE - 3
 
 
 def _merge_computation_time_data(results_dir, supported_models, supported_sliding_windows,
@@ -132,15 +141,6 @@ def merge_computation_time(results_dir, supported_models, supported_sliding_wind
     _merge_computation_time_data(results_dir, supported_models, supported_sliding_windows,
                                  imputation_strategies, http_codes, aggregations, graph_models,
                                  null_padding_features, null_padding_targets)
-
-MODEL_DISPLAY_NAME_MAP = {
-    'A3TGCN_null_padding_feature': 'ClouDens',
-}
-
-TITLE_FONT_SIZE = 11
-LEGEND_FONT_SIZE = TITLE_FONT_SIZE
-TICK_FONT_SIZE = TITLE_FONT_SIZE - 3
-AXIS_LABEL_FONT_SIZE = TITLE_FONT_SIZE - 3
 
 def plot_computation_time(results_dir, supported_models, supported_sliding_windows,
                           http_codes, aggregations, graph_models,
@@ -263,10 +263,10 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
         for i, w in enumerate(supported_sliding_windows)
     ]
     fig.legend(handles=legend_handles, title='Window', fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
-               loc='upper center', bbox_to_anchor=(0.5, 1.01),
-               ncol=n_windows, frameon=True)
+               loc='center left', bbox_to_anchor=(1.0, 0.5),
+               ncol=1, frameon=True)
 
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 0.9, 1))
     out_path = os.path.join(merged_results_dir, 'computation_time_comparision.png')
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
@@ -377,7 +377,7 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
     for ax, ylabel in [(ax_train, 'Training Time (s) [log scale]'),
                        (ax_infer, 'Inference Time (s) [log scale]')]:
         ax.set_xticks(x)
-        ax.set_xticklabels(display_labels, rotation=0, ha='right', fontsize=TICK_FONT_SIZE)
+        ax.set_xticklabels(display_labels, rotation=90, ha='right', fontsize=TICK_FONT_SIZE)
         ax.set_yscale('log')
         ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONT_SIZE)
         ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
@@ -391,12 +391,12 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         for i, w in enumerate(supported_sliding_windows)
     ]
     fig.legend(handles=legend_handles,
-               # title='Window',
+               title='Window',
                fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
-               loc='lower center', bbox_to_anchor=(0.5, -0.05),
-               ncol=n_windows, frameon=True)
+               loc='center left', bbox_to_anchor=(1.0, 0.5),
+               ncol=1, frameon=True)
 
-    fig.tight_layout(rect=(0, 0.08, 1, 1))
+    fig.tight_layout(rect=(0, 0, 0.9, 1))
     out_path = os.path.join(merged_results_dir, 'computation_time_comparision_combined.png')
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
