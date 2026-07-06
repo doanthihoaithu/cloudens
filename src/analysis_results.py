@@ -249,7 +249,7 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
                            (ax_infer, 'Inference Time (s)\n[log scale]')]:
             ax.set_xticks(x)
             display_labels = [MODEL_DISPLAY_NAME_MAP.get(m, m) for m in valid_models]
-            ax.set_xticklabels(display_labels, rotation=30, ha='right', fontsize=TICK_FONT_SIZE)
+            ax.set_xticklabels(display_labels, rotation=0, ha='center', fontsize=TICK_FONT_SIZE)
             ax.set_yscale('log')
             ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONT_SIZE)
             ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
@@ -377,7 +377,7 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
     for ax, ylabel in [(ax_train, 'Training Time (s) [log scale]'),
                        (ax_infer, 'Inference Time (s) [log scale]')]:
         ax.set_xticks(x)
-        ax.set_xticklabels(display_labels, rotation=90, ha='right', fontsize=TICK_FONT_SIZE)
+        ax.set_xticklabels(display_labels, rotation=0, ha='center', fontsize=TICK_FONT_SIZE)
         ax.set_yscale('log')
         ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONT_SIZE)
         ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
@@ -387,7 +387,7 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
     # ax_infer.set_title('Inference Time — All (model, subset) pairs', fontsize=TITLE_FONT_SIZE, fontweight='bold')
 
     legend_handles = [
-        plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'Win {w}')
+        plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'{w}')
         for i, w in enumerate(supported_sliding_windows)
     ]
     fig.legend(handles=legend_handles,
