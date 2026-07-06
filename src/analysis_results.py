@@ -312,11 +312,12 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
                     new_name = f'{m}_null_padding_both'
                 extended_supported_models.append(new_name)
 
-    # Unlike plot_computation_time, all subsets are pooled together per model/window
-    train_data = {m: {w: [] for w in supported_sliding_windows} for m in extended_supported_models}
-    infer_data = {m: {w: [] for w in supported_sliding_windows} for m in extended_supported_models}
-
-    subsets = set((hc, agg) for hc in http_codes for agg in aggregations)
+    # Unlike plot_computation_time, every (model, subset) pair gets its own
+    # x-axis position within the same pair of subplots
+    subsets = [(hc, agg) for hc in http_codes for agg in aggregations]
+    pairs = [(subset, m) for subset in subsets for m in extended_supported_models]
+    train_data = {p: {w: [] for w in supported_sliding_windows} for p in pairs}
+    infer_data = {p: {w: [] for w in supported_sliding_windows} for p in pairs}
 
     for _, row in df.iterrows():
         model_name = row['model_name']
@@ -325,9 +326,7 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         http_code = row['http_code']
         agg = row['aggregation']
         window = int(row['sliding_window'])
-
-        if (http_code, agg) not in subsets:
-            continue
+        subset = (http_code, agg)
 
         if model_name not in graph_models:
             model_folder = model_name
@@ -341,43 +340,46 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
             else:
                 model_folder = f'{model_name}_null_padding_both'
 
-        if model_folder not in train_data:
+        pair = (subset, model_folder)
+        if pair not in train_data:
             continue
-        if window not in train_data[model_folder]:
+        if window not in train_data[pair]:
             continue
 
         if 'training_time' in row and pd.notna(row['training_time']):
-            train_data[model_folder][window].append(float(row['training_time']))
+            train_data[pair][window].append(float(row['training_time']))
         if 'inference_time' in row and pd.notna(row['inference_time']):
-            infer_data[model_folder][window].append(float(row['inference_time']))
+            infer_data[pair][window].append(float(row['inference_time']))
 
     n_windows = len(supported_sliding_windows)
     bar_width = 0.7 / n_windows
     colors = plt.cm.tab10(np.linspace(0, 0.45, n_windows))
 
-    fig, (ax_train, ax_infer) = plt.subplots(1, 2, figsize=(12, 5))
+    fig, (ax_train, ax_infer) = plt.subplots(1, 2, figsize=(max(12, 0.9 * len(pairs)), 5))
 
     train_means = {
-        m: {w: np.mean(vs) if vs else np.nan for w, vs in train_data[m].items()}
-        for m in extended_supported_models
+        p: {w: np.mean(vs) if vs else np.nan for w, vs in train_data[p].items()}
+        for p in pairs
     }
     infer_means = {
-        m: {w: np.mean(vs) if vs else np.nan for w, vs in infer_data[m].items()}
-        for m in extended_supported_models
+        p: {w: np.mean(vs) if vs else np.nan for w, vs in infer_data[p].items()}
+        for p in pairs
     }
 
-    valid_models = [m for m in extended_supported_models
-                    if not all(np.isnan(v) for v in train_means[m].values())]
-    x = np.arange(len(valid_models))
+    valid_pairs = [p for p in pairs if not all(np.isnan(v) for v in train_means[p].values())]
+    x = np.arange(len(valid_pairs))
 
     for i, window in enumerate(supported_sliding_windows):
         offset = (i - n_windows / 2 + 0.5) * bar_width
-        ax_train.bar(x + offset, [train_means[m][window] for m in valid_models],
+        ax_train.bar(x + offset, [train_means[p][window] for p in valid_pairs],
                      bar_width, label=f'Win {window}', color=colors[i])
-        ax_infer.bar(x + offset, [infer_means[m][window] for m in valid_models],
+        ax_infer.bar(x + offset, [infer_means[p][window] for p in valid_pairs],
                      bar_width, label=f'Win {window}', color=colors[i])
 
-    display_labels = [MODEL_DISPLAY_NAME_MAP.get(m, m) for m in valid_models]
+    display_labels = [
+        f'{MODEL_DISPLAY_NAME_MAP.get(m, m)}\n{http_code}/{agg}'
+        for ((http_code, agg), m) in valid_pairs
+    ]
     for ax, ylabel in [(ax_train, 'Training Time (s)\n[log scale]'),
                        (ax_infer, 'Inference Time (s)\n[log scale]')]:
         ax.set_xticks(x)
@@ -387,8 +389,8 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
         ax.tick_params(axis='y', labelsize=8)
 
-    ax_train.set_title('Training Time — All subsets', fontsize=9, fontweight='bold')
-    ax_infer.set_title('Inference Time — All subsets', fontsize=9, fontweight='bold')
+    ax_train.set_title('Training Time — All (model, subset) pairs', fontsize=9, fontweight='bold')
+    ax_infer.set_title('Inference Time — All (model, subset) pairs', fontsize=9, fontweight='bold')
 
     legend_handles = [
         plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'Win {w}')
