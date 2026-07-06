@@ -957,6 +957,7 @@ def main(cfg: DictConfig):
         is_graph = proposed_model_name in graph_models,
     )
 
+    aggregations = ['count', 'avg', 'min', 'max']
     optimal_hyperparameters_df = load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
         proposed_model_detail,
         results_dir,
