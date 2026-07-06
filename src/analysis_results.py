@@ -17,10 +17,24 @@ MODEL_DISPLAY_NAME_MAP = {
     'A3TGCN_null_padding_feature': 'ClouDens',
 }
 
+SCORING_STRATEGY_DISPLAY_NAME_MAP = {
+    'likelihood': 'LF',
+    'mahalanobis': 'MD',
+}
+
+NAB_PROFILE_DISPLAY_NAME_MAP = {
+    'standard': 'Standard',
+    'reward_fn': 'Reward FN',
+}
+
 TITLE_FONT_SIZE = 9
 LEGEND_FONT_SIZE = TITLE_FONT_SIZE - 2
 TICK_FONT_SIZE = TITLE_FONT_SIZE - 2
 AXIS_LABEL_FONT_SIZE = TITLE_FONT_SIZE - 2
+
+
+def text_subset_wrapper(http_code, agg):
+    return "\\mathtt{" + f'{http_code}\ {agg}' + "}"
 
 
 def _merge_computation_time_data(results_dir, supported_models, supported_sliding_windows,
@@ -397,8 +411,6 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
                            fontsize=TICK_FONT_SIZE - 2, rotation=90, padding=2,
                            label_type='edge')
 
-    def text_subset_wrapper(http_code, agg):
-        return "\\mathtt{" + f'{http_code}\ {agg}' + "}"
     display_labels = [
         f'{MODEL_DISPLAY_NAME_MAP.get(m, m)}\n${text_subset_wrapper(http_code, agg)}$'
         for ((http_code, agg), m) in valid_pairs
@@ -741,9 +753,14 @@ def compare_model_performance_across_sliding_windows(
                             label=f'{display_name} ({imputation})',
                         )
 
-            ax.set_title(f'{http_code}/{agg} — {strategy} — {profile}', fontsize=TITLE_FONT_SIZE, fontweight='bold')
+            strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
+            profile_display_name = NAB_PROFILE_DISPLAY_NAME_MAP.get(profile, profile)
+            ax.set_title(f'NAB Score\n${text_subset_wrapper(http_code,agg)}$ — {strategy_display_name} — {profile_display_name}',
+                        fontsize=TITLE_FONT_SIZE,
+                         # fontweight='bold'
+                         )
             ax.set_xlabel('Sliding window', fontsize=AXIS_LABEL_FONT_SIZE)
-            ax.set_ylabel('NAB score', fontsize=AXIS_LABEL_FONT_SIZE)
+            # ax.set_ylabel('NAB score', fontsize=AXIS_LABEL_FONT_SIZE)
             ax.set_xticks(supported_sliding_windows)
             ax.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
             ax.tick_params(labelsize=TICK_FONT_SIZE)
@@ -759,11 +776,12 @@ def compare_model_performance_across_sliding_windows(
     ]
     fig.legend(
         handles=model_legend_handles + imputation_legend_handles,
-        loc='upper center', bbox_to_anchor=(0.5, 1.02),
+        loc='upper center', bbox_to_anchor=(0.5, 1.04),
         ncol=len(model_variants) + len(linestyles), fontsize=LEGEND_FONT_SIZE, frameon=True,
     )
 
     fig.tight_layout()
+    fig.subplots_adjust(wspace=0.15)
     merged_results_dir = os.path.join(results_dir, 'merged_results')
     os.makedirs(merged_results_dir, exist_ok=True)
     out_path = os.path.join(merged_results_dir, 'model_performance_across_sliding_windows.png')
