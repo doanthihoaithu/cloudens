@@ -1,3 +1,4 @@
+import ast
 import colorsys
 import itertools
 import os
@@ -6,6 +7,7 @@ import hydra
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.colors import to_rgb
 from omegaconf import DictConfig
 
 from utils import get_project_root
@@ -37,6 +39,29 @@ TITLE_FONT_SIZE = 9
 LEGEND_FONT_SIZE = TITLE_FONT_SIZE - 2
 TICK_FONT_SIZE = TITLE_FONT_SIZE - 2
 AXIS_LABEL_FONT_SIZE = TITLE_FONT_SIZE - 2
+
+NUM_TESTING_ANOMALIES = 19
+
+ANOMALY_GROUP_ID_KEYS = ['issue_detected_ids', 'im_detected_ids', 'TestLog_detected_ids']
+
+ANOMALY_GROUP_DISPLAY_NAME_MAP = {
+    'issue_detected_ids': 'Issue Tracker',
+    'im_detected_ids': 'Instant Messenger',
+    'TestLog_detected_ids': 'Test Log',
+}
+
+ANOMALY_GROUP_COLOR_MAP = {
+    'issue_detected_ids': 'green',
+    'im_detected_ids': 'orange',
+    'TestLog_detected_ids': 'violet',
+}
+
+UNDETECTED_CELL_COLOR = 'white'
+
+ANOMALY_GROUP_OPACITY = 0.4
+
+DETECTED_ANOMALIES_TABLE_ROW_HEIGHT = 0.2
+
 
 
 def text_subset_wrapper(http_code, agg):
@@ -800,6 +825,95 @@ def compare_model_performance_across_sliding_windows(
     return out_path
 
 
+def plot_table_of_detected_anomalies(
+        optimal_hyperparameters_df, results_dir, sliding_window, nab_profile,
+        is_one_column_figure=False,
+):
+    scoring_strategies = ['likelihood', 'mahalanobis']
+    normalized_column = f'{nab_profile}_normalized'
+
+    profile_df = optimal_hyperparameters_df[
+        (optimal_hyperparameters_df['sliding_window'] == sliding_window) &
+        (optimal_hyperparameters_df['nab_profile'] == nab_profile)
+    ]
+
+    subsets = sorted(set(zip(profile_df['http_code'], profile_df['aggregation'])))
+
+    figure_width = ONE_COLUMN_FIGURE_WIDTH if is_one_column_figure else TWO_COLUMN_FIGURE_WIDTH
+    fig, axes = plt.subplots(1, len(scoring_strategies),
+                             figsize=(figure_width, DETECTED_ANOMALIES_TABLE_ROW_HEIGHT * len(subsets)+1), squeeze=False)
+    axes = axes[0]
+
+    for ax, strategy in zip(axes, scoring_strategies):
+        strategy_df = profile_df[profile_df['post_processing_strategy'] == strategy]
+
+        undetected_color = to_rgb(UNDETECTED_CELL_COLOR)
+        cell_colors = np.tile(undetected_color, (len(subsets), NUM_TESTING_ANOMALIES, 1))
+        # Optimal imputation can differ per scoring strategy, so row labels are
+        # rebuilt per subplot to show the imputation actually selected here
+        row_labels = [f'${text_subset_wrapper(hc, agg)}$' for hc, agg in subsets]
+        for row_idx, (http_code, agg) in enumerate(subsets):
+            subset_rows = strategy_df[
+                (strategy_df['http_code'] == http_code) & (strategy_df['aggregation'] == agg)
+            ]
+            if subset_rows.empty:
+                continue
+
+            # Optimal imputation for this subset/strategy is the one whose selected
+            # hyperparameters score highest on the profile's normalized metric,
+            # considering every imputation_strategy present in subset_rows
+            optimal_row = subset_rows.loc[subset_rows[normalized_column].idxmax()]
+            row_labels[row_idx] = f'${text_subset_wrapper(http_code, agg)}$\n{optimal_row["imputation_strategy"]}'
+            detection_counters = ast.literal_eval(optimal_row['detection_counters'])
+            for group_key in ANOMALY_GROUP_ID_KEYS:
+                group_color = to_rgb(ANOMALY_GROUP_COLOR_MAP[group_key])
+                blended_color = np.array(group_color) * ANOMALY_GROUP_OPACITY + \
+                                np.array(undetected_color) * (1 - ANOMALY_GROUP_OPACITY)
+                for anomaly_id in detection_counters.get(group_key, []):
+                    cell_colors[row_idx, anomaly_id] = blended_color
+
+        ax.imshow(cell_colors, aspect='auto')
+        ax.set_xticks(range(NUM_TESTING_ANOMALIES))
+        ax.set_xticklabels(range(NUM_TESTING_ANOMALIES), fontsize=TICK_FONT_SIZE)
+        ax.set_yticks(range(len(subsets)))
+        ax.set_yticklabels(row_labels, fontsize=TICK_FONT_SIZE)
+        ax.set_xlabel('Ground-truth anomaly index', fontsize=AXIS_LABEL_FONT_SIZE)
+
+        ax.set_xticks(np.arange(-0.5, NUM_TESTING_ANOMALIES, 1), minor=True)
+        ax.set_yticks(np.arange(-0.5, len(subsets), 1), minor=True)
+        ax.grid(which='minor', color='lightgray', linewidth=0.5)
+        ax.tick_params(which='minor', length=0)
+
+        strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
+        ax.set_title(strategy_display_name, fontsize=TITLE_FONT_SIZE, fontweight='bold')
+
+    profile_display_name = NAB_PROFILE_DISPLAY_NAME_MAP.get(nab_profile, nab_profile)
+    fig.suptitle(f'Detected Anomalies — Window {sliding_window} — {profile_display_name}',
+                fontsize=TITLE_FONT_SIZE, fontweight='bold', y=1.15)
+
+    legend_handles = [
+        plt.Rectangle((0, 0), 1, 1, color=color, alpha=ANOMALY_GROUP_OPACITY,
+                      label=ANOMALY_GROUP_DISPLAY_NAME_MAP[key])
+        for key, color in ANOMALY_GROUP_COLOR_MAP.items()
+    ]
+    fig.legend(handles=legend_handles, title='Anomaly Source',
+              fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
+              loc='upper center', bbox_to_anchor=(0.5, 1.02),
+              ncol=len(legend_handles), frameon=True)
+
+    fig.tight_layout()
+    merged_results_dir = os.path.join(results_dir, 'merged_results')
+    os.makedirs(merged_results_dir, exist_ok=True)
+    out_path = os.path.join(
+        merged_results_dir, f'table_detected_anomalies_window_{sliding_window}_{nab_profile}.png'
+    )
+    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+    print(f'Detected anomalies table saved to {out_path}')
+
+    return out_path
+
+
 @hydra.main(config_path="../conf", config_name="config.yaml")
 def main(cfg: DictConfig):
     supported_models  = cfg.supported_models
@@ -879,6 +993,31 @@ def main(cfg: DictConfig):
         null_padding_features,
         null_padding_targets,
         nab_profiles,
+        is_one_column_figure=True
+    )
+
+    supported_models = ['GRU', 'A3TGCN']
+    http_codes = ['5xx', '4xx']
+    aggregations = ['count','avg','min','max']
+    supported_sliding_windows = [6]
+    null_padding_features = [True]
+    null_padding_targets = [False]
+    # nab_profiles = ['reward_fn','standard']
+    nab_profile = 'reward_fn'
+    sliding_window = 6
+    plot_table_of_detected_anomalies(
+        optimal_hyperparameters_df,
+        results_dir,
+        sliding_window,
+        # supported_models,
+        # graph_models,
+        nab_profile,
+        # supported_sliding_windows,
+        # http_codes,
+        # aggregations,
+        # missing_imputation_stategies,
+        # null_padding_features,
+        # null_padding_targets,
         is_one_column_figure=True
     )
 
