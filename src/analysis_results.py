@@ -10,7 +10,7 @@ from omegaconf import DictConfig
 
 from utils import get_project_root
 
-ONE_COLUMN_FIGURE_WIDTH = 7
+ONE_COLUMN_FIGURE_WIDTH = 5
 TWO_COLUMN_FIGURE_WIDTH = 12
 
 MODEL_DISPLAY_NAME_MAP = {
@@ -393,7 +393,7 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
     fig.legend(handles=legend_handles,
                title='Window',
                fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
-               loc='center left', bbox_to_anchor=(1.0, 0.5),
+               loc='center left', bbox_to_anchor=(0.9, 0.5),
                ncol=1, frameon=True)
 
     fig.tight_layout(rect=(0, 0, 0.9, 1))
