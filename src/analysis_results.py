@@ -632,6 +632,7 @@ def compare_model_performance_across_sliding_windows(
         supported_sliding_windows, http_codes, aggregations,
         missing_imputation_strategies, null_padding_features, null_padding_targets,
         nab_profiles,
+        is_one_column_figure=False,
 ):
     scoring_strategies = ['likelihood', 'mahalanobis']
     subplot_columns = list(itertools.product(scoring_strategies, nab_profiles))
@@ -681,7 +682,8 @@ def compare_model_performance_across_sliding_windows(
 
     linestyles = {'zero': 'solid', 'mean': 'dashed', 'median': 'dotted'}
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows), squeeze=False)
+    figure_width = ONE_COLUMN_FIGURE_WIDTH if is_one_column_figure else TWO_COLUMN_FIGURE_WIDTH
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(figure_width, 2.5 * n_rows), squeeze=False)
 
     for row_idx, (http_code, agg) in enumerate(subsets):
         for col_idx, (strategy, profile) in enumerate(subplot_columns):
@@ -739,12 +741,12 @@ def compare_model_performance_across_sliding_windows(
                             label=f'{display_name} ({imputation})',
                         )
 
-            ax.set_title(f'{http_code}/{agg} — {strategy} — {profile}', fontsize=9, fontweight='bold')
-            ax.set_xlabel('Sliding window', fontsize=8)
-            ax.set_ylabel('NAB score', fontsize=8)
+            ax.set_title(f'{http_code}/{agg} — {strategy} — {profile}', fontsize=TITLE_FONT_SIZE, fontweight='bold')
+            ax.set_xlabel('Sliding window', fontsize=AXIS_LABEL_FONT_SIZE)
+            ax.set_ylabel('NAB score', fontsize=AXIS_LABEL_FONT_SIZE)
             ax.set_xticks(supported_sliding_windows)
             ax.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
-            ax.tick_params(labelsize=8)
+            ax.tick_params(labelsize=TICK_FONT_SIZE)
 
     model_legend_handles = [
         plt.Line2D([0], [0], color=model_colors[model_folder],
@@ -758,7 +760,7 @@ def compare_model_performance_across_sliding_windows(
     fig.legend(
         handles=model_legend_handles + imputation_legend_handles,
         loc='upper center', bbox_to_anchor=(0.5, 1.02),
-        ncol=len(model_variants) + len(linestyles), fontsize=8, frameon=True,
+        ncol=len(model_variants) + len(linestyles), fontsize=LEGEND_FONT_SIZE, frameon=True,
     )
 
     fig.tight_layout()
@@ -850,7 +852,8 @@ def main(cfg: DictConfig):
         missing_imputation_stategies,
         null_padding_features,
         null_padding_targets,
-        nab_profiles
+        nab_profiles,
+        is_one_column_figure=True
     )
 
 
