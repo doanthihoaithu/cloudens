@@ -18,7 +18,7 @@ MODEL_DISPLAY_NAME_MAP = {
 }
 
 TITLE_FONT_SIZE = 11
-LEGEND_FONT_SIZE = TITLE_FONT_SIZE - 2
+LEGEND_FONT_SIZE = TITLE_FONT_SIZE - 3
 TICK_FONT_SIZE = TITLE_FONT_SIZE - 3
 AXIS_LABEL_FONT_SIZE = TITLE_FONT_SIZE - 3
 
@@ -359,7 +359,7 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
     colors = plt.cm.tab10(np.linspace(0, 0.45, n_windows))
 
     figure_width = ONE_COLUMN_FIGURE_WIDTH if is_one_column_figure else TWO_COLUMN_FIGURE_WIDTH
-    fig, (ax_train, ax_infer) = plt.subplots(1, 2, figsize=(figure_width, 2.5))
+    fig, (ax_train, ax_infer) = plt.subplots(1, 2, figsize=(figure_width, 3))
 
     train_means = {
         p: {w: np.mean(vs) if vs else np.nan for w, vs in train_data[p].items()}
@@ -416,10 +416,10 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
     fig.legend(handles=legend_handles,
                title='Window',
                fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
-               loc='upper left', bbox_to_anchor=(0.9, 1),
-               ncol=1, frameon=True)
+               loc='upper center', bbox_to_anchor=(0.5, 1.1),
+               ncol=n_windows, frameon=True)
 
-    fig.tight_layout(rect=(0, 0, 0.9, 1))
+    fig.tight_layout(rect=(0, 0, 1, 0.9))
     out_path = os.path.join(merged_results_dir, 'computation_time_comparision_combined.png')
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
