@@ -408,7 +408,7 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
         ax.tick_params(axis='y', labelsize=TICK_FONT_SIZE)
         ymin, ymax = ax.get_ylim()
-        ax.set_ylim(ymin, ymax * 10)
+        ax.set_ylim(ymin, ymax * 10 * 0.7)
 
     ax_train.set_title('Training Time (s) [log scale]', fontsize=TITLE_FONT_SIZE,
                        # fontweight='bold'
