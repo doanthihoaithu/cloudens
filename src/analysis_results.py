@@ -27,6 +27,12 @@ NAB_PROFILE_DISPLAY_NAME_MAP = {
     'reward_fn': 'Reward FN',
 }
 
+# Hue (in colorsys HLS space, [0, 1]) assigned to each model family's color
+MODEL_FAMILY_HUE_MAP = {
+    'A3TGCN': 2 / 3,  # blue
+    'GRU': 1 / 3,     # green
+}
+
 TITLE_FONT_SIZE = 9
 LEGEND_FONT_SIZE = TITLE_FONT_SIZE - 2
 TICK_FONT_SIZE = TITLE_FONT_SIZE - 2
@@ -678,13 +684,15 @@ def compare_model_performance_across_sliding_windows(
     n_rows = len(subsets)
     n_cols = len(subplot_columns)
 
-    # Each model family (base model name) gets a maximally distinct hue, evenly
-    # spaced around the color wheel; variants within a family (e.g. the graph
-    # model's null-padding variants) share that hue but differ in lightness so
-    # they read as related while still being distinguishable.
-    family_hues = np.linspace(0, 1, len(supported_models), endpoint=False)
+    # Each model family (base model name) gets a fixed hue from MODEL_FAMILY_HUE_MAP
+    # (e.g. blue for A3TGCN, green for GRU), falling back to an evenly spaced hue for
+    # any unmapped model; variants within a family (e.g. the graph model's null-padding
+    # variants) share that hue but differ in lightness so they read as related while
+    # still being distinguishable.
+    fallback_hues = iter(np.linspace(0, 1, len(supported_models), endpoint=False))
     model_colors = {}
-    for family_hue, model_name in zip(family_hues, supported_models):
+    for model_name in supported_models:
+        family_hue = MODEL_FAMILY_HUE_MAP.get(model_name, next(fallback_hues))
         family_variant_folders = [
             model_folder for m, model_folder in model_variants if m == model_name
         ]
