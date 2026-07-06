@@ -377,7 +377,7 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
     for ax, ylabel in [(ax_train, 'Training Time (s) [log scale]'),
                        (ax_infer, 'Inference Time (s) [log scale]')]:
         ax.set_xticks(x)
-        ax.set_xticklabels(display_labels, rotation=0, ha='center', fontsize=TICK_FONT_SIZE)
+        ax.set_xticklabels(display_labels, rotation=90, ha='center', fontsize=TICK_FONT_SIZE)
         ax.set_yscale('log')
         ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONT_SIZE)
         ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
