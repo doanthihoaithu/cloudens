@@ -592,8 +592,8 @@ def main(cfg: DictConfig):
     missing_imputation_stategies = ['zero','mean','median']
     http_codes = ['5xx','4xx']
     aggregations = ['count','avg','min','max']
-    null_padding_features = [True, False]
-    null_padding_targets = [True, False]
+    null_padding_features = [True]
+    null_padding_targets = [False]
     results_dir = cfg.evaluation.model_save_path
     results_dir = os.path.join(get_project_root(), results_dir)
     merge_computation_time(results_dir, supported_models, supported_sliding_windows,
