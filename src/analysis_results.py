@@ -45,9 +45,9 @@ NUM_TESTING_ANOMALIES = 19
 ANOMALY_GROUP_ID_KEYS = ['issue_detected_ids', 'im_detected_ids', 'TestLog_detected_ids']
 
 ANOMALY_GROUP_DISPLAY_NAME_MAP = {
-    'issue_detected_ids': 'Issue Tracker',
-    'im_detected_ids': 'Instant Messenger',
-    'TestLog_detected_ids': 'Test Log',
+    'issue_detected_ids': 'Issue Tracker: 3',
+    'im_detected_ids': 'Instant Messenger: 9',
+    'TestLog_detected_ids': 'Test Log: 7',
 }
 
 ANOMALY_GROUP_COLOR_MAP = {
@@ -60,7 +60,7 @@ UNDETECTED_CELL_COLOR = 'white'
 
 ANOMALY_GROUP_OPACITY = 0.4
 
-DETECTED_ANOMALIES_TABLE_ROW_HEIGHT = 0.2
+DETECTED_ANOMALIES_TABLE_ROW_HEIGHT = 0.3
 
 
 
