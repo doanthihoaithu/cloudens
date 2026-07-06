@@ -347,7 +347,7 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
     colors = plt.cm.tab10(np.linspace(0, 0.45, n_windows))
 
     figure_width = ONE_COLUMN_FIGURE_WIDTH if is_one_column_figure else TWO_COLUMN_FIGURE_WIDTH
-    fig, (ax_train, ax_infer) = plt.subplots(1, 2, figsize=(figure_width, 3))
+    fig, (ax_train, ax_infer) = plt.subplots(1, 2, figsize=(figure_width, 2.5))
 
     train_means = {
         p: {w: np.mean(vs) if vs else np.nan for w, vs in train_data[p].items()}
@@ -374,11 +374,11 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         f'{MODEL_DISPLAY_NAME_MAP.get(m, m)}\n${text_subset_wrapper(http_code, agg)}$'
         for ((http_code, agg), m) in valid_pairs
     ]
-    for ax, ylabel in [(ax_train, 'Training Time (s) [log scale]'),
-                       (ax_infer, 'Inference Time (s) [log scale]')]:
+    for ax, ylabel in [(ax_train, 'Training Time (s)'),
+                       (ax_infer, 'Inference Time (s)')]:
         ax.set_xticks(x)
         ax.set_xticklabels(display_labels, rotation=90, ha='center', fontsize=TICK_FONT_SIZE)
-        ax.set_yscale('log')
+        # ax.set_yscale('log')
         ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONT_SIZE)
         ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.6)
         ax.tick_params(axis='y', labelsize=TICK_FONT_SIZE)
@@ -393,7 +393,7 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
     fig.legend(handles=legend_handles,
                title='Window',
                fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
-               loc='center left', bbox_to_anchor=(0.9, 0.5),
+               loc='upper left', bbox_to_anchor=(0.9, 1),
                ncol=1, frameon=True)
 
     fig.tight_layout(rect=(0, 0, 0.9, 1))
