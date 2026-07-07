@@ -76,6 +76,9 @@ DETECTED_ANOMALIES_TABLE_ROW_HEIGHT = 0.3
 def text_subset_wrapper(http_code, agg):
     return "\\mathtt{" + f'{http_code}\ {agg}' + "}"
 
+def text_subset_wrapper_latex(http_code, agg):
+    return "\\texttt{" + f'{http_code} {agg}' + "}"
+
 
 def _merge_computation_time_data(results_dir, supported_models, supported_sliding_windows,
                                  imputation_strategies, http_codes, aggregations, graph_models,
@@ -695,6 +698,152 @@ def load_shorten_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_su
     return shorten_optimal_hyperparameters_df
 
 
+def extract_most_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
+        optimal_hyperparameters_df, results_dir, proposed_model_detail,
+):
+    model_name = proposed_model_detail['proposed_model_name']
+    scoring_strategies = ['likelihood', 'mahalanobis']
+
+    reward_fn_df = optimal_hyperparameters_df[optimal_hyperparameters_df['nab_profile'] == 'reward_fn']
+
+    records = []
+    group_cols = ['http_code', 'aggregation', 'sliding_window']
+    for _, group_df in reward_fn_df.groupby(group_cols):
+        if group_df.empty:
+            continue
+
+        # Optimal imputation for this <subset, sliding_window> pair is whichever
+        # row (across every imputation_strategy and scoring strategy) scores
+        # highest on reward_fn_normalized
+        best_row = group_df.loc[group_df['reward_fn_normalized'].idxmax()]
+        optimal_imputation = best_row['imputation_strategy']
+
+        for strategy in scoring_strategies:
+            strategy_rows = group_df[
+                (group_df['imputation_strategy'] == optimal_imputation) &
+                (group_df['post_processing_strategy'] == strategy)
+            ]
+            if strategy_rows.empty:
+                continue
+            records.append(strategy_rows.iloc[0].to_dict())
+
+    most_optimal_hyperparameters_df = pd.DataFrame(records)
+
+    merged_results_dir = os.path.join(results_dir, 'merged_results')
+    os.makedirs(merged_results_dir, exist_ok=True)
+    csv_saved_path = os.path.join(merged_results_dir, f'{model_name}_most_optimal_scoring_hyperparameters.csv')
+    most_optimal_hyperparameters_df.to_csv(csv_saved_path, index=False)
+    print(f'Most optimal scoring hyperparameters CSV saved to {csv_saved_path}')
+
+    return most_optimal_hyperparameters_df
+
+
+def _format_trimmed(value, decimals):
+    formatted = f'{value:.{decimals}f}'
+    if '.' in formatted:
+        formatted = formatted.rstrip('0').rstrip('.')
+    return formatted
+
+
+# anomaly_threshold lives on different scales per scoring strategy (likelihood
+# is a probability close to 1, mahalanobis is a percentile up to 100), so each
+# strategy gets its own display format
+SCORING_HYPERPARAMETER_DISPLAY_MAP = {
+    'likelihood': {
+        'long_window': ('W', lambda v: str(int(v))),
+        'short_window': ('W\'', lambda v: str(int(v))),
+        'anomaly_threshold': ('L_t', lambda v: _format_trimmed(v, 5)),
+        'topk': ('K', lambda v: str(int(v))),
+    },
+    'mahalanobis': {
+        'long_window': ('W', lambda v: str(int(v))),
+        'short_window': ('W\'', lambda v: str(int(v))),
+        'anomaly_threshold': ('\\epsilon', lambda v: _format_trimmed(v, 1)),
+        'topk': ('K', lambda v: str(int(v))),
+    },
+}
+
+
+def save_most_optimal_hyperparameters_to_latex(
+        most_optimal_hyperparameters_df, results_dir, selected_sliding_window,
+        shown_parameter_columns=None,
+):
+    scoring_strategies = ['likelihood', 'mahalanobis']
+    all_parameter_columns = list(SCORING_HYPERPARAMETER_DISPLAY_MAP[scoring_strategies[0]].keys())
+    if shown_parameter_columns is None:
+        shown_parameter_columns = all_parameter_columns
+    parameter_columns = [col for col in all_parameter_columns if col in shown_parameter_columns]
+
+    window_df = most_optimal_hyperparameters_df[
+        most_optimal_hyperparameters_df['sliding_window'] == selected_sliding_window
+    ]
+
+    subsets = sorted(set(zip(window_df['http_code'], window_df['aggregation'])))
+
+    rows = []
+    for http_code, agg in subsets:
+        subset_rows = window_df[
+            (window_df['http_code'] == http_code) & (window_df['aggregation'] == agg)
+        ]
+        if subset_rows.empty:
+            continue
+
+        # Optimal imputation is shared across scoring strategies for a given
+        # subset/sliding_window, see extract_most_optimal_scoring_hyperparameter_...
+        optimal_imputation = subset_rows.iloc[0]['imputation_strategy']
+
+        hyperparameter_strings = {}
+        for strategy in scoring_strategies:
+            strategy_rows = subset_rows[subset_rows['post_processing_strategy'] == strategy]
+            if strategy_rows.empty:
+                hyperparameter_strings[strategy] = '--'
+                continue
+
+            row = strategy_rows.iloc[0]
+            strategy_display_map = SCORING_HYPERPARAMETER_DISPLAY_MAP[strategy]
+            hyperparameter_strings[strategy] = ', '.join(
+                f'{abbrev}={fmt(row[col])}'
+                for col, (abbrev, fmt) in strategy_display_map.items()
+                if col in parameter_columns
+            )
+            hyperparameter_strings[strategy] = f'${hyperparameter_strings[strategy]}$'
+
+        rows.append((
+            f'${text_subset_wrapper_latex(http_code, agg)}$',
+            optimal_imputation,
+            hyperparameter_strings['likelihood'],
+            hyperparameter_strings['mahalanobis'],
+        ))
+
+    header = ['Subset', 'Imputation', 'Likelihood', 'Mahalanobis']
+
+    lines = [
+        '\\begin{tabular}{llll}',
+        '\\toprule',
+        ' & '.join(header) + ' \\\\',
+        '\\midrule',
+    ]
+    lines.extend(
+        f'{subset_name} & {imputation} & {likelihood_str} & {mahalanobis_str} \\\\'
+        for subset_name, imputation, likelihood_str, mahalanobis_str in rows
+    )
+    lines.append('\\bottomrule')
+    lines.append('\\end{tabular}')
+
+    latex_table = '\n'.join(lines)
+
+    merged_results_dir = os.path.join(results_dir, 'merged_results','latex')
+    os.makedirs(merged_results_dir, exist_ok=True)
+    out_path = os.path.join(
+        merged_results_dir, f'most_optimal_hyperparameters_window_{selected_sliding_window}.tex'
+    )
+    with open(out_path, 'w') as f:
+        f.write(latex_table)
+    print(f'Most optimal hyperparameters LaTeX table saved to {out_path}')
+
+    return out_path
+
+
 def compare_model_performance_across_sliding_windows(
         optimal_hyperparameters_df, results_dir, supported_models, graph_models,
         supported_sliding_windows, http_codes, aggregations,
@@ -882,8 +1031,6 @@ def plot_table_of_detected_anomalies(
     subsets = sorted(set(zip(profile_df['http_code'], profile_df['aggregation'])))
     undetected_color = to_rgb(UNDETECTED_CELL_COLOR)
 
-    # Optimal imputation/hyperparameters are selected independently per scoring
-    # strategy, so a row label carries both strategies' selected imputation
     row_labels = [f'${text_subset_wrapper(hc, agg)}$' for hc, agg in subsets]
 
     figure_width = ONE_COLUMN_FIGURE_WIDTH if is_one_column_figure else TWO_COLUMN_FIGURE_WIDTH
@@ -929,8 +1076,10 @@ def plot_table_of_detected_anomalies(
                                          edgecolor='none'))
 
         if imputation_by_strategy:
-            imputations = '\n'.join(f'{name}:{imp}' for name, imp in imputation_by_strategy.items())
-            row_labels[row_idx] = f'${text_subset_wrapper(http_code, agg)}$\n{imputations}'
+            assert len(set(imputation_by_strategy.values())) == 1, (
+                f'{http_code} {agg}: optimal imputation differs across scoring strategies: '
+                f'{imputation_by_strategy}'
+            )
 
     for anomaly_id in range(NUM_TESTING_ANOMALIES):
         for row_idx in range(len(subsets)):
@@ -939,6 +1088,8 @@ def plot_table_of_detected_anomalies(
 
     ax.set_xlim(-0.5, NUM_TESTING_ANOMALIES - 0.5)
     ax.set_ylim(len(subsets) - 0.5, -0.5)
+    # One data unit is one cell along both axes, so equal aspect keeps every cell square
+    ax.set_aspect('equal', adjustable='box')
     ax.set_xticks(range(NUM_TESTING_ANOMALIES))
     ax.set_xticklabels(range(NUM_TESTING_ANOMALIES), fontsize=TICK_FONT_SIZE)
     for anomaly_id, tick_label in enumerate(ax.get_xticklabels()):
@@ -975,7 +1126,7 @@ def plot_table_of_detected_anomalies(
     ]
     fig.legend(handles=legend_handles, title='Anomaly Source',
               fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
-              loc='upper center', bbox_to_anchor=(0.5, 1.1),
+              loc='upper center', bbox_to_anchor=(0.5, 0.95),
               ncol=len(legend_handles), frameon=True)
 
     fig.tight_layout()
@@ -1019,8 +1170,13 @@ def _round_bar_corners(bars, radius_points=BAR_CORNER_RADIUS_POINTS):
     mutation_aspect = radius_y_data / radius_x_data if radius_x_data else 1
 
     for rect in bars.patches:
-        x, y = rect.get_x(), min(rect.get_y(), rect.get_y() + rect.get_height())
-        width, height = rect.get_width(), abs(rect.get_height())
+        # Take the bounding box's bottom-left corner and positive extents so a
+        # negative-going bar (either a vertical bar's height or a horizontal
+        # bar's width) still rounds correctly instead of the box flipping
+        # inside-out around a fixed corner
+        x = min(rect.get_x(), rect.get_x() + rect.get_width())
+        y = min(rect.get_y(), rect.get_y() + rect.get_height())
+        width, height = abs(rect.get_width()), abs(rect.get_height())
         rounded = FancyBboxPatch(
             (x, y), width, height,
             boxstyle=f'round,pad=0,rounding_size={radius_x_data}',
@@ -1047,16 +1203,16 @@ def plot_nab_score_of_optimal_configuration(
     subsets = sorted(set(zip(profile_df['http_code'], profile_df['aggregation'])))
     x_labels = [f'${text_subset_wrapper(hc, agg)}$' for hc, agg in subsets]
 
-    # scores/config_labels[strategy][subset_idx]; NaN where a strategy has no
-    # candidate rows for that subset
+    # scores[strategy][subset_idx]; NaN where a strategy has no candidate rows
+    # for that subset
     scores = {strategy: np.full(len(subsets), np.nan) for strategy in scoring_strategies}
-    config_labels = {strategy: [''] * len(subsets) for strategy in scoring_strategies}
 
     for subset_idx, (http_code, agg) in enumerate(subsets):
         subset_rows = profile_df[
             (profile_df['http_code'] == http_code) & (profile_df['aggregation'] == agg)
         ]
 
+        imputation_by_strategy = {}
         for strategy in scoring_strategies:
             strategy_rows = subset_rows[subset_rows['post_processing_strategy'] == strategy]
             if strategy_rows.empty:
@@ -1067,7 +1223,13 @@ def plot_nab_score_of_optimal_configuration(
             # metric, considering every imputation_strategy present in strategy_rows
             optimal_row = strategy_rows.loc[strategy_rows[normalized_column].idxmax()]
             scores[strategy][subset_idx] = optimal_row[normalized_column]
-            config_labels[strategy][subset_idx] = optimal_row['imputation_strategy']
+            imputation_by_strategy[strategy] = optimal_row['imputation_strategy']
+
+        if imputation_by_strategy:
+            assert len(set(imputation_by_strategy.values())) == 1, (
+                f'{http_code} {agg}: optimal imputation differs across scoring strategies: '
+                f'{imputation_by_strategy}'
+            )
 
     n_strategies = len(scoring_strategies)
     bar_width = 0.7 / n_strategies
@@ -1094,10 +1256,10 @@ def plot_nab_score_of_optimal_configuration(
                       color=SCORING_STRATEGY_COLOR_MAP.get(strategy, 'gray'),
                       label=strategy_display_name)
         bar_value_labels = [
-            '' if np.isnan(score) else f'{score:.2f}\n{imputation}'
-            for score, imputation in zip(scores[strategy], config_labels[strategy])
+            '' if np.isnan(score) else f'{score:.2f}'
+            for score in scores[strategy]
         ]
-        ax.bar_label(bars, labels=bar_value_labels, fontsize=TICK_FONT_SIZE, padding=2)
+        ax.bar_label(bars, labels=bar_value_labels, fontsize=TICK_FONT_SIZE-2, padding=2)
         _round_bar_corners(bars)
 
     ax.set_xticks(x)
@@ -1124,6 +1286,192 @@ def plot_nab_score_of_optimal_configuration(
     fig.savefig(out_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     print(f'NAB score of optimal configuration plot saved to {out_path}')
+
+    return out_path
+
+
+def plot_table_and_nab_score_together(
+        optimal_hyperparameters_df, results_dir, sliding_window, nab_profile,
+        is_one_column_figure=False,
+):
+    scoring_strategies = ['likelihood', 'mahalanobis']
+    normalized_column = f'{nab_profile}_normalized'
+
+    profile_df = optimal_hyperparameters_df[
+        (optimal_hyperparameters_df['sliding_window'] == sliding_window) &
+        (optimal_hyperparameters_df['nab_profile'] == nab_profile)
+    ]
+
+    subsets = sorted(set(zip(profile_df['http_code'], profile_df['aggregation'])))
+    undetected_color = to_rgb(UNDETECTED_CELL_COLOR)
+    row_labels = [f'${text_subset_wrapper(hc, agg)}$' for hc, agg in subsets]
+
+    # scores[strategy][row_idx], indexed the same way as the table's rows so both
+    # panels are matched by subset
+    scores = {strategy: np.full(len(subsets), np.nan) for strategy in scoring_strategies}
+
+    figure_width = ONE_COLUMN_FIGURE_WIDTH if is_one_column_figure else TWO_COLUMN_FIGURE_WIDTH
+    fig, (ax_table, ax_bars) = plt.subplots(
+        1, 2, sharey=True,
+        figsize=(figure_width, DETECTED_ANOMALIES_TABLE_ROW_HEIGHT * len(subsets) + 1),
+        gridspec_kw={'width_ratios': [NUM_TESTING_ANOMALIES, 6], 'wspace': 0.05},
+    )
+
+    # Ground truth is fixed across subsets/strategies, so the anomaly index -> group
+    # mapping used for the column label backgrounds only needs to be captured once
+    ground_truth_group_by_anomaly_id = {}
+
+    for row_idx, (http_code, agg) in enumerate(subsets):
+        subset_rows = profile_df[
+            (profile_df['http_code'] == http_code) & (profile_df['aggregation'] == agg)
+        ]
+
+        imputation_by_strategy = {}
+        for strategy in scoring_strategies:
+            strategy_rows = subset_rows[subset_rows['post_processing_strategy'] == strategy]
+            if strategy_rows.empty:
+                continue
+
+            # Optimal imputation/score for this subset/strategy is the one whose
+            # selected hyperparameters score highest on the profile's normalized
+            # metric, considering every imputation_strategy present in strategy_rows
+            optimal_row = strategy_rows.loc[strategy_rows[normalized_column].idxmax()]
+            strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
+            imputation_by_strategy[strategy_display_name] = optimal_row['imputation_strategy']
+            scores[strategy][row_idx] = optimal_row[normalized_column]
+            detection_counters = ast.literal_eval(optimal_row['detection_counters'])
+
+            if not ground_truth_group_by_anomaly_id:
+                for group_key, gt_key in GROUND_TRUTH_ID_KEY_MAP.items():
+                    for anomaly_id in detection_counters.get(gt_key, []):
+                        ground_truth_group_by_anomaly_id[anomaly_id] = group_key
+
+            triangle = SCORING_STRATEGY_TRIANGLE_MAP[strategy]
+            for anomaly_id in range(NUM_TESTING_ANOMALIES):
+                cell_color = _detected_group_color(detection_counters, anomaly_id, undetected_color)
+                x, y = anomaly_id, row_idx
+                if triangle == 'upper':
+                    vertices = [(x - 0.5, y - 0.5), (x + 0.5, y - 0.5), (x + 0.5, y + 0.5)]
+                else:
+                    vertices = [(x - 0.5, y - 0.5), (x - 0.5, y + 0.5), (x + 0.5, y + 0.5)]
+                ax_table.add_patch(plt.Polygon(vertices, closed=True, facecolor=cell_color,
+                                               edgecolor='none'))
+
+        if imputation_by_strategy:
+            assert len(set(imputation_by_strategy.values())) == 1, (
+                f'{http_code} {agg}: optimal imputation differs across scoring strategies: '
+                f'{imputation_by_strategy}'
+            )
+
+    for anomaly_id in range(NUM_TESTING_ANOMALIES):
+        for row_idx in range(len(subsets)):
+            ax_table.plot([anomaly_id - 0.5, anomaly_id + 0.5], [row_idx - 0.5, row_idx + 0.5],
+                         color='lightgray', linewidth=0.5, zorder=2)
+
+    ax_table.set_xlim(-0.5, NUM_TESTING_ANOMALIES - 0.5)
+    ax_table.set_ylim(len(subsets) - 0.5, -0.5)
+    # One data unit is one cell along both axes, so equal aspect keeps every cell square
+    ax_table.set_aspect('equal', adjustable='box')
+    ax_table.set_xticks(range(NUM_TESTING_ANOMALIES))
+    ax_table.set_xticklabels(range(NUM_TESTING_ANOMALIES), fontsize=TICK_FONT_SIZE)
+    for anomaly_id, tick_label in enumerate(ax_table.get_xticklabels()):
+        group_key = ground_truth_group_by_anomaly_id.get(anomaly_id)
+        if group_key is None:
+            continue
+        group_color = to_rgb(ANOMALY_GROUP_COLOR_MAP[group_key])
+        blended_color = np.array(group_color) * ANOMALY_GROUP_OPACITY + \
+                        np.array(undetected_color) * (1 - ANOMALY_GROUP_OPACITY)
+        tick_label.set_bbox(dict(facecolor=blended_color, edgecolor='none', pad=1.5))
+    ax_table.set_yticks(range(len(subsets)))
+    ax_table.set_yticklabels(row_labels, fontsize=TICK_FONT_SIZE)
+    ax_table.set_xlabel('Ground-truth anomaly index', fontsize=TITLE_FONT_SIZE)
+
+    ax_table.set_xticks(np.arange(-0.5, NUM_TESTING_ANOMALIES, 1), minor=True)
+    ax_table.set_yticks(np.arange(-0.5, len(subsets), 1), minor=True)
+    ax_table.grid(which='minor', color='lightgray', linewidth=0.5)
+    ax_table.tick_params(which='minor', length=0)
+
+    strategy_triangle_note = ' / '.join(
+        f'{SCORING_STRATEGY_DISPLAY_NAME_MAP.get(s, s)}: {t} triangle'
+        for s, t in SCORING_STRATEGY_TRIANGLE_MAP.items()
+    )
+    ax_table.set_title(strategy_triangle_note, fontsize=TICK_FONT_SIZE)
+
+    # Bar chart is rotated to horizontal bars so each subset's score lines up
+    # with that subset's row in the table
+    n_strategies = len(scoring_strategies)
+    bar_height = 0.7 / n_strategies
+    y = np.arange(len(subsets))
+
+    all_scores = np.concatenate(list(scores.values())) if subsets else np.array([0])
+    valid_scores = all_scores[~np.isnan(all_scores)]
+    min_score = min(valid_scores.min(), 0) if len(valid_scores) else 0
+    max_score = valid_scores.max() if len(valid_scores) else 1
+    score_range = max_score - min_score
+    xlim_min = (min_score - 0.25 * score_range) if min_score < 0 else min_score
+    ax_bars.set_xlim(xlim_min, max_score + 0.3 * score_range)
+
+    for i, strategy in enumerate(scoring_strategies):
+        offset = (i - n_strategies / 2 + 0.5) * bar_height
+        strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
+        bars = ax_bars.barh(y + offset, scores[strategy], bar_height,
+                            color=SCORING_STRATEGY_COLOR_MAP.get(strategy, 'gray'),
+                            label=strategy_display_name)
+        bar_value_labels = [
+            '' if np.isnan(score) else f'{score:.2f}'
+            for score in scores[strategy]
+        ]
+        ax_bars.bar_label(bars, labels=bar_value_labels, fontsize=TICK_FONT_SIZE, padding=2)
+        _round_bar_corners(bars)
+
+    ax_bars.set_xlabel('NAB score', fontsize=TITLE_FONT_SIZE)
+    ax_bars.tick_params(axis='x', labelsize=TICK_FONT_SIZE)
+    ax_bars.tick_params(axis='y', labelleft=False, length=0)
+    ax_bars.grid(axis='x', linestyle='--', linewidth=0.4, alpha=0.6)
+    # ax_bars.set_title('NAB score', fontsize=TITLE_FONT_SIZE)
+
+    # Each panel gets its own legend, anchored above that panel's own title
+    # rather than sharing one figure-wide legend
+    anomaly_source_handles = [
+        plt.Rectangle((0, 0), 1, 1, color=color, alpha=ANOMALY_GROUP_OPACITY,
+                      label=ANOMALY_GROUP_DISPLAY_NAME_MAP[key])
+        for key, color in ANOMALY_GROUP_COLOR_MAP.items()
+    ]
+    ax_table.legend(
+        handles=anomaly_source_handles, title='Anomaly Source',
+        fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
+        loc='lower center', bbox_to_anchor=(0.5, 1.1),
+        ncol=len(anomaly_source_handles), frameon=True,
+    )
+    ax_bars.legend(
+        title='Scoring strategy',
+        fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
+        loc='lower center', bbox_to_anchor=(0.5, 1.1),
+        ncol=n_strategies, frameon=True,
+    )
+
+    fig.tight_layout()
+
+    # set_aspect('equal') on ax_table shrinks its box to keep cells square, so
+    # after layout it is usually shorter/narrower than ax_bars' allocated slot;
+    # pull ax_bars flush against ax_table's actual right edge and match its
+    # height so both panels line up row-for-row with minimal gap between them
+    fig.canvas.draw()
+    table_bbox = ax_table.get_position()
+    bars_bbox = ax_bars.get_position()
+    panel_gap = 0.02
+    new_bars_x0 = table_bbox.x1 + panel_gap
+    new_bars_width = bars_bbox.x1 - new_bars_x0
+    ax_bars.set_position([new_bars_x0, table_bbox.y0, new_bars_width, table_bbox.height])
+
+    merged_results_dir = os.path.join(results_dir, 'merged_results')
+    os.makedirs(merged_results_dir, exist_ok=True)
+    out_path = os.path.join(
+        merged_results_dir, f'table_and_nab_score_window_{sliding_window}_{nab_profile}.png'
+    )
+    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+    print(f'Combined detected anomalies table and NAB score plot saved to {out_path}')
 
     return out_path
 
@@ -1184,15 +1532,26 @@ def main(cfg: DictConfig):
         missing_imputation_stategies,
         use_existing_file=use_existing_file
     )
-    shorten_optimal_hyperparameters_df = load_shorten_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
-        proposed_model_detail,
-        results_dir,
-        supported_sliding_windows,
-        http_codes,
-        aggregations,
-        missing_imputation_stategies,
-        use_existing_file=use_existing_file
-    )
+
+    most_optimal_hyperparameters_df = extract_most_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(optimal_hyperparameters_df,
+                                                                                                                                             results_dir,
+                                                                                                                                             proposed_model_detail,
+                                                                                                                                  )
+    save_most_optimal_hyperparameters_to_latex(most_optimal_hyperparameters_df,
+                                               results_dir,
+                                               selected_sliding_window=6,
+                                               shown_parameter_columns = ['anomaly_threshold']
+                                               )
+
+    # most_optimal_hyperparameters_df = load_shorten_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
+    #     proposed_model_detail,
+    #     results_dir,
+    #     supported_sliding_windows,
+    #     http_codes,
+    #     aggregations,
+    #     missing_imputation_stategies,
+    #     use_existing_file=False
+    # )
 
     supported_models = ['GRU','A3TGCN']
     http_codes = ['5xx','4xx']
@@ -1226,19 +1585,27 @@ def main(cfg: DictConfig):
     nab_profile = 'reward_fn'
     sliding_window = 6
     plot_table_of_detected_anomalies(
-        shorten_optimal_hyperparameters_df,
+        most_optimal_hyperparameters_df,
         results_dir,
         sliding_window,
         nab_profile,
         is_one_column_figure=True
     )
     plot_nab_score_of_optimal_configuration(
-        shorten_optimal_hyperparameters_df,
+        most_optimal_hyperparameters_df,
         results_dir,
         sliding_window,
         nab_profile,
         is_one_column_figure=True
     )
+    plot_table_and_nab_score_together(
+        most_optimal_hyperparameters_df,
+        results_dir,
+        sliding_window,
+        nab_profile,
+        is_one_column_figure=False
+    )
+
 
 
 if __name__ == '__main__':
