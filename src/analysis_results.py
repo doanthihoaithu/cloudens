@@ -1166,6 +1166,7 @@ def main(cfg: DictConfig):
     )
 
     aggregations = ['count', 'avg', 'min', 'max']
+    use_existing_file = cfg.plotting.use_existing_file
     optimal_hyperparameters_df = load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
         proposed_model_detail,
         results_dir,
@@ -1173,7 +1174,7 @@ def main(cfg: DictConfig):
         http_codes,
         aggregations,
         missing_imputation_stategies,
-        use_existing_file=True
+        use_existing_file=use_existing_file
     )
     shorten_optimal_hyperparameters_df = load_shorten_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
         proposed_model_detail,
@@ -1182,7 +1183,7 @@ def main(cfg: DictConfig):
         http_codes,
         aggregations,
         missing_imputation_stategies,
-        use_existing_file=True
+        use_existing_file=use_existing_file
     )
 
     supported_models = ['GRU','A3TGCN']

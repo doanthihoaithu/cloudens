@@ -93,6 +93,7 @@ data_preparation_pipeline:
       end_date: '2024-05-31' # Actual End 31 May 2024
 
 plotting:
+  use_existing_file: False
   output_dir: 'plot_results'
   slide_win: ${evaluation.slide_win}
   model_save_path: "trained_models/"
