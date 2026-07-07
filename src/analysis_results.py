@@ -36,7 +36,7 @@ MODEL_FAMILY_HUE_MAP = {
     'GRU': 1 / 3,     # green
 }
 
-TITLE_FONT_SIZE = 11
+TITLE_FONT_SIZE = 10
 LEGEND_FONT_SIZE = TITLE_FONT_SIZE - 2
 TICK_FONT_SIZE = TITLE_FONT_SIZE - 2
 AXIS_LABEL_FONT_SIZE = TITLE_FONT_SIZE - 2
@@ -191,10 +191,16 @@ def merge_computation_time(results_dir, supported_models, supported_sliding_wind
                            imputation_strategies, http_codes, aggregations, graph_models,
                            null_padding_features,
                            null_padding_targets,
+                           use_existing_file=False,
                            ):
-    _merge_computation_time_data(results_dir, supported_models, supported_sliding_windows,
-                                 imputation_strategies, http_codes, aggregations, graph_models,
-                                 null_padding_features, null_padding_targets)
+    csv_saved_path = os.path.join(results_dir, 'merged_results', 'computation_time_comparision.csv')
+    if use_existing_file and os.path.exists(csv_saved_path):
+        print(f'Reusing existing computation time CSV at {csv_saved_path}')
+        return csv_saved_path
+
+    return _merge_computation_time_data(results_dir, supported_models, supported_sliding_windows,
+                                        imputation_strategies, http_codes, aggregations, graph_models,
+                                        null_padding_features, null_padding_targets)
 
 def plot_computation_time(results_dir, supported_models, supported_sliding_windows,
                           http_codes, aggregations, graph_models,
@@ -445,10 +451,10 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
 
         # Label bars with their actual (pre-log-scaling) value, outside the bar
         ax_train.bar_label(train_bars, labels=[format_bar_value(v) for v in train_values],
-                           fontsize=TICK_FONT_SIZE - 2, rotation=90, padding=2,
+                           fontsize=TICK_FONT_SIZE - 3, rotation=90, padding=2,
                            label_type='edge')
         ax_infer.bar_label(infer_bars, labels=[format_bar_value(v) for v in infer_values],
-                           fontsize=TICK_FONT_SIZE - 2, rotation=90, padding=2,
+                           fontsize=TICK_FONT_SIZE - 3, rotation=90, padding=2,
                            label_type='edge')
 
     display_labels = [
@@ -1136,11 +1142,14 @@ def main(cfg: DictConfig):
     null_padding_targets = [False]
     results_dir = cfg.evaluation.model_save_path
     results_dir = os.path.join(get_project_root(), results_dir)
+
+    use_existing_file = cfg.plotting.use_existing_file
     merge_computation_time(results_dir, supported_models, supported_sliding_windows,
                            missing_imputation_stategies,
                            http_codes, aggregations, graph_models,
                            null_padding_features,
-                           null_padding_targets
+                           null_padding_targets,
+                           use_existing_file=use_existing_file
                            )
     plot_computation_time(results_dir, supported_models, supported_sliding_windows,
                           http_codes, aggregations, graph_models,
@@ -1166,7 +1175,6 @@ def main(cfg: DictConfig):
     )
 
     aggregations = ['count', 'avg', 'min', 'max']
-    use_existing_file = cfg.plotting.use_existing_file
     optimal_hyperparameters_df = load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
         proposed_model_detail,
         results_dir,
