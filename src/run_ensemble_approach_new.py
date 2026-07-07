@@ -482,13 +482,13 @@ def analyze_reconstruction_errors_essembles_of_optimal_configuration(cfg, most_o
     for selected_models in tqdm(selected_models_combinations, desc='Running for each combination...',
                                 total=len(selected_models_combinations)):
         selected_models_id = '+'.join([f'{code}_{agg}' for code, agg in selected_models])
-        predicted_label_all_file = os.path.join(
-            ensemble_model_dir, f'predicted_labels_of_all_optimal_configuration_{selected_models_id}.npy')
-        ensemble_meta_data_file = os.path.join(
-            ensemble_model_dir, f'ensemble_meta_data_optimal_configuration_{selected_models_id}.json')
 
-        label_dictionary = dict()
-        grid_search_params = dict()
+        # Each scoring strategy is ensembled independently across subsets (no
+        # OR-combination between likelihood and mahalanobis within a subset),
+        # so every subset contributes one label column and one grid-search
+        # record per strategy
+        label_dictionary_by_strategy = {strategy: dict() for strategy in scoring_strategies}
+        grid_search_params_by_strategy = {strategy: dict() for strategy in scoring_strategies}
         data_loader_first = None
 
         for (http_code, aggregation) in tqdm(selected_models, desc='Collect predicted labels for ensemble models',
@@ -537,8 +537,6 @@ def analyze_reconstruction_errors_essembles_of_optimal_configuration(cfg, most_o
             assert label_essemble_df.shape[0] == len(data_loader.test_index)
             assert label_essemble_df.shape[1] == grid_search_df.shape[0]
 
-            strategy_column_indices = []
-            strategy_grid_params = []
             for strategy in scoring_strategies:
                 strategy_row = subset_rows[subset_rows['post_processing_strategy'] == strategy]
                 if strategy_row.empty:
@@ -559,104 +557,110 @@ def analyze_reconstruction_errors_essembles_of_optimal_configuration(cfg, most_o
                     f'Expected exactly one grid search row matching optimal {strategy} hyperparameters for '
                     f'{http_code} {aggregation}, found {len(matches)}'
                 )
-                strategy_column_indices.append(int(matches.index[0]))
-                strategy_grid_params.append({
+                column_index = int(matches.index[0])
+
+                label_dictionary_by_strategy[strategy][selected_group_mode] = label_essemble_df.values[
+                    :, [column_index]
+                ].astype(int)
+                grid_search_params_by_strategy[strategy][selected_group_mode] = {
                     **matches.iloc[0].to_dict(),
                     'model': proposed_model_name,
                     'fill_nan_value': imputation,
                     'null_padding_feature': null_padding_feature,
                     'null_padding_target': null_padding_target,
-                })
-
-            # Ensemble the two scoring strategies within this subset: an anomaly
-            # detected by either strategy under its own optimal hyperparameters
-            # counts as detected
-            combined_two_strategies_labels = label_essemble_df.values[:, strategy_column_indices].any(
-                axis=-1, keepdims=True
-            ).astype(int)
-
-            label_dictionary[selected_group_mode] = combined_two_strategies_labels
-            grid_search_params[selected_group_mode] = strategy_grid_params
+                }
 
         log.info("Starting ensembles analysis")
-        predicted_label_matrix = np.stack(list(label_dictionary.values()), axis=0)
-        print('Predicted labels of all models with shape', predicted_label_matrix.shape)
-        np.save(predicted_label_all_file, predicted_label_matrix)
-        print('Saved predicted label matrix of all models to', predicted_label_all_file)
+        for strategy in scoring_strategies:
+            label_dictionary = label_dictionary_by_strategy[strategy]
+            grid_search_params = grid_search_params_by_strategy[strategy]
 
-        ensemble_meta_data = dict()
-        ensemble_meta_data['models'] = list(label_dictionary.keys())
-        ensemble_meta_data['grid_params'] = grid_search_params
-        with open(ensemble_meta_data_file, 'w') as f:
-            json.dump(ensemble_meta_data, f, cls=NumpyEncoder, indent=4)
-            print('Saved ensemble meta data to ', ensemble_meta_data_file)
+            predicted_label_matrix = np.stack(list(label_dictionary.values()), axis=0)
+            print(f'[{strategy}] Predicted labels of all models with shape', predicted_label_matrix.shape)
 
-        # Ensemble across subsets: an anomaly flagged by any subset's combined
-        # (likelihood OR mahalanobis) label counts as detected
-        aggregated_label_over_models = (predicted_label_matrix.sum(axis=0) >= 1).ravel()
-        print('Aggregated label matrix shape', aggregated_label_over_models.shape)
+            predicted_label_all_file = os.path.join(
+                ensemble_model_dir,
+                f'predicted_labels_of_all_optimal_configuration_{strategy}_{selected_models_id}.npy'
+            )
+            np.save(predicted_label_all_file, predicted_label_matrix)
+            print(f'[{strategy}] Saved predicted label matrix of all models to', predicted_label_all_file)
 
-        columns = [
-            'standard_normalized',
-            'reward_fn_normalized',
-            'detection_counters',
-            'confusion_matrix',
-            'post_processing_strategy',
-            'anomaly_threshold',
-            'topk',
-            'long_window',
-            'short_window',
-            'precision',
-            'recall',
-            'f1',
-            'accuracy',
-            'standard_raw',
-            'reward_fn_raw',
-            'model',
-            'fill_nan_value',
-            'null_padding_feature',
-            'null_padding_target',
-        ]
-        ensemble_result_df = pd.DataFrame(columns=columns)
+            ensemble_meta_data = dict()
+            ensemble_meta_data['models'] = list(label_dictionary.keys())
+            ensemble_meta_data['grid_params'] = grid_search_params
+            ensemble_meta_data_file = os.path.join(
+                ensemble_model_dir,
+                f'ensemble_meta_data_optimal_configuration_{strategy}_{selected_models_id}.json'
+            )
+            with open(ensemble_meta_data_file, 'w') as f:
+                json.dump(ensemble_meta_data, f, cls=NumpyEncoder, indent=4)
+                print(f'[{strategy}] Saved ensemble meta data to ', ensemble_meta_data_file)
 
-        visualization_df = pd.DataFrame({
-            'true_anomaly': data_loader_first.test_labels,
-            'predicted_anomaly': aggregated_label_over_models,
-        })
-        visualization_df.index = data_loader_first.test_index
+            # Ensemble across subsets: an anomaly flagged by any subset's label
+            # (under this strategy's own optimal hyperparameters) counts as detected
+            aggregated_label_over_models = (predicted_label_matrix.sum(axis=0) >= 1).ravel()
+            print(f'[{strategy}] Aggregated label matrix shape', aggregated_label_over_models.shape)
 
-        raw_nab_score_standard, normalized_nab_score_standard, _, _, _ = calculate_nab_score_with_window_based_tp_fn(
-            visualization_df, data_loader_first.anomaly_windows_test, 'standard',
-            true_col='true_anomaly', pred_col='predicted_anomaly'
-        )
-        raw_nab_score_reward_fn, normalized_nab_score_reward_fn, _, _, detection_counters = calculate_nab_score_with_window_based_tp_fn(
-            visualization_df, data_loader_first.anomaly_windows_test, 'reward_fn',
-            true_col='true_anomaly', pred_col='predicted_anomaly'
-        )
-        precision, recall, f1, accuracy, conf_matrix, mcc = evaluate_performance(
-            data_loader_first.test_labels, aggregated_label_over_models
-        )
+            columns = [
+                'standard_normalized',
+                'reward_fn_normalized',
+                'detection_counters',
+                'confusion_matrix',
+                'post_processing_strategy',
+                'anomaly_threshold',
+                'topk',
+                'long_window',
+                'short_window',
+                'precision',
+                'recall',
+                'f1',
+                'accuracy',
+                'standard_raw',
+                'reward_fn_raw',
+                'model',
+                'fill_nan_value',
+                'null_padding_feature',
+                'null_padding_target',
+            ]
+            ensemble_result_df = pd.DataFrame(columns=columns)
 
-        ensemble_result_df.loc[len(ensemble_result_df)] = {
-            'confusion_matrix': conf_matrix,
-            'post_processing_strategy': None,
-            'topk': None,
-            'anomaly_threshold': None,
-            'long_window': None,
-            'short_window': None,
-            'standard_raw': raw_nab_score_standard,
-            'reward_fn_raw': raw_nab_score_reward_fn,
-            'standard_normalized': normalized_nab_score_standard,
-            'reward_fn_normalized': normalized_nab_score_reward_fn,
-            'precision': precision,
-            'recall': recall,
-            'f1': f1,
-            'detection_counters': detection_counters,
-            'accuracy': accuracy,
-        }
+            visualization_df = pd.DataFrame({
+                'true_anomaly': data_loader_first.test_labels,
+                'predicted_anomaly': aggregated_label_over_models,
+            })
+            visualization_df.index = data_loader_first.test_index
 
-        for strategy_params_list in grid_search_params.values():
-            for strategy_params in strategy_params_list:
+            raw_nab_score_standard, normalized_nab_score_standard, _, _, _ = calculate_nab_score_with_window_based_tp_fn(
+                visualization_df, data_loader_first.anomaly_windows_test, 'standard',
+                true_col='true_anomaly', pred_col='predicted_anomaly'
+            )
+            raw_nab_score_reward_fn, normalized_nab_score_reward_fn, _, _, detection_counters = calculate_nab_score_with_window_based_tp_fn(
+                visualization_df, data_loader_first.anomaly_windows_test, 'reward_fn',
+                true_col='true_anomaly', pred_col='predicted_anomaly'
+            )
+            precision, recall, f1, accuracy, conf_matrix, mcc = evaluate_performance(
+                data_loader_first.test_labels, aggregated_label_over_models
+            )
+
+            ensemble_result_df.loc[len(ensemble_result_df)] = {
+                'confusion_matrix': conf_matrix,
+                'post_processing_strategy': strategy,
+                'topk': None,
+                'anomaly_threshold': None,
+                'long_window': None,
+                'short_window': None,
+                'standard_raw': raw_nab_score_standard,
+                'reward_fn_raw': raw_nab_score_reward_fn,
+                'standard_normalized': normalized_nab_score_standard,
+                'reward_fn_normalized': normalized_nab_score_reward_fn,
+                'precision': precision,
+                'recall': recall,
+                'f1': f1,
+                'detection_counters': detection_counters,
+                'accuracy': accuracy,
+            }
+
+            for strategy_params in grid_search_params.values():
                 ensemble_result_df.loc[len(ensemble_result_df)] = {
                     'confusion_matrix': strategy_params['confusion_matrix'],
                     'post_processing_strategy': strategy_params['post_processing_strategy'],
@@ -679,12 +683,12 @@ def analyze_reconstruction_errors_essembles_of_optimal_configuration(cfg, most_o
                     'null_padding_target': strategy_params['null_padding_target'],
                 }
 
-        ensemble_result_file = os.path.join(
-            ensemble_model_dir,
-            f'ensemble_final_result_optimal_configuration_{"+".join(ensemble_meta_data["models"])}.csv'
-        )
-        print('Save final ensemble result in', ensemble_result_file)
-        ensemble_result_df.to_csv(ensemble_result_file, index=False)
+            ensemble_result_file = os.path.join(
+                ensemble_model_dir,
+                f'ensemble_final_result_optimal_configuration_{strategy}_{"+".join(ensemble_meta_data["models"])}.csv'
+            )
+            print(f'[{strategy}] Save final ensemble result in', ensemble_result_file)
+            ensemble_result_df.to_csv(ensemble_result_file, index=False)
 
 
 @hydra.main(config_path="../conf", config_name="config.yaml")
