@@ -12,6 +12,9 @@ from tqdm import tqdm
 # Configure logging
 import logging
 
+from analysis_results import \
+    load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window, \
+    extract_most_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window
 from ibm_dataset_loader import IBMDatasetLoader
 from run_preprocessing import set_random_seed
 from run_training_single_model import evaluate_performance
@@ -433,6 +436,257 @@ def analyze_reconstruction_errors_essembles(cfg):
             ensemble_meta_data_file = os.path.join(ensemble_model_dir, f'ensemble_final_result_{"+".join(ensemble_meta_data["models"])}.csv')
             print('Save final ensemble result in', ensemble_meta_data_file)
             ensemble_result_df.to_csv(ensemble_meta_data_file, index=False)
+
+
+def analyze_reconstruction_errors_essembles_of_optimal_configuration(cfg, most_optimal_hyperparameters_df):
+    experiment_config = cfg.evaluation
+    ensembles_config = experiment_config.ensembles
+    project_root_dir = get_project_root()
+    trained_models_dir = os.path.join(project_root_dir, experiment_config.model_save_path)
+    slide_win = experiment_config.slide_win
+    ensemble_model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', 'ensemble')
+    os.makedirs(ensemble_model_dir, exist_ok=True)
+
+    # most_optimal_hyperparameters_df is only computed for the proposed model
+    # (A3TGCN with feature null-padding), see analysis_results.main
+    proposed_model_name = 'A3TGCN'
+    null_padding_feature = True
+    null_padding_target = False
+    model_folder = f'{proposed_model_name}_null_padding_feature'
+    scoring_strategies = ['likelihood', 'mahalanobis']
+
+    window_df = most_optimal_hyperparameters_df[
+        most_optimal_hyperparameters_df['sliding_window'] == slide_win
+    ]
+
+    combination_mode = ensembles_config.combination_mode
+    if combination_mode == "auto":
+        print("Ensemble selection mode: ", combination_mode)
+        num_selection = ensembles_config.auto_combination.num_selection
+        http_codes = ensembles_config.auto_combination.http_codes
+        aggregations = ensembles_config.auto_combination.aggregations
+
+        selected_models_list = list(itertools.product(http_codes, aggregations))
+        print('Selected_model_list length', len(selected_models_list))
+        selected_models_combinations = list(itertools.combinations(selected_models_list, num_selection))
+    elif combination_mode == "manual":
+        print("Ensemble selection mode: ", combination_mode)
+        http_codes = ensembles_config.manual_combination.http_codes
+        aggregations = ensembles_config.manual_combination.aggregations
+        max_length = max(len(http_codes), len(aggregations))
+        selected_models_combinations = [[(http_codes[i], aggregations[i]) for i in range(max_length)]]
+    else:
+        print("Ensemble selection mode: ", 'not supported!')
+        selected_models_combinations = [[('5xx', 'count')]]
+
+    for selected_models in tqdm(selected_models_combinations, desc='Running for each combination...',
+                                total=len(selected_models_combinations)):
+        selected_models_id = '+'.join([f'{code}_{agg}' for code, agg in selected_models])
+        predicted_label_all_file = os.path.join(
+            ensemble_model_dir, f'predicted_labels_of_all_optimal_configuration_{selected_models_id}.npy')
+        ensemble_meta_data_file = os.path.join(
+            ensemble_model_dir, f'ensemble_meta_data_optimal_configuration_{selected_models_id}.json')
+
+        label_dictionary = dict()
+        grid_search_params = dict()
+        data_loader_first = None
+
+        for (http_code, aggregation) in tqdm(selected_models, desc='Collect predicted labels for ensemble models',
+                                             total=len(selected_models)):
+            subset_rows = window_df[
+                (window_df['http_code'] == http_code) & (window_df['aggregation'] == aggregation)
+            ]
+            if subset_rows.empty:
+                raise RuntimeError(
+                    f'No optimal hyperparameters found for {http_code} {aggregation} at window {slide_win}'
+                )
+            imputation = subset_rows.iloc[0]['imputation_strategy']
+
+            OmegaConf.update(cfg, 'evaluation.use_model', proposed_model_name)
+            OmegaConf.update(cfg, 'evaluation.slide_win', slide_win)
+            OmegaConf.update(cfg, 'evaluation.fill_nan', imputation)
+            OmegaConf.update(cfg, 'evaluation.null_padding_feature', null_padding_feature)
+            OmegaConf.update(cfg, 'evaluation.null_padding_target', null_padding_target)
+            OmegaConf.update(cfg, 'data_preparation_pipeline.features_prep.filter.http_codes', [http_code])
+            OmegaConf.update(cfg, 'data_preparation_pipeline.features_prep.filter.aggregations', [aggregation])
+
+            data_preparation_config = cfg.data_preparation_pipeline
+            data_loader = IBMDatasetLoader(data_preparation_config)
+            selected_group_mode = data_loader.selected_group_mode
+            if data_loader_first is None:
+                data_loader_first = data_loader
+
+            result_dir = os.path.join(
+                trained_models_dir,
+                f'window_{slide_win}',
+                f'no_group_{http_code}_{aggregation}',
+                f'fill_nan_with_{imputation}',
+                model_folder,
+            )
+
+            label_ensemble_file = os.path.join(result_dir, f'{proposed_model_name}_predictions_for_assembles.csv')
+            if not os.path.exists(label_ensemble_file):
+                raise RuntimeError(f'Label Ensembles file not found: {label_ensemble_file}')
+            label_essemble_df = pd.read_csv(label_ensemble_file)
+
+            grid_search_file = os.path.join(result_dir, f'{proposed_model_name}_grid_search.csv')
+            if not os.path.exists(grid_search_file):
+                raise RuntimeError(f'Grid Search file not found: {grid_search_file}')
+            grid_search_df = pd.read_csv(grid_search_file)
+
+            assert label_essemble_df.shape[0] == len(data_loader.test_index)
+            assert label_essemble_df.shape[1] == grid_search_df.shape[0]
+
+            strategy_column_indices = []
+            strategy_grid_params = []
+            for strategy in scoring_strategies:
+                strategy_row = subset_rows[subset_rows['post_processing_strategy'] == strategy]
+                if strategy_row.empty:
+                    raise RuntimeError(f'No optimal hyperparameters for {http_code} {aggregation} {strategy}')
+                strategy_row = strategy_row.iloc[0]
+
+                # label_essemble_df's columns line up 1:1 with grid_search_df's rows
+                # (same order), so the matching grid search row also identifies the
+                # label column for this strategy's optimal hyperparameters
+                matches = grid_search_df[
+                    (grid_search_df['post_processing_strategy'] == strategy) &
+                    np.isclose(grid_search_df['long_window'], strategy_row['long_window']) &
+                    np.isclose(grid_search_df['short_window'], strategy_row['short_window']) &
+                    np.isclose(grid_search_df['anomaly_threshold'], strategy_row['anomaly_threshold']) &
+                    np.isclose(grid_search_df['topk'], strategy_row['topk'])
+                ]
+                assert len(matches) == 1, (
+                    f'Expected exactly one grid search row matching optimal {strategy} hyperparameters for '
+                    f'{http_code} {aggregation}, found {len(matches)}'
+                )
+                strategy_column_indices.append(int(matches.index[0]))
+                strategy_grid_params.append({
+                    **matches.iloc[0].to_dict(),
+                    'model': proposed_model_name,
+                    'fill_nan_value': imputation,
+                    'null_padding_feature': null_padding_feature,
+                    'null_padding_target': null_padding_target,
+                })
+
+            # Ensemble the two scoring strategies within this subset: an anomaly
+            # detected by either strategy under its own optimal hyperparameters
+            # counts as detected
+            combined_two_strategies_labels = label_essemble_df.values[:, strategy_column_indices].any(
+                axis=-1, keepdims=True
+            ).astype(int)
+
+            label_dictionary[selected_group_mode] = combined_two_strategies_labels
+            grid_search_params[selected_group_mode] = strategy_grid_params
+
+        log.info("Starting ensembles analysis")
+        predicted_label_matrix = np.stack(list(label_dictionary.values()), axis=0)
+        print('Predicted labels of all models with shape', predicted_label_matrix.shape)
+        np.save(predicted_label_all_file, predicted_label_matrix)
+        print('Saved predicted label matrix of all models to', predicted_label_all_file)
+
+        ensemble_meta_data = dict()
+        ensemble_meta_data['models'] = list(label_dictionary.keys())
+        ensemble_meta_data['grid_params'] = grid_search_params
+        with open(ensemble_meta_data_file, 'w') as f:
+            json.dump(ensemble_meta_data, f, cls=NumpyEncoder, indent=4)
+            print('Saved ensemble meta data to ', ensemble_meta_data_file)
+
+        # Ensemble across subsets: an anomaly flagged by any subset's combined
+        # (likelihood OR mahalanobis) label counts as detected
+        aggregated_label_over_models = (predicted_label_matrix.sum(axis=0) >= 1).ravel()
+        print('Aggregated label matrix shape', aggregated_label_over_models.shape)
+
+        columns = [
+            'standard_normalized',
+            'reward_fn_normalized',
+            'detection_counters',
+            'confusion_matrix',
+            'post_processing_strategy',
+            'anomaly_threshold',
+            'topk',
+            'long_window',
+            'short_window',
+            'precision',
+            'recall',
+            'f1',
+            'accuracy',
+            'standard_raw',
+            'reward_fn_raw',
+            'model',
+            'fill_nan_value',
+            'null_padding_feature',
+            'null_padding_target',
+        ]
+        ensemble_result_df = pd.DataFrame(columns=columns)
+
+        visualization_df = pd.DataFrame({
+            'true_anomaly': data_loader_first.test_labels,
+            'predicted_anomaly': aggregated_label_over_models,
+        })
+        visualization_df.index = data_loader_first.test_index
+
+        raw_nab_score_standard, normalized_nab_score_standard, _, _, _ = calculate_nab_score_with_window_based_tp_fn(
+            visualization_df, data_loader_first.anomaly_windows_test, 'standard',
+            true_col='true_anomaly', pred_col='predicted_anomaly'
+        )
+        raw_nab_score_reward_fn, normalized_nab_score_reward_fn, _, _, detection_counters = calculate_nab_score_with_window_based_tp_fn(
+            visualization_df, data_loader_first.anomaly_windows_test, 'reward_fn',
+            true_col='true_anomaly', pred_col='predicted_anomaly'
+        )
+        precision, recall, f1, accuracy, conf_matrix, mcc = evaluate_performance(
+            data_loader_first.test_labels, aggregated_label_over_models
+        )
+
+        ensemble_result_df.loc[len(ensemble_result_df)] = {
+            'confusion_matrix': conf_matrix,
+            'post_processing_strategy': None,
+            'topk': None,
+            'anomaly_threshold': None,
+            'long_window': None,
+            'short_window': None,
+            'standard_raw': raw_nab_score_standard,
+            'reward_fn_raw': raw_nab_score_reward_fn,
+            'standard_normalized': normalized_nab_score_standard,
+            'reward_fn_normalized': normalized_nab_score_reward_fn,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1,
+            'detection_counters': detection_counters,
+            'accuracy': accuracy,
+        }
+
+        for strategy_params_list in grid_search_params.values():
+            for strategy_params in strategy_params_list:
+                ensemble_result_df.loc[len(ensemble_result_df)] = {
+                    'confusion_matrix': strategy_params['confusion_matrix'],
+                    'post_processing_strategy': strategy_params['post_processing_strategy'],
+                    'topk': strategy_params['topk'],
+                    'anomaly_threshold': strategy_params['anomaly_threshold'],
+                    'long_window': strategy_params['long_window'],
+                    'short_window': strategy_params['short_window'],
+                    'standard_raw': strategy_params['standard_raw'],
+                    'reward_fn_raw': strategy_params['reward_fn_raw'],
+                    'standard_normalized': strategy_params['standard_normalized'],
+                    'reward_fn_normalized': strategy_params['reward_fn_normalized'],
+                    'precision': strategy_params['precision'],
+                    'recall': strategy_params['recall'],
+                    'f1': strategy_params['f1'],
+                    'detection_counters': strategy_params['detection_counters'],
+                    'accuracy': strategy_params['accuracy'],
+                    'model': strategy_params['model'],
+                    'fill_nan_value': strategy_params['fill_nan_value'],
+                    'null_padding_feature': strategy_params['null_padding_feature'],
+                    'null_padding_target': strategy_params['null_padding_target'],
+                }
+
+        ensemble_result_file = os.path.join(
+            ensemble_model_dir,
+            f'ensemble_final_result_optimal_configuration_{"+".join(ensemble_meta_data["models"])}.csv'
+        )
+        print('Save final ensemble result in', ensemble_result_file)
+        ensemble_result_df.to_csv(ensemble_result_file, index=False)
+
+
 @hydra.main(config_path="../conf", config_name="config.yaml")
 def main(cfg: DictConfig):
     """
@@ -484,7 +738,44 @@ def main(cfg: DictConfig):
 
     ensembles_config = experiment_config.ensembles if 'ensembles' in experiment_config else None
     if ensembles_config:
-        analyze_reconstruction_errors_essembles(cfg)
+        # analyze_reconstruction_errors_essembles(cfg)
+
+        graph_models = ['A3TGCN']
+
+        proposed_model_name = 'A3TGCN'
+        proposed_model_detail = dict(
+            proposed_model_name=proposed_model_name,
+            null_padding_feature=True,
+            null_padding_target=False,
+            is_graph=proposed_model_name in graph_models,
+        )
+
+        results_dir = cfg.evaluation.model_save_path
+        results_dir = os.path.join(get_project_root(), results_dir)
+
+        supported_sliding_windows = cfg.supported_sliding_windows
+        http_codes = ['5xx','4xx']
+        aggregations = ['count', 'avg', 'min', 'max']
+        missing_imputation_stategies = ['zero','mean','median']
+
+        optimal_hyperparameters_df = load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
+            proposed_model_detail,
+            results_dir,
+            supported_sliding_windows,
+            http_codes,
+            aggregations,
+            missing_imputation_stategies,
+            use_existing_file=True
+        )
+
+        most_optimal_hyperparameters_df = extract_most_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(
+            optimal_hyperparameters_df,
+            results_dir,
+            proposed_model_detail,
+            )
+
+        analyze_reconstruction_errors_essembles_of_optimal_configuration(cfg,
+                                                                         most_optimal_hyperparameters_df)
             # ensembles_config, plotting_config, data_preparation_config=data_preparation_config, model_configs=model_configs,
             #                               experiment_config=experiment_config)
 
