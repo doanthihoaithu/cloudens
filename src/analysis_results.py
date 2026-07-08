@@ -27,7 +27,7 @@ SCORING_STRATEGY_DISPLAY_NAME_MAP = {
 
 NAB_PROFILE_DISPLAY_NAME_MAP = {
     'standard': 'Standard',
-    'reward_fn': 'Reward FN',
+    'reward_fn': 'Low FN',
 }
 
 # Hue (in colorsys HLS space, [0, 1]) assigned to each model family's color
@@ -1016,6 +1016,16 @@ def _detected_group_color(detection_counters, anomaly_id, undetected_color):
     return np.array(undetected_color)
 
 
+def _is_anomaly_detected(detection_counters, anomaly_id):
+    return any(anomaly_id in detection_counters.get(group_key, []) for group_key in ANOMALY_GROUP_ID_KEYS)
+
+
+def _blended_group_background(group_key, undetected_color):
+    group_color = to_rgb(ANOMALY_GROUP_COLOR_MAP[group_key])
+    return np.array(group_color) * ANOMALY_GROUP_OPACITY + \
+           np.array(undetected_color) * (1 - ANOMALY_GROUP_OPACITY)
+
+
 def plot_table_of_detected_anomalies(
         optimal_hyperparameters_df, results_dir, sliding_window, nab_profile,
         is_one_column_figure=False,
@@ -1291,35 +1301,49 @@ def plot_nab_score_of_optimal_configuration(
 
 
 def plot_table_and_nab_score_together(
-        optimal_hyperparameters_df, results_dir, sliding_window, nab_profile,
+        optimal_hyperparameters_df, results_dir, sliding_window, nab_profiles,
         is_one_column_figure=False,
 ):
     scoring_strategies = ['likelihood', 'mahalanobis']
-    normalized_column = f'{nab_profile}_normalized'
+
+    # Detected cells/hyperparameters are selected using the first profile; every
+    # profile in nab_profiles then gets its own bar-chart panel, each reporting
+    # that profile's own score for this same selected configuration
+    selection_profile = nab_profiles[0]
+    selection_normalized_column = f'{selection_profile}_normalized'
 
     profile_df = optimal_hyperparameters_df[
         (optimal_hyperparameters_df['sliding_window'] == sliding_window) &
-        (optimal_hyperparameters_df['nab_profile'] == nab_profile)
+        (optimal_hyperparameters_df['nab_profile'] == selection_profile)
     ]
 
     subsets = sorted(set(zip(profile_df['http_code'], profile_df['aggregation'])))
     undetected_color = to_rgb(UNDETECTED_CELL_COLOR)
     row_labels = [f'${text_subset_wrapper(hc, agg)}$' for hc, agg in subsets]
 
-    # scores[strategy][row_idx], indexed the same way as the table's rows so both
-    # panels are matched by subset
-    scores = {strategy: np.full(len(subsets), np.nan) for strategy in scoring_strategies}
+    # scores[profile][strategy][row_idx], indexed the same way as the table's
+    # rows so every panel is matched by subset
+    scores = {
+        profile: {strategy: np.full(len(subsets), np.nan) for strategy in scoring_strategies}
+        for profile in nab_profiles
+    }
 
+    n_bar_panels = len(nab_profiles)
     figure_width = ONE_COLUMN_FIGURE_WIDTH if is_one_column_figure else TWO_COLUMN_FIGURE_WIDTH
-    fig, (ax_table, ax_bars) = plt.subplots(
-        1, 2, sharey=True,
+    fig, axes = plt.subplots(
+        1, 1 + n_bar_panels, sharey=True,
         figsize=(figure_width, DETECTED_ANOMALIES_TABLE_ROW_HEIGHT * len(subsets) + 1),
-        gridspec_kw={'width_ratios': [NUM_TESTING_ANOMALIES, 6], 'wspace': 0.05},
+        gridspec_kw={'width_ratios': [NUM_TESTING_ANOMALIES] + [6] * n_bar_panels, 'wspace': 0.05},
     )
+    ax_table, *ax_bars_list = axes
 
     # Ground truth is fixed across subsets/strategies, so the anomaly index -> group
-    # mapping used for the column label backgrounds only needs to be captured once
+    # mapping can be captured once from any row up front, before the cells are drawn
     ground_truth_group_by_anomaly_id = {}
+    first_detection_counters = ast.literal_eval(profile_df.iloc[0]['detection_counters'])
+    for group_key, gt_key in GROUND_TRUTH_ID_KEY_MAP.items():
+        for anomaly_id in first_detection_counters.get(gt_key, []):
+            ground_truth_group_by_anomaly_id[anomaly_id] = group_key
 
     for row_idx, (http_code, agg) in enumerate(subsets):
         subset_rows = profile_df[
@@ -1332,30 +1356,37 @@ def plot_table_and_nab_score_together(
             if strategy_rows.empty:
                 continue
 
-            # Optimal imputation/score for this subset/strategy is the one whose
-            # selected hyperparameters score highest on the profile's normalized
+            # Optimal imputation/hyperparameters for this subset/strategy are the
+            # ones that score highest on the selection profile's normalized
             # metric, considering every imputation_strategy present in strategy_rows
-            optimal_row = strategy_rows.loc[strategy_rows[normalized_column].idxmax()]
+            optimal_row = strategy_rows.loc[strategy_rows[selection_normalized_column].idxmax()]
             strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
             imputation_by_strategy[strategy_display_name] = optimal_row['imputation_strategy']
-            scores[strategy][row_idx] = optimal_row[normalized_column]
+            for profile in nab_profiles:
+                scores[profile][strategy][row_idx] = optimal_row[f'{profile}_normalized']
             detection_counters = ast.literal_eval(optimal_row['detection_counters'])
 
-            if not ground_truth_group_by_anomaly_id:
-                for group_key, gt_key in GROUND_TRUTH_ID_KEY_MAP.items():
-                    for anomaly_id in detection_counters.get(gt_key, []):
-                        ground_truth_group_by_anomaly_id[anomaly_id] = group_key
-
+            # Triangle fill marks whether this strategy (under its own optimal
+            # hyperparameters) detected the anomaly: raw scoring-strategy color
+            # (matching the bar chart) when detected, raw anomaly-source color at
+            # low opacity when not
             triangle = SCORING_STRATEGY_TRIANGLE_MAP[strategy]
+            strategy_color = SCORING_STRATEGY_COLOR_MAP.get(strategy, 'gray')
             for anomaly_id in range(NUM_TESTING_ANOMALIES):
-                cell_color = _detected_group_color(detection_counters, anomaly_id, undetected_color)
+                if _is_anomaly_detected(detection_counters, anomaly_id):
+                    facecolor, alpha = strategy_color, 1
+                else:
+                    group_key = ground_truth_group_by_anomaly_id.get(anomaly_id)
+                    facecolor = ANOMALY_GROUP_COLOR_MAP.get(group_key, UNDETECTED_CELL_COLOR)
+                    alpha = ANOMALY_GROUP_OPACITY*0.25
+
                 x, y = anomaly_id, row_idx
                 if triangle == 'upper':
                     vertices = [(x - 0.5, y - 0.5), (x + 0.5, y - 0.5), (x + 0.5, y + 0.5)]
                 else:
                     vertices = [(x - 0.5, y - 0.5), (x - 0.5, y + 0.5), (x + 0.5, y + 0.5)]
-                ax_table.add_patch(plt.Polygon(vertices, closed=True, facecolor=cell_color,
-                                               edgecolor='none'))
+                ax_table.add_patch(plt.Polygon(vertices, closed=True, facecolor=facecolor,
+                                               alpha=alpha, edgecolor='none', zorder=1))
 
         if imputation_by_strategy:
             assert len(set(imputation_by_strategy.values())) == 1, (
@@ -1378,9 +1409,7 @@ def plot_table_and_nab_score_together(
         group_key = ground_truth_group_by_anomaly_id.get(anomaly_id)
         if group_key is None:
             continue
-        group_color = to_rgb(ANOMALY_GROUP_COLOR_MAP[group_key])
-        blended_color = np.array(group_color) * ANOMALY_GROUP_OPACITY + \
-                        np.array(undetected_color) * (1 - ANOMALY_GROUP_OPACITY)
+        blended_color = _blended_group_background(group_key, undetected_color)
         tick_label.set_bbox(dict(facecolor=blended_color, edgecolor='none', pad=1.5))
     ax_table.set_yticks(range(len(subsets)))
     ax_table.set_yticklabels(row_labels, fontsize=TICK_FONT_SIZE)
@@ -1397,41 +1426,47 @@ def plot_table_and_nab_score_together(
     )
     ax_table.set_title(strategy_triangle_note, fontsize=TICK_FONT_SIZE)
 
-    # Bar chart is rotated to horizontal bars so each subset's score lines up
-    # with that subset's row in the table
+    # Each bar chart panel is rotated to horizontal bars so a subset's score
+    # lines up with that subset's row in the table; one panel per nab_profile
     n_strategies = len(scoring_strategies)
     bar_height = 0.7 / n_strategies
     y = np.arange(len(subsets))
 
-    all_scores = np.concatenate(list(scores.values())) if subsets else np.array([0])
-    valid_scores = all_scores[~np.isnan(all_scores)]
-    min_score = min(valid_scores.min(), 0) if len(valid_scores) else 0
-    max_score = valid_scores.max() if len(valid_scores) else 1
-    score_range = max_score - min_score
-    xlim_min = (min_score - 0.25 * score_range) if min_score < 0 else min_score
-    ax_bars.set_xlim(xlim_min, max_score + 0.3 * score_range)
+    for ax_bars, profile in zip(ax_bars_list, nab_profiles):
+        profile_scores = scores[profile]
 
-    for i, strategy in enumerate(scoring_strategies):
-        offset = (i - n_strategies / 2 + 0.5) * bar_height
-        strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
-        bars = ax_bars.barh(y + offset, scores[strategy], bar_height,
-                            color=SCORING_STRATEGY_COLOR_MAP.get(strategy, 'gray'),
-                            label=strategy_display_name)
-        bar_value_labels = [
-            '' if np.isnan(score) else f'{score:.2f}'
-            for score in scores[strategy]
-        ]
-        ax_bars.bar_label(bars, labels=bar_value_labels, fontsize=TICK_FONT_SIZE, padding=2)
-        _round_bar_corners(bars)
+        all_scores = np.concatenate(list(profile_scores.values())) if subsets else np.array([0])
+        valid_scores = all_scores[~np.isnan(all_scores)]
+        min_score = min(valid_scores.min(), 0) if len(valid_scores) else 0
+        max_score = valid_scores.max() if len(valid_scores) else 1
+        score_range = max_score - min_score
+        xlim_min = (min_score - 0.25 * score_range) if min_score < 0 else min_score
+        ax_bars.set_xlim(xlim_min, max_score + 0.3 * score_range)
 
-    ax_bars.set_xlabel('NAB score', fontsize=TITLE_FONT_SIZE)
-    ax_bars.tick_params(axis='x', labelsize=TICK_FONT_SIZE)
-    ax_bars.tick_params(axis='y', labelleft=False, length=0)
-    ax_bars.grid(axis='x', linestyle='--', linewidth=0.4, alpha=0.6)
-    # ax_bars.set_title('NAB score', fontsize=TITLE_FONT_SIZE)
+        for i, strategy in enumerate(scoring_strategies):
+            offset = (i - n_strategies / 2 + 0.5) * bar_height
+            strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
+            bars = ax_bars.barh(y + offset, profile_scores[strategy], bar_height,
+                                color=SCORING_STRATEGY_COLOR_MAP.get(strategy, 'gray'),
+                                label=strategy_display_name)
+            bar_value_labels = [
+                '' if np.isnan(score) else f'{score:.2f}'
+                for score in profile_scores[strategy]
+            ]
+            ax_bars.bar_label(bars, labels=bar_value_labels, fontsize=TICK_FONT_SIZE, padding=2)
+            _round_bar_corners(bars)
+
+        ax_bars.set_xlabel(
+            f'NAB score\nunder {NAB_PROFILE_DISPLAY_NAME_MAP.get(profile, profile)} profile',
+            fontsize=TITLE_FONT_SIZE
+        )
+        ax_bars.tick_params(axis='x', labelsize=TICK_FONT_SIZE)
+        ax_bars.tick_params(axis='y', labelleft=False, length=0)
+        ax_bars.grid(axis='x', linestyle='--', linewidth=0.4, alpha=0.6)
 
     # Each panel gets its own legend, anchored above that panel's own title
-    # rather than sharing one figure-wide legend
+    # rather than sharing one figure-wide legend; the scoring-strategy legend
+    # only needs to appear once, above the first bar panel
     anomaly_source_handles = [
         plt.Rectangle((0, 0), 1, 1, color=color, alpha=ANOMALY_GROUP_OPACITY,
                       label=ANOMALY_GROUP_DISPLAY_NAME_MAP[key])
@@ -1443,7 +1478,7 @@ def plot_table_and_nab_score_together(
         loc='lower center', bbox_to_anchor=(0.5, 1.1),
         ncol=len(anomaly_source_handles), frameon=True,
     )
-    ax_bars.legend(
+    ax_bars_list[0].legend(
         title='Scoring strategy',
         fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
         loc='lower center', bbox_to_anchor=(0.5, 1.1),
@@ -1453,21 +1488,23 @@ def plot_table_and_nab_score_together(
     fig.tight_layout()
 
     # set_aspect('equal') on ax_table shrinks its box to keep cells square, so
-    # after layout it is usually shorter/narrower than ax_bars' allocated slot;
-    # pull ax_bars flush against ax_table's actual right edge and match its
-    # height so both panels line up row-for-row with minimal gap between them
+    # after layout it is usually narrower than its allocated slot, leaving a gap
+    # before the bar panels; shift every bar panel left by that same gap (so
+    # their relative widths/spacing are preserved) and match ax_table's height
+    # so all panels line up row-for-row with minimal gap between them
     fig.canvas.draw()
     table_bbox = ax_table.get_position()
-    bars_bbox = ax_bars.get_position()
     panel_gap = 0.02
-    new_bars_x0 = table_bbox.x1 + panel_gap
-    new_bars_width = bars_bbox.x1 - new_bars_x0
-    ax_bars.set_position([new_bars_x0, table_bbox.y0, new_bars_width, table_bbox.height])
+    first_bar_bbox = ax_bars_list[0].get_position()
+    shift = first_bar_bbox.x0 - (table_bbox.x1 + panel_gap)
+    for ax_bars in ax_bars_list:
+        bbox = ax_bars.get_position()
+        ax_bars.set_position([bbox.x0 - shift, table_bbox.y0, bbox.width, table_bbox.height])
 
     merged_results_dir = os.path.join(results_dir, 'merged_results')
     os.makedirs(merged_results_dir, exist_ok=True)
     out_path = os.path.join(
-        merged_results_dir, f'table_and_nab_score_window_{sliding_window}_{nab_profile}.png'
+        merged_results_dir, f'table_and_nab_score_window_{sliding_window}_{"_".join(nab_profiles)}.png'
     )
     fig.savefig(out_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
@@ -1598,11 +1635,13 @@ def main(cfg: DictConfig):
         nab_profile,
         is_one_column_figure=True
     )
+
+    nab_profiles=['reward_fn']
     plot_table_and_nab_score_together(
         most_optimal_hyperparameters_df,
         results_dir,
         sliding_window,
-        nab_profile,
+        nab_profiles,
         is_one_column_figure=False
     )
 

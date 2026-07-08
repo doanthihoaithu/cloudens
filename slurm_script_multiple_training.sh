@@ -6,7 +6,7 @@
 #SBATCH --error=ibm_multiple.err # standard error file
 #SBATCH --output=ibm_multiple.out # standard output file
 #SBATCH --gres=gpu:a100:1
-#SBATCH --partition=gprod_gssi # partition name
+#SBATCH --partition=gprod # partition name
 #SBATCH --mail-type=END              # type of event notification
 #SBATCH --mail-user=thihoaithu.doan@gssi.it   # mail address
 
