@@ -3,8 +3,8 @@
 #SBATCH --nodes=1 # 1 node
 #SBATCH --ntasks-per-node=32 # 32 tasks per node
 #SBATCH --time=24:00:00 # time limits: 1 hour
-#SBATCH --error=ibm.err # standard error file
-#SBATCH --output=ibm.out # standard output file
+#SBATCH --error=ensemble.err # standard error file
+#SBATCH --output=ensemble.out # standard output file
 #SBATCH --gres=gpu:a100:1
 #SBATCH --partition=gprod # partition name
 #SBATCH --mail-type=END              # type of event notification
