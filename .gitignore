@@ -13,3 +13,4 @@ src/testing.ipynb
 plot_results
 .codegraph
 **/.DS_Store
+.claude
