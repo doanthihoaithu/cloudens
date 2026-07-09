@@ -1158,6 +1158,12 @@ SCORING_STRATEGY_COLOR_MAP = {
     'mahalanobis': 'indianred',
 }
 
+# Color assigned to the winning scoring strategy's bar
+SCORING_STRATEGY_COLOR_MAP_BOLD = {
+    'likelihood': 'blue',
+    'mahalanobis': 'red',
+}
+
 # Corner radius for rounded bars, in points (a physical unit independent of DPI
 # and of the data scale on either axis)
 BAR_CORNER_RADIUS_POINTS = 4
@@ -1513,6 +1519,563 @@ def plot_table_and_nab_score_together(
     return out_path
 
 
+def _parse_ensemble_combo_subsets(combo_id):
+    subsets = []
+    for token in combo_id.split('+'):
+        http_code, agg = token.replace('no_group_', '', 1).split('_', 1)
+        subsets.append((http_code, agg))
+    return subsets
+
+
+# Fixed slot order for the 8-character combo code returned by
+# _format_ensemble_combo_code: one slot per (http_code, aggregation), '4xx'
+# slots first then '5xx', each group ordered avg/count/max/min
+COMBO_CODE_SLOTS = [
+    (http_code, agg)
+    for http_code in ('4xx', '5xx')
+    for agg in ('avg', 'count', 'max', 'min')
+]
+
+
+def _format_ensemble_combo_code(combo_id):
+    used_subsets = set(_parse_ensemble_combo_subsets(combo_id))
+    codes = ['*' if slot in used_subsets else '0' for slot in COMBO_CODE_SLOTS]
+    # First 4 slots are '4xx', last 4 are '5xx' (see COMBO_CODE_SLOTS), so
+    # splitting down the middle puts each http_code's flags on its own line
+    midpoint = len(codes) // 2
+    return ''.join(codes[:midpoint]) + '\n' + ''.join(codes[midpoint:])
+
+
+def _count_detected_anomalies(detection_counters):
+    return sum(
+        detection_counters.get(key, 0)
+        for key in ('issue_detected', 'im_detected', 'TestLog_detected')
+    )
+
+
+def _format_detected_anomalies_cell(detection_counters, group_key):
+    ids_key = f'{group_key}_ids'
+    gt_key = GROUND_TRUTH_ID_KEY_MAP[ids_key]
+    detected_ids = detection_counters.get(ids_key, [])
+    total_count = len(detection_counters.get(gt_key, []))
+    return f'{detection_counters.get(group_key, 0)}/{total_count}\n{detected_ids}'
+
+
+# Columns of the confusion-matrix table drawn after the bar charts in
+# plot_table_and_nab_score_of_ensembles, keyed the same way as the
+# confusion_matrix tuple (tn, fp, fn, tp) unpacked from each row
+CONFUSION_MATRIX_COLUMNS = ['tp', 'tn', 'fp', 'fn']
+CONFUSION_MATRIX_COLUMN_LABELS = ['TP', 'TN', 'FP', 'FN']
+# The confusion-matrix table's leading column holds the encoded combo-code row
+# label (not split diagonally, unlike the TP/TN/FP/FN columns after it)
+CONFUSION_MATRIX_LABEL_COLUMN_HEADER = 'Ensemble'
+
+
+def plot_table_and_nab_score_of_ensembles(
+        results_dir, sliding_window, nab_profiles, top_k,
+        is_one_column_figure=False,
+):
+    scoring_strategies = ['likelihood', 'mahalanobis']
+    ensemble_dir = os.path.join(results_dir, f'window_{sliding_window}', 'ensemble')
+    file_prefix = 'ensemble_final_result_optimal_configuration_'
+
+    # combo_id -> {strategy: first row (the ensemble-level aggregate) of that
+    # ensemble's result CSV}
+    combo_rows = {}
+    for filename in sorted(os.listdir(ensemble_dir)):
+        if not (filename.startswith(file_prefix) and filename.endswith('.csv')):
+            continue
+        remainder = filename[len(file_prefix):-len('.csv')]
+        strategy = next((s for s in scoring_strategies if remainder.startswith(f'{s}_')), None)
+        if strategy is None:
+            continue
+        combo_id = remainder[len(strategy) + 1:]
+
+        result_df = pd.read_csv(os.path.join(ensemble_dir, filename))
+        if result_df.empty:
+            continue
+        combo_rows.setdefault(combo_id, {})[strategy] = result_df.iloc[0]
+
+    assert combo_rows, f'No ensemble result CSVs starting with {file_prefix!r} found in {ensemble_dir}'
+
+    # For each subset count (1-subset combos, 2-subset combos, ...), keep
+    # ensembles selected by three criteria: the single best mahalanobis
+    # ensemble, the single best likelihood ensemble (both ranked by
+    # reward_fn_normalized), and, separately for each scoring strategy, the
+    # top_k ensembles by that strategy's own number of detected ground-truth
+    # anomalies (summed across the three anomaly-source groups); a combo
+    # winning more than one of these criteria is still only shown once
+    reward_fn_column = 'reward_fn_normalized'
+    combo_ids_by_subset_count = {}
+    for combo_id in combo_rows:
+        subset_count = len(_parse_ensemble_combo_subsets(combo_id))
+        combo_ids_by_subset_count.setdefault(subset_count, []).append(combo_id)
+
+    selected_combo_ids = set()
+    for group_combo_ids in combo_ids_by_subset_count.values():
+        for strategy in scoring_strategies:
+            strategy_scores = {
+                combo_id: combo_rows[combo_id][strategy][reward_fn_column]
+                for combo_id in group_combo_ids
+                if strategy in combo_rows[combo_id]
+            }
+            if strategy_scores:
+                selected_combo_ids.add(max(strategy_scores, key=strategy_scores.get))
+
+        for strategy in scoring_strategies:
+            detected_counts = {
+                combo_id: _count_detected_anomalies(
+                    ast.literal_eval(combo_rows[combo_id][strategy]['detection_counters'])
+                )
+                for combo_id in group_combo_ids
+                if strategy in combo_rows[combo_id]
+            }
+            top_detected_combo_ids = sorted(detected_counts, key=detected_counts.get, reverse=True)[:top_k]
+            selected_combo_ids.update(top_detected_combo_ids)
+
+    # Keep every ensemble found on disk (all_combo_rows) separate from the
+    # top_k-selected ones actually drawn in the table/bar chart below, so the
+    # exported summary can still be used to look up any specific ensemble
+    # (e.g. by export_selected_ensembles_to_latex_for_each_scoring_strategy)
+    # even if it wasn't one of the automatically selected top_k combos
+    all_combo_rows = combo_rows
+    combo_rows = {combo_id: all_combo_rows[combo_id] for combo_id in selected_combo_ids}
+    # Rows are ordered by number of combined subsets first (ascending), then
+    # alphabetically within a subset count for a stable, deterministic order
+    combo_ids = sorted(
+        combo_rows.keys(),
+        key=lambda combo_id: (len(_parse_ensemble_combo_subsets(combo_id)), combo_id)
+    )
+
+    merged_results_dir = os.path.join(results_dir, 'merged_results')
+    os.makedirs(merged_results_dir, exist_ok=True)
+
+    # One row per (ensemble, scoring strategy), since the confusion matrix and
+    # detected ground-truth anomalies are strategy-specific
+    ensemble_summary_records = []
+    all_combo_ids = sorted(
+        all_combo_rows.keys(),
+        key=lambda combo_id: (len(_parse_ensemble_combo_subsets(combo_id)), combo_id)
+    )
+    for combo_id in all_combo_ids:
+        for strategy in scoring_strategies:
+            row = all_combo_rows[combo_id].get(strategy)
+            if row is None:
+                continue
+            tn, fp, fn, tp = ast.literal_eval(row['confusion_matrix'])
+            detection_counters = ast.literal_eval(row['detection_counters'])
+            ensemble_summary_records.append({
+                'ensemble_id': combo_id,
+                'scoring_strategy': strategy,
+                'tp': tp,
+                'tn': tn,
+                'fp': fp,
+                'fn': fn,
+                'standard_nab_score': row['standard_normalized'],
+                'reward_fn_nab_score': row['reward_fn_normalized'],
+                'issue_detected': _format_detected_anomalies_cell(detection_counters, 'issue_detected'),
+                'im_detected': _format_detected_anomalies_cell(detection_counters, 'im_detected'),
+                'TestLog_detected': _format_detected_anomalies_cell(detection_counters, 'TestLog_detected'),
+            })
+    ensemble_summary_df = pd.DataFrame.from_records(ensemble_summary_records)
+    ensemble_summary_csv_path = os.path.join(
+        merged_results_dir,
+        f'ensembles_summary_window_{sliding_window}_{"_".join(nab_profiles)}.csv'
+    )
+    ensemble_summary_df.to_csv(ensemble_summary_csv_path, index=False)
+    print(f'Ensembles summary saved to {ensemble_summary_csv_path}')
+
+    undetected_color = to_rgb(UNDETECTED_CELL_COLOR)
+    # The encoded combo codes are shown inside the confusion-matrix table's
+    # leading column, so the axes' own y-tick labels just number the rows in
+    # display order
+    combo_codes = [_format_ensemble_combo_code(combo_id) for combo_id in combo_ids]
+    row_labels = [str(i) for i in range(1, len(combo_ids) + 1)]
+
+    # scores[profile][strategy][row_idx], indexed the same way as the table's
+    # rows so every panel is matched by ensemble combo
+    scores = {
+        profile: {strategy: np.full(len(combo_ids), np.nan) for strategy in scoring_strategies}
+        for profile in nab_profiles
+    }
+
+    n_bar_panels = len(nab_profiles)
+    # +1 for the leading encoded-combo-code column
+    n_confusion_columns = len(CONFUSION_MATRIX_COLUMNS) + 1
+    figure_width = ONE_COLUMN_FIGURE_WIDTH if is_one_column_figure else TWO_COLUMN_FIGURE_WIDTH
+    fig, axes = plt.subplots(
+        1, 1 + n_bar_panels + 1, sharey=True,
+        figsize=(figure_width, DETECTED_ANOMALIES_TABLE_ROW_HEIGHT * len(combo_ids) + 1),
+        gridspec_kw={
+            'width_ratios': [n_confusion_columns, NUM_TESTING_ANOMALIES] + [6] * n_bar_panels,
+            'wspace': 0.05,
+        },
+    )
+    ax_confusion, ax_table, *ax_bars_list = axes
+
+    # Ground truth is fixed across combos/strategies, so the anomaly index -> group
+    # mapping can be captured once from any available row up front
+    first_row = next(row for strategy_rows in combo_rows.values() for row in strategy_rows.values())
+    first_detection_counters = ast.literal_eval(first_row['detection_counters'])
+    ground_truth_group_by_anomaly_id = {}
+    for group_key, gt_key in GROUND_TRUTH_ID_KEY_MAP.items():
+        for anomaly_id in first_detection_counters.get(gt_key, []):
+            ground_truth_group_by_anomaly_id[anomaly_id] = group_key
+
+    # confusion_by_combo[combo_id][strategy] = {'tp': ..., 'tn': ..., 'fp': ..., 'fn': ...}
+    confusion_by_combo = {combo_id: {} for combo_id in combo_ids}
+
+    for row_idx, combo_id in enumerate(combo_ids):
+        strategy_rows = combo_rows[combo_id]
+
+        for strategy in scoring_strategies:
+            row = strategy_rows.get(strategy)
+            if row is None:
+                continue
+
+            for profile in nab_profiles:
+                scores[profile][strategy][row_idx] = row[f'{profile}_normalized']
+            detection_counters = ast.literal_eval(row['detection_counters'])
+            tn, fp, fn, tp = ast.literal_eval(row['confusion_matrix'])
+            confusion_by_combo[combo_id][strategy] = {'tp': tp, 'tn': tn, 'fp': fp, 'fn': fn}
+
+            # Triangle fill marks whether this strategy's ensemble (OR-combined
+            # across the combo's subsets) detected the anomaly: raw
+            # scoring-strategy color (matching the bar chart) when detected, raw
+            # anomaly-source color at low opacity when not
+            triangle = SCORING_STRATEGY_TRIANGLE_MAP[strategy]
+            strategy_color = SCORING_STRATEGY_COLOR_MAP.get(strategy, 'gray')
+            for anomaly_id in range(NUM_TESTING_ANOMALIES):
+                if _is_anomaly_detected(detection_counters, anomaly_id):
+                    facecolor, alpha = strategy_color, 1
+                else:
+                    group_key = ground_truth_group_by_anomaly_id.get(anomaly_id)
+                    facecolor = ANOMALY_GROUP_COLOR_MAP.get(group_key, UNDETECTED_CELL_COLOR)
+                    alpha = ANOMALY_GROUP_OPACITY * 0.25
+
+                x, y = anomaly_id, row_idx
+                if triangle == 'upper':
+                    vertices = [(x - 0.5, y - 0.5), (x + 0.5, y - 0.5), (x + 0.5, y + 0.5)]
+                else:
+                    vertices = [(x - 0.5, y - 0.5), (x - 0.5, y + 0.5), (x + 0.5, y + 0.5)]
+                ax_table.add_patch(plt.Polygon(vertices, closed=True, facecolor=facecolor,
+                                               alpha=alpha, edgecolor='none', zorder=1))
+
+    for anomaly_id in range(NUM_TESTING_ANOMALIES):
+        for row_idx in range(len(combo_ids)):
+            ax_table.plot([anomaly_id - 0.5, anomaly_id + 0.5], [row_idx - 0.5, row_idx + 0.5],
+                         color='lightgray', linewidth=0.5, zorder=2)
+
+    ax_table.set_xlim(-0.5, NUM_TESTING_ANOMALIES - 0.5)
+    ax_table.set_ylim(len(combo_ids) - 0.5, -0.5)
+    # One data unit is one cell along both axes, so equal aspect keeps every cell square
+    ax_table.set_aspect('equal', adjustable='box')
+    ax_table.set_xticks(range(NUM_TESTING_ANOMALIES))
+    ax_table.set_xticklabels(range(NUM_TESTING_ANOMALIES), fontsize=TICK_FONT_SIZE)
+    for anomaly_id, tick_label in enumerate(ax_table.get_xticklabels()):
+        group_key = ground_truth_group_by_anomaly_id.get(anomaly_id)
+        if group_key is None:
+            continue
+        blended_color = _blended_group_background(group_key, undetected_color)
+        tick_label.set_bbox(dict(facecolor=blended_color, edgecolor='none', pad=1.5))
+    # The encoded combo-code row labels are shown on ax_confusion instead (it's
+    # the leftmost panel), so ax_table's own y-axis stays unlabeled
+    ax_table.tick_params(axis='y', labelleft=False, length=0)
+    ax_table.set_xlabel('Ground-truth anomaly index', fontsize=TITLE_FONT_SIZE)
+
+    ax_table.set_xticks(np.arange(-0.5, NUM_TESTING_ANOMALIES, 1), minor=True)
+    ax_table.set_yticks(np.arange(-0.5, len(combo_ids), 1), minor=True)
+    ax_table.grid(which='minor', color='lightgray', linewidth=0.5)
+    ax_table.tick_params(which='minor', length=0)
+
+    strategy_triangle_note = ' / '.join(
+        f'{SCORING_STRATEGY_DISPLAY_NAME_MAP.get(s, s)}: {t} triangle'
+        for s, t in SCORING_STRATEGY_TRIANGLE_MAP.items()
+    )
+    ax_table.set_title(strategy_triangle_note, fontsize=TICK_FONT_SIZE)
+
+    # Each bar chart panel is rotated to horizontal bars so a combo's score
+    # lines up with that combo's row in the table; one panel per nab_profile
+    n_strategies = len(scoring_strategies)
+    bar_height = 0.7 / n_strategies
+    y = np.arange(len(combo_ids))
+
+    for ax_bars, profile in zip(ax_bars_list, nab_profiles):
+        profile_scores = scores[profile]
+
+        all_scores = np.concatenate(list(profile_scores.values())) if combo_ids else np.array([0])
+        valid_scores = all_scores[~np.isnan(all_scores)]
+        min_score = min(valid_scores.min(), 0) if len(valid_scores) else 0
+        max_score = valid_scores.max() if len(valid_scores) else 1
+        score_range = max_score - min_score
+        xlim_min = (min_score - 0.25 * score_range) if min_score < 0 else min_score
+        ax_bars.set_xlim(xlim_min, max_score + 0.3 * score_range)
+
+        for i, strategy in enumerate(scoring_strategies):
+            offset = (i - n_strategies / 2 + 0.5) * bar_height
+            strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
+            bars = ax_bars.barh(y + offset, profile_scores[strategy], bar_height,
+                                color=SCORING_STRATEGY_COLOR_MAP.get(strategy, 'gray'),
+                                label=strategy_display_name)
+            bar_value_labels = [
+                '' if np.isnan(score) else f'{score:.2f}'
+                for score in profile_scores[strategy]
+            ]
+            ax_bars.bar_label(bars, labels=bar_value_labels, fontsize=TICK_FONT_SIZE, padding=2)
+            _round_bar_corners(bars)
+
+        ax_bars.set_xlabel(
+            f'NAB score\nunder {NAB_PROFILE_DISPLAY_NAME_MAP.get(profile, profile)} profile',
+            fontsize=TITLE_FONT_SIZE
+        )
+        ax_bars.tick_params(axis='x', labelsize=TICK_FONT_SIZE)
+        ax_bars.tick_params(axis='y', labelleft=False, length=0)
+        ax_bars.grid(axis='x', linestyle='--', linewidth=0.4, alpha=0.6)
+
+    # Confusion-matrix table, styled like ax_table: same per-combo rows and
+    # the same upper/lower triangle split per scoring strategy, but with a
+    # leading encoded-combo-code column followed by TP/TN/FP/FN columns
+    # instead of ground-truth anomaly indices. Each triangle is tinted with
+    # its strategy's raw color at low opacity and labeled with that
+    # strategy's count for the cell's metric
+    label_col_idx = 0
+    # Same blending as the ground-truth column labels' anomaly-source
+    # background, but with a fixed blue tint rather than one that varies per
+    # anomaly group
+    label_cell_color = np.array(to_rgb('blue')) * ANOMALY_GROUP_OPACITY + \
+                        np.array(undetected_color) * (1 - ANOMALY_GROUP_OPACITY)
+    for row_idx, combo_id in enumerate(combo_ids):
+        # The encoded combo code doesn't vary by scoring strategy, so its cell
+        # is a single flat rectangle rather than a strategy-split triangle pair
+        vertices = [
+            (label_col_idx - 0.5, row_idx - 0.5), (label_col_idx + 0.5, row_idx - 0.5),
+            (label_col_idx + 0.5, row_idx + 0.5), (label_col_idx - 0.5, row_idx + 0.5),
+        ]
+        ax_confusion.add_patch(plt.Polygon(vertices, closed=True, facecolor=label_cell_color,
+                                           edgecolor='none', zorder=1))
+        ax_confusion.text(label_col_idx, row_idx, combo_codes[row_idx], ha='center', va='center',
+                          fontsize=TICK_FONT_SIZE - 4, color='black', zorder=3)
+
+        for strategy in scoring_strategies:
+            confusion = confusion_by_combo[combo_id].get(strategy)
+            if confusion is None:
+                continue
+
+            triangle = SCORING_STRATEGY_TRIANGLE_MAP[strategy]
+            strategy_color = SCORING_STRATEGY_COLOR_MAP_BOLD.get(strategy, 'gray')
+            for metric_idx, column in enumerate(CONFUSION_MATRIX_COLUMNS):
+                x, y = metric_idx + 1, row_idx
+                if triangle == 'upper':
+                    text_x, text_y = x + 1 / 6, y - 1 / 6
+                else:
+                    text_x, text_y = x - 1 / 6, y + 1 / 6
+                # No cell fill: the strategy is instead identified by the
+                # text color, matching that strategy's bar/legend color
+                # -45 degrees aligns the label with the cell's top-left-to-bottom-right
+                # diagonal (the shared edge between the two triangles)
+                ax_confusion.text(text_x, text_y, str(confusion[column]), ha='center', va='center',
+                                 rotation=-45, fontsize=TICK_FONT_SIZE - 4, color=strategy_color, zorder=3)
+
+    # The diagonal split only applies to the strategy-specific TP/TN/FP/FN
+    # columns, not the leading encoded-combo-code column (range starts at 1)
+    for col_idx in range(1, n_confusion_columns):
+        for row_idx in range(len(combo_ids)):
+            ax_confusion.plot([col_idx - 0.5, col_idx + 0.5], [row_idx - 0.5, row_idx + 0.5],
+                              color='lightgray', linewidth=0.5, zorder=2)
+
+    # One data unit is one cell along both axes, so equal aspect keeps every cell square
+    ax_confusion.set_xlim(-0.5, n_confusion_columns - 0.5)
+    ax_confusion.set_aspect('equal', adjustable='box')
+    ax_confusion.set_xticks(range(n_confusion_columns))
+    ax_confusion.set_xticklabels(
+        [CONFUSION_MATRIX_LABEL_COLUMN_HEADER] + CONFUSION_MATRIX_COLUMN_LABELS, fontsize=TICK_FONT_SIZE
+    )
+    ax_confusion.set_xticks(np.arange(-0.5, n_confusion_columns, 1), minor=True)
+    ax_confusion.set_yticks(np.arange(-0.5, len(combo_ids), 1), minor=True)
+    ax_confusion.grid(which='minor', color='lightgray', linewidth=0.5)
+    ax_confusion.tick_params(which='minor', length=0)
+    # Rows are numbered in display order (matching ax_table's rows) now that
+    # the encoded combo code is shown inside the table's leading column
+    ax_confusion.set_yticks(range(len(combo_ids)))
+    ax_confusion.set_yticklabels(row_labels, fontsize=TICK_FONT_SIZE)
+    ax_confusion.set_title(strategy_triangle_note, fontsize=TICK_FONT_SIZE)
+
+    # Each panel gets its own legend, anchored above that panel's own title
+    # rather than sharing one figure-wide legend; the scoring-strategy legend
+    # only needs to appear once, above the first bar panel
+    anomaly_source_handles = [
+        plt.Rectangle((0, 0), 1, 1, color=color, alpha=ANOMALY_GROUP_OPACITY,
+                      label=ANOMALY_GROUP_DISPLAY_NAME_MAP[key])
+        for key, color in ANOMALY_GROUP_COLOR_MAP.items()
+    ]
+    ax_table.legend(
+        handles=anomaly_source_handles, title='Anomaly Source',
+        fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
+        loc='lower center', bbox_to_anchor=(0.5, 1.1),
+        ncol=len(anomaly_source_handles), frameon=True,
+    )
+    ax_bars_list[0].legend(
+        title='Scoring strategy',
+        fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
+        loc='lower center', bbox_to_anchor=(0.5, 1.1),
+        ncol=n_strategies, frameon=True,
+    )
+
+    fig.tight_layout()
+
+    # set_aspect('equal') on ax_table shrinks its box to keep cells square, so
+    # after layout it is usually narrower than its allocated slot, leaving a gap
+    # before the bar panels; shift every bar panel left by that same gap (so
+    # their relative widths/spacing are preserved) and match ax_table's height
+    # so all panels line up row-for-row with minimal gap between them
+    fig.canvas.draw()
+    table_bbox = ax_table.get_position()
+    panel_gap = 0.02
+    first_bar_bbox = ax_bars_list[0].get_position()
+    shift = first_bar_bbox.x0 - (table_bbox.x1 + panel_gap)
+    for ax_bars in ax_bars_list:
+        bbox = ax_bars.get_position()
+        ax_bars.set_position([bbox.x0 - shift, table_bbox.y0, bbox.width, table_bbox.height])
+
+    # ax_confusion also uses equal aspect (square cells), so rather than reuse
+    # its post-draw box directly (which may not have shrunk to the same cell
+    # size as ax_table), its width is rederived from ax_table's cell size —
+    # same physical row height, scaled to the confusion table's column count —
+    # then it's placed flush against ax_table's left edge (no gap), so the two
+    # tables read as one continuous table
+    fig_width_inches, fig_height_inches = fig.get_size_inches()
+    confusion_width = (
+        table_bbox.height * fig_height_inches * n_confusion_columns
+        / (len(combo_ids) * fig_width_inches)
+    )
+    ax_confusion.set_position([
+        table_bbox.x0 - confusion_width, table_bbox.y0, confusion_width, table_bbox.height
+    ])
+
+    out_path = os.path.join(
+        merged_results_dir,
+        f'table_and_nab_score_of_ensembles_window_{sliding_window}_{"_".join(nab_profiles)}.png'
+    )
+    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+    print(f'Combined ensembles detected anomalies table and NAB score plot saved to {out_path}')
+
+    return out_path, ensemble_summary_df
+
+
+def _normalize_ensemble_subsets(subset_strings):
+    subsets = []
+    for subset_string in subset_strings:
+        http_code, agg = subset_string.replace('_', ' ').split()
+        subsets.append((http_code, agg))
+    return frozenset(subsets)
+
+
+def export_selected_ensembles_to_latex_for_each_scoring_strategy(
+        ensemble_summary_df, selected_ensembles, results_dir,
+):
+    """
+    selected_ensembles maps a group key to either a curated list of ensembles
+    (each given as e.g. ['5xx_count', '4xx avg']) or None:
+      - int key N: filter to ensembles combining exactly N subsets; None means
+        keep every N-subset ensemble, a list means keep only those given
+      - 'All': same as an int key, but N is the largest subset count present
+        in ensemble_summary_df (i.e. the ensemble combining every subset)
+    """
+    latex_dir = os.path.join(results_dir, 'merged_results', 'latex')
+    os.makedirs(latex_dir, exist_ok=True)
+
+    detected_columns = ['issue_detected', 'im_detected', 'TestLog_detected']
+    header = [
+        'Ens.', 'TP', 'TN', 'FP', 'FN',
+        'Standard NAB', 'Reward FN NAB',
+        'Issue Tracker', 'Instant Messenger', 'Test Log',
+        'Avg Alarms/Day',
+    ]
+    # Test period spans 92 days; every predicted-positive (TP or FP) counts as
+    # an alarm, so the average daily alarm volume is (TP + FP) / 92
+    EVALUATION_PERIOD_DAYS = 92
+
+    def ensemble_row_to_latex(row):
+        # ensemble_id's subset order just follows however the ensemble was
+        # originally combined, not any canonical order, so sort for a
+        # consistent, predictable display order
+        ensemble_subsets = sorted(_parse_ensemble_combo_subsets(row['ensemble_id']))
+        ensemble_label = ','.join(
+            text_subset_wrapper_latex(hc, agg) for hc, agg in ensemble_subsets
+        )
+        # LaTeX tabular cells don't render embedded newlines without extra
+        # packages, so the "count/total\n[ids]" text is flattened to one line
+        detected_cells = [row[col].replace('\n', ' ') for col in detected_columns]
+        avg_alarms_per_day = (row['tp'] + row['fp']) / EVALUATION_PERIOD_DAYS
+        return (
+            f"{ensemble_label} & {row['tp']} & {row['tn']} & {row['fp']} & {row['fn']} & "
+            f"{row['standard_nab_score']:.2f} & {row['reward_fn_nab_score']:.2f} & "
+            f"{detected_cells[0]} & {detected_cells[1]} & {detected_cells[2]} & "
+            f"{avg_alarms_per_day:.2f} \\\\"
+        )
+
+    # Each scoring strategy gets its own file; within a strategy, every
+    # ensemble selected by any group in selected_ensembles is combined into a
+    # single flat table (one row per ensemble, no per-group subsections)
+    out_paths = {}
+    for strategy, strategy_df in ensemble_summary_df.groupby('scoring_strategy'):
+        subset_counts = strategy_df['ensemble_id'].apply(
+            lambda cid: len(_parse_ensemble_combo_subsets(cid))
+        )
+        max_subset_count = subset_counts.max() if not strategy_df.empty else 0
+
+        selected_ensemble_ids = set()
+        for group_key, wanted_ensembles in selected_ensembles.items():
+            # 'All' means the ensemble combining every subset, i.e. the group
+            # whose subset count equals the largest one present in the data
+            subset_count = max_subset_count if group_key == 'All' else group_key
+            group_df = strategy_df[subset_counts == subset_count]
+            if wanted_ensembles is not None:
+                wanted_subset_sets = [_normalize_ensemble_subsets(e) for e in wanted_ensembles]
+                group_df = group_df[
+                    group_df['ensemble_id'].apply(
+                        lambda cid: frozenset(_parse_ensemble_combo_subsets(cid)) in wanted_subset_sets
+                    )
+                ]
+            selected_ensemble_ids.update(group_df['ensemble_id'])
+
+        if not selected_ensemble_ids:
+            continue
+
+        combined_df = strategy_df[strategy_df['ensemble_id'].isin(selected_ensemble_ids)]
+        # Order rows by subset count first (ascending), then alphabetically,
+        # matching plot_table_and_nab_score_of_ensembles' row order
+        combined_df = combined_df.assign(
+            _subset_count=combined_df['ensemble_id'].apply(
+                lambda cid: len(_parse_ensemble_combo_subsets(cid))
+            )
+        ).sort_values(['_subset_count', 'ensemble_id'])
+
+        lines = [
+            '\\begin{tabular}{l' + 'r' * (len(header) - 1) + '}',
+            '\\toprule',
+            ' & '.join(header) + ' \\\\',
+            '\\midrule',
+        ]
+        # An empty row needs the same number of & separators as a real row
+        # (len(header) - 1) so the column count stays consistent
+        empty_row = ' & '.join([''] * len(header)) + ' \\\\'
+        for _, row in combined_df.iterrows():
+            lines.append(ensemble_row_to_latex(row))
+            lines.append(empty_row)
+        lines.append('\\bottomrule')
+        lines.append('\\end{tabular}')
+
+        out_path = os.path.join(latex_dir, f'selected_ensembles_{strategy}.tex')
+        with open(out_path, 'w') as f:
+            f.write('\n'.join(lines))
+        print(f'Selected {strategy} ensembles LaTeX table saved to {out_path}')
+        out_paths[strategy] = out_path
+
+    return out_paths
+
+
 @hydra.main(config_path="../conf", config_name="config.yaml")
 def main(cfg: DictConfig):
     supported_models  = cfg.supported_models
@@ -1644,6 +2207,24 @@ def main(cfg: DictConfig):
         nab_profiles,
         is_one_column_figure=False
     )
+
+    _, ensemble_df = plot_table_and_nab_score_of_ensembles(
+        results_dir,
+        sliding_window,
+        nab_profiles,
+        top_k=2,
+        is_one_column_figure=False
+    )
+
+    selected_ensembles = {
+        2: [['5xx_count', '4xx count'], ['5xx_count', '4xx avg']],
+        3: [['5xx avg', '5xx max', '4xx avg']],
+        4: [['5xx count', '5xx avg', '5xx min', '4xx avg'],['5xx count', '5xx avg', '5xx min', '4xx max']],
+        'All': None
+    }
+    export_selected_ensembles_to_latex_for_each_scoring_strategy(ensemble_df, selected_ensembles, results_dir)
+
+
 
 
 
