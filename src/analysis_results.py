@@ -20,9 +20,14 @@ MODEL_DISPLAY_NAME_MAP = {
     'A3TGCN_null_padding_feature': 'ClouDens',
 }
 
-SCORING_STRATEGY_DISPLAY_NAME_MAP = {
+SCORING_STRATEGY_DISPLAY_SHORT_NAME_MAP = {
     'likelihood': 'LF',
     'mahalanobis': 'MD',
+}
+
+SCORING_STRATEGY_DISPLAY_FULL_NAME_MAP = {
+    'likelihood': 'Likelihood Function',
+    'mahalanobis': 'Mahalanobis Distance',
 }
 
 NAB_PROFILE_DISPLAY_NAME_MAP = {
@@ -331,7 +336,7 @@ def plot_computation_time(results_dir, supported_models, supported_sliding_windo
         plt.Rectangle((0, 0), 1, 1, color=colors[i], label=f'Win {w}')
         for i, w in enumerate(supported_sliding_windows)
     ]
-    fig.legend(handles=legend_handles, title='Window', fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
+    fig.legend(handles=legend_handles, title='Sliding window', fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
                loc='center left', bbox_to_anchor=(1.0, 0.5),
                ncol=1, frameon=True)
 
@@ -487,7 +492,7 @@ def plot_computation_time_combined(results_dir, supported_models, supported_slid
         for i, w in enumerate(supported_sliding_windows)
     ]
     fig.legend(handles=legend_handles,
-               title='Window',
+               title='Sliding window',
                fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
                loc='upper center', bbox_to_anchor=(0.5, 1.0),
                ncol=n_windows, frameon=True)
@@ -960,7 +965,7 @@ def compare_model_performance_across_sliding_windows(
                             label=f'{display_name} ({imputation})',
                         )
 
-            strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
+            strategy_display_name = SCORING_STRATEGY_DISPLAY_SHORT_NAME_MAP.get(strategy, strategy)
             profile_display_name = NAB_PROFILE_DISPLAY_NAME_MAP.get(profile, profile)
             ax.set_title(f'NAB Score\n${text_subset_wrapper(http_code,agg)}$ — {strategy_display_name} — {profile_display_name}',
                         fontsize=TITLE_FONT_SIZE,
@@ -1065,7 +1070,7 @@ def plot_table_of_detected_anomalies(
             # hyperparameters score highest on the profile's normalized metric,
             # considering every imputation_strategy present in strategy_rows
             optimal_row = strategy_rows.loc[strategy_rows[normalized_column].idxmax()]
-            strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
+            strategy_display_name = SCORING_STRATEGY_DISPLAY_SHORT_NAME_MAP.get(strategy, strategy)
             imputation_by_strategy[strategy_display_name] = optimal_row['imputation_strategy']
             detection_counters = ast.literal_eval(optimal_row['detection_counters'])
 
@@ -1120,7 +1125,7 @@ def plot_table_of_detected_anomalies(
     ax.tick_params(which='minor', length=0)
 
     strategy_triangle_note = ' / '.join(
-        f'{SCORING_STRATEGY_DISPLAY_NAME_MAP.get(s, s)}: {t} triangle'
+        f'{SCORING_STRATEGY_DISPLAY_SHORT_NAME_MAP.get(s, s)}: {t} triangle'
         for s, t in SCORING_STRATEGY_TRIANGLE_MAP.items()
     )
     ax.set_title(strategy_triangle_note, fontsize=TICK_FONT_SIZE)
@@ -1267,7 +1272,7 @@ def plot_nab_score_of_optimal_configuration(
 
     for i, strategy in enumerate(scoring_strategies):
         offset = (i - n_strategies / 2 + 0.5) * bar_width
-        strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
+        strategy_display_name = SCORING_STRATEGY_DISPLAY_SHORT_NAME_MAP.get(strategy, strategy)
         bars = ax.bar(x + offset, scores[strategy], bar_width,
                       color=SCORING_STRATEGY_COLOR_MAP.get(strategy, 'gray'),
                       label=strategy_display_name)
@@ -1366,7 +1371,7 @@ def plot_table_and_nab_score_together(
             # ones that score highest on the selection profile's normalized
             # metric, considering every imputation_strategy present in strategy_rows
             optimal_row = strategy_rows.loc[strategy_rows[selection_normalized_column].idxmax()]
-            strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
+            strategy_display_name = SCORING_STRATEGY_DISPLAY_SHORT_NAME_MAP.get(strategy, strategy)
             imputation_by_strategy[strategy_display_name] = optimal_row['imputation_strategy']
             for profile in nab_profiles:
                 scores[profile][strategy][row_idx] = optimal_row[f'{profile}_normalized']
@@ -1427,7 +1432,7 @@ def plot_table_and_nab_score_together(
     ax_table.tick_params(which='minor', length=0)
 
     strategy_triangle_note = ' / '.join(
-        f'{SCORING_STRATEGY_DISPLAY_NAME_MAP.get(s, s)}: {t} triangle'
+        f'{SCORING_STRATEGY_DISPLAY_SHORT_NAME_MAP.get(s, s)}: {t} triangle'
         for s, t in SCORING_STRATEGY_TRIANGLE_MAP.items()
     )
     ax_table.set_title(strategy_triangle_note, fontsize=TICK_FONT_SIZE)
@@ -1451,7 +1456,7 @@ def plot_table_and_nab_score_together(
 
         for i, strategy in enumerate(scoring_strategies):
             offset = (i - n_strategies / 2 + 0.5) * bar_height
-            strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
+            strategy_display_name = SCORING_STRATEGY_DISPLAY_SHORT_NAME_MAP.get(strategy, strategy)
             bars = ax_bars.barh(y + offset, profile_scores[strategy], bar_height,
                                 color=SCORING_STRATEGY_COLOR_MAP.get(strategy, 'gray'),
                                 label=strategy_display_name)
@@ -1552,13 +1557,26 @@ def _count_detected_anomalies(detection_counters):
         for key in ('issue_detected', 'im_detected', 'TestLog_detected')
     )
 
+def wrapper_text_for_displaying_in_multiple_lines(text, num_row=2, align='c'):
+    """
+        Format a string for LaTeX \\multirowcell command.
 
+        Parameters:
+            text (str): The cell content/text.
+            num_row (int): Number of rows to span. Default is 2.
+            align (str): Vertical alignment ('c', 't', 'b', etc). Default is 'c'.
+
+        Returns:
+            str: Formatted LaTeX \\multirowcell string.
+        """
+    return f"\\multirowcell{{{num_row}}}[0pt][{align}]{{{text}}}"
 def _format_detected_anomalies_cell(detection_counters, group_key):
     ids_key = f'{group_key}_ids'
     gt_key = GROUND_TRUTH_ID_KEY_MAP[ids_key]
-    detected_ids = detection_counters.get(ids_key, [])
+    detected_ids = f'\\text{{{detection_counters.get(ids_key, [])}}}'
     total_count = len(detection_counters.get(gt_key, []))
-    return f'{detection_counters.get(group_key, 0)}/{total_count}\n{detected_ids}'
+    result = wrapper_text_for_displaying_in_multiple_lines(f'{detection_counters.get(group_key, 0)}/{total_count} \n {detected_ids}')
+    return result
 
 
 # Columns of the confusion-matrix table drawn after the bar charts in
@@ -1568,7 +1586,7 @@ CONFUSION_MATRIX_COLUMNS = ['tp', 'tn', 'fp', 'fn']
 CONFUSION_MATRIX_COLUMN_LABELS = ['TP', 'TN', 'FP', 'FN']
 # The confusion-matrix table's leading column holds the encoded combo-code row
 # label (not split diagonally, unlike the TP/TN/FP/FN columns after it)
-CONFUSION_MATRIX_LABEL_COLUMN_HEADER = 'Ensemble'
+CONFUSION_MATRIX_LABEL_COLUMN_HEADER = 'Ens.'
 
 
 def plot_table_and_nab_score_of_ensembles(
@@ -1789,7 +1807,7 @@ def plot_table_and_nab_score_of_ensembles(
     ax_table.tick_params(which='minor', length=0)
 
     strategy_triangle_note = ' / '.join(
-        f'{SCORING_STRATEGY_DISPLAY_NAME_MAP.get(s, s)}: {t} triangle'
+        f'{SCORING_STRATEGY_DISPLAY_SHORT_NAME_MAP.get(s, s)}: {t} triangle'
         for s, t in SCORING_STRATEGY_TRIANGLE_MAP.items()
     )
     ax_table.set_title(strategy_triangle_note, fontsize=TICK_FONT_SIZE)
@@ -1813,7 +1831,7 @@ def plot_table_and_nab_score_of_ensembles(
 
         for i, strategy in enumerate(scoring_strategies):
             offset = (i - n_strategies / 2 + 0.5) * bar_height
-            strategy_display_name = SCORING_STRATEGY_DISPLAY_NAME_MAP.get(strategy, strategy)
+            strategy_display_name = SCORING_STRATEGY_DISPLAY_SHORT_NAME_MAP.get(strategy, strategy)
             bars = ax_bars.barh(y + offset, profile_scores[strategy], bar_height,
                                 color=SCORING_STRATEGY_COLOR_MAP.get(strategy, 'gray'),
                                 label=strategy_display_name)
@@ -1854,7 +1872,7 @@ def plot_table_and_nab_score_of_ensembles(
         ax_confusion.add_patch(plt.Polygon(vertices, closed=True, facecolor=label_cell_color,
                                            edgecolor='none', zorder=1))
         ax_confusion.text(label_col_idx, row_idx, combo_codes[row_idx], ha='center', va='center',
-                          fontsize=TICK_FONT_SIZE - 4, color='black', zorder=3)
+                          fontsize=TICK_FONT_SIZE - 2, color='black', zorder=3)
 
         for strategy in scoring_strategies:
             confusion = confusion_by_combo[combo_id].get(strategy)
@@ -1987,7 +2005,7 @@ def export_selected_ensembles_to_latex_for_each_scoring_strategy(
 
     detected_columns = ['issue_detected', 'im_detected', 'TestLog_detected']
     header = [
-        'Ens.', 'TP', 'TN', 'FP', 'FN',
+        '# Subsets', 'Ensemble', 'TP', 'TN', 'FP', 'FN',
         'Standard NAB', 'Reward FN NAB',
         'Issue Tracker', 'Instant Messenger', 'Test Log',
         'Avg Alarms/Day',
@@ -2001,15 +2019,21 @@ def export_selected_ensembles_to_latex_for_each_scoring_strategy(
         # originally combined, not any canonical order, so sort for a
         # consistent, predictable display order
         ensemble_subsets = sorted(_parse_ensemble_combo_subsets(row['ensemble_id']))
-        ensemble_label = ','.join(
-            text_subset_wrapper_latex(hc, agg) for hc, agg in ensemble_subsets
-        )
+        # Combining every possible subset (all 8 (http_code, aggregation) slots)
+        # is the "All" ensemble, called out by name rather than listing every subset
+        if len(ensemble_subsets) == len(COMBO_CODE_SLOTS):
+            ensemble_label = 'All'
+        else:
+            ensemble_label = wrapper_text_for_displaying_in_multiple_lines(', '.join(
+                text_subset_wrapper_latex(hc, agg) for hc, agg in ensemble_subsets),
+                align='l'
+            )
         # LaTeX tabular cells don't render embedded newlines without extra
         # packages, so the "count/total\n[ids]" text is flattened to one line
-        detected_cells = [row[col].replace('\n', ' ') for col in detected_columns]
+        detected_cells = [row[col].replace("\n","\\\\") for col in detected_columns]
         avg_alarms_per_day = (row['tp'] + row['fp']) / EVALUATION_PERIOD_DAYS
         return (
-            f"{ensemble_label} & {row['tp']} & {row['tn']} & {row['fp']} & {row['fn']} & "
+            f"{len(ensemble_subsets)} & {ensemble_label} & {row['tp']} & {row['tn']} & {row['fp']} & {row['fn']} & "
             f"{row['standard_nab_score']:.2f} & {row['reward_fn_nab_score']:.2f} & "
             f"{detected_cells[0]} & {detected_cells[1]} & {detected_cells[2]} & "
             f"{avg_alarms_per_day:.2f} \\\\"
@@ -2053,7 +2077,7 @@ def export_selected_ensembles_to_latex_for_each_scoring_strategy(
         ).sort_values(['_subset_count', 'ensemble_id'])
 
         lines = [
-            '\\begin{tabular}{l' + 'r' * (len(header) - 1) + '}',
+            '\\begin{tabular}{rl' + 'r' * (len(header) - 2) + '}',
             '\\toprule',
             ' & '.join(header) + ' \\\\',
             '\\midrule',
@@ -2064,6 +2088,7 @@ def export_selected_ensembles_to_latex_for_each_scoring_strategy(
         for _, row in combined_df.iterrows():
             lines.append(ensemble_row_to_latex(row))
             lines.append(empty_row)
+            lines.append("\\midrule")
         lines.append('\\bottomrule')
         lines.append('\\end{tabular}')
 
@@ -2212,7 +2237,7 @@ def main(cfg: DictConfig):
         results_dir,
         sliding_window,
         nab_profiles,
-        top_k=2,
+        top_k=3,
         is_one_column_figure=False
     )
 

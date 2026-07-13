@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
 
+from analysis_results import text_subset_wrapper_latex, text_subset_wrapper, SCORING_STRATEGY_DISPLAY_FULL_NAME_MAP, \
+    MODEL_DISPLAY_NAME_MAP
 from ibm_dataset_loader import IBMDatasetLoader
 from run_training_single_model import label_reconstruction_errors
 from utils import get_project_root
@@ -485,7 +487,7 @@ def plot_only_time_series(dataloader, out_dir=None,
     agg_used = ', '.join(filt.aggregations)
 
     ax.set_xlabel('Timestamp', fontsize=FONT_SIZE)
-    ax.set_ylabel('Normalized Value [0,1]', fontsize=FONT_SIZE)
+    ax.set_ylabel(f'Normalized $\\mathtt{{count}}$ [0,1]', fontsize=FONT_SIZE)
     # ax.set_title(f'Sum of ${http_codes_used}\,{agg_used}$ subset accross all dimensions',
     #              fontsize=FONT_SIZE)
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
@@ -668,7 +670,7 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                     others_union = np.zeros(n_t, dtype=bool)
                     for other in all_panels:
                         if (other['type'] == 'score'
-                                and other['model'] != 'A3TGCN'
+                                and other['model'] != 'A3TGCN_null_padding_feature'
                                 and other['strategy'] == strategy):
                             o_len = min(len(other['is_anomalies']), n_t)
                             others_union[:o_len] |= other['is_anomalies'][:o_len].astype(bool)
@@ -759,7 +761,7 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                     plt.Line2D([0], [0], color='darkorange', marker='o', markersize=4,
                                linestyle='None', label='False detected'),
                     plt.Line2D([0], [0], color='green', marker='*', markersize=7,
-                               linestyle='None', label='True unique to A3TGCN'),
+                               linestyle='None', label='True unique to A3TGCN_null_padding_feature'),
                     *_source_legend_handles(),
                 ]
                 fig.legend(handles=legend_handles, loc='center left',
@@ -790,7 +792,7 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                 all_recon_panels = [p for p in all_panels if p['type'] == 'recon']
 
                 for a3_panel in all_panels:
-                    if a3_panel['type'] != 'score' or a3_panel['model'] != 'A3TGCN':
+                    if a3_panel['type'] != 'score' or a3_panel['model'] != 'A3TGCN_null_padding_feature':
                         continue
                     strategy = a3_panel['strategy']
                     a3_idx = np.array(a3_panel['index'])
@@ -879,7 +881,7 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                                 if (fp_z & zm).any():
                                     ax_z.scatter(p_idx[fp_z & zm], sc[fp_z & zm],
                                                  color='darkorange', s=8, zorder=3)
-                                if m == 'A3TGCN':
+                                if m == 'A3TGCN_null_padding_feature':
                                     u_raw = panel.get('unique_mask')
                                     if u_raw is not None:
                                         u_true_z = u_raw & gt
@@ -915,7 +917,7 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                                        label='False detected'),
                             plt.Line2D([0], [0], color='green', marker='*',
                                        markersize=7, linestyle='None',
-                                       label='True unique to A3TGCN'),
+                                       label='True unique to A3TGCN_null_padding_feature'),
                             *_source_legend_handles(),
                         ]
                         fig_z.legend(handles=zoom_legend, loc='center left',
@@ -995,7 +997,7 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                             if (fp_z & zm).any():
                                 ax_cs.scatter(sp_idx[fp_z & zm], sc[fp_z & zm],
                                               color='darkorange', s=8, zorder=3)
-                            if sp['model'] == 'A3TGCN':
+                            if sp['model'] == 'A3TGCN_null_padding_feature':
                                 u_raw = sp.get('unique_mask')
                                 if u_raw is not None:
                                     u_true_z = u_raw & gt
@@ -1033,7 +1035,7 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                                            label='False detected'),
                                 plt.Line2D([0], [0], color='green', marker='*',
                                            markersize=7, linestyle='None',
-                                           label='True unique to A3TGCN'),
+                                           label='True unique to A3TGCN_null_padding_feature'),
                                 *_source_legend_handles(),
                             ]
                         )
@@ -1121,7 +1123,7 @@ def plot_detected_anomalies_for_specific_periods(
 
                         _rm = recon.mean(axis=(1, 2))
                         _rm = (_rm - _rm.min()) / max(_rm.max() - _rm.min(), 1e-8)
-                        all_panels.append({'type': 'recon', 'model': model,
+                        all_panels.append({'type': 'recon', 'model': model_folder,
                                            'series': _rm, 'index': idx})
 
                         for strategy in ['likelihood', 'mahalanobis']:
@@ -1150,7 +1152,7 @@ def plot_detected_anomalies_for_specific_periods(
                                 anomaly_threshold, long_window, short_window,
                             )
                             all_panels.append({
-                                'type': 'score', 'model': model, 'strategy': strategy,
+                                'type': 'score', 'model': model_folder, 'strategy': strategy,
                                 'scores': likelihoods, 'is_anomalies': is_anom.values,
                                 'index': idx,
                             })
@@ -1161,13 +1163,13 @@ def plot_detected_anomalies_for_specific_periods(
 
                     # A3TGCN unique mask per strategy
                     for panel in all_panels:
-                        if panel['type'] != 'score' or panel['model'] != 'A3TGCN':
+                        if panel['type'] != 'score' or panel['model'] != 'A3TGCN_null_padding_feature':
                             continue
                         strategy = panel['strategy']
                         n_t = len(panel['is_anomalies'])
                         others_union = np.zeros(n_t, dtype=bool)
                         for other in all_panels:
-                            if (other['type'] == 'score' and other['model'] != 'A3TGCN'
+                            if (other['type'] == 'score' and other['model'] != 'A3TGCN_null_padding_feature'
                                     and other['strategy'] == strategy):
                                 o_len = min(len(other['is_anomalies']), n_t)
                                 others_union[:o_len] |= other['is_anomalies'][:o_len].astype(bool)
@@ -1199,7 +1201,7 @@ def plot_detected_anomalies_for_specific_periods(
                     }
                     recon_panels = [p for p in all_panels if p['type'] == 'recon']
                     # Row labels: 0=ts, 1=recon, 2..=strategies
-                    row_labels = (['Recon Error [0,1]'] +
+                    row_labels = (['Recon. Error [0,1]'] +
                                   [s.capitalize() for s in strategies])
                     n_rows = 1 + len(row_labels)
                     T0 = min(len(mean_series), len(index))
@@ -1237,7 +1239,7 @@ def plot_detected_anomalies_for_specific_periods(
                                 else mdates.DateFormatter('%m-%d'))
 
                         def _style(ax, ylabel=None, title=None,
-                                   _f=_fmt):
+                                   _f=_fmt, color='black'):
                             _plot_source_spans(ax, anomaly_windows_test, alpha=0.2)
                             ax.set_xlim(zoom_start, zoom_end)
                             ax.xaxis.set_major_formatter(_f)
@@ -1249,7 +1251,7 @@ def plot_detected_anomalies_for_specific_periods(
                             if col == 0 and ylabel:
                                 ax.set_ylabel(ylabel, fontsize=FONT_SIZE)
                             if title:
-                                ax.set_title(title, fontsize=FONT_SIZE - 1)
+                                ax.set_title(title, fontsize=FONT_SIZE - 1, color=color)
 
                         def _lbl(row, _c=col):
                             return f'({chr(ord("a") + row * n_periods + _c)}) '
@@ -1259,7 +1261,7 @@ def plot_detected_anomalies_for_specific_periods(
                         zm0 = _zmask(ts_idx)
                         ax0.plot(ts_idx[zm0], mean_series[:T0][zm0],
                                  color='steelblue', linewidth=0.8)
-                        _style(ax0, ylabel='Mean Value [0,1]', title=_lbl(0) + period_label)
+                        _style(ax0, ylabel=f'Norm. $\\mathtt{{{agg}}}$ [0,1]', title=_lbl(0) + period_label, color='red')
 
                         # Row 1: all models' recon overlaid
                         ax_r = axes[1, col]
@@ -1269,8 +1271,8 @@ def plot_detected_anomalies_for_specific_periods(
                             ax_r.plot(p_idx[zm], rp['series'][zm],
                                       color=model_colors[rp['model']],
                                       linewidth=0.8, label=rp['model'])
-                        _style(ax_r, ylabel='Recon Error [0,1]',
-                               title=_lbl(1) + 'Reconstruction Error')
+                        _style(ax_r, ylabel='Recon. Error [0,1]',
+                               title=_lbl(1) + 'Avg. Reconstruction Errors')
 
                         # Rows 2+: one per strategy, all models overlaid
                         for strat_i, strat in enumerate(strategies):
@@ -1295,7 +1297,7 @@ def plot_detected_anomalies_for_specific_periods(
                                 if (fp_z & zm).any():
                                     ax_s.scatter(p_idx[fp_z & zm], sc[fp_z & zm],
                                                  color='darkorange', s=25, zorder=3)
-                                if m == 'A3TGCN':
+                                if m == 'A3TGCN_null_padding_feature':
                                     u_raw = sp.get('unique_mask')
                                     if u_raw is not None:
                                         u_true_z = u_raw & gt
@@ -1305,10 +1307,10 @@ def plot_detected_anomalies_for_specific_periods(
                                                          color='green', s=50,
                                                          zorder=4, marker='*')
                             _style(ax_s, ylabel='Score [0,1]',
-                                   title=_lbl(2 + strat_i) + f'{strat.capitalize()}')
+                                   title=_lbl(2 + strat_i) + f'{SCORING_STRATEGY_DISPLAY_FULL_NAME_MAP.get(strat,strat)}')
 
                     legend_handles = (
-                        [plt.Line2D([0], [0], color=model_colors[m], linewidth=1.2, label=m)
+                        [plt.Line2D([0], [0], color=model_colors[m], linewidth=1.2, label=MODEL_DISPLAY_NAME_MAP.get(m,m))
                          for m in model_list]
                         + [
                             plt.Line2D([0], [0], color='red', marker='o', markersize=7,
@@ -1316,7 +1318,7 @@ def plot_detected_anomalies_for_specific_periods(
                             plt.Line2D([0], [0], color='darkorange', marker='o', markersize=7,
                                        linestyle='None', label='False Positive'),
                             plt.Line2D([0], [0], color='green', marker='*', markersize=10,
-                                       linestyle='None', label='True Positive only detected by A3TGCN'),
+                                       linestyle='None', label='True Positive only captured by ClouDens'),
                         ]
                     )
                     fig.legend(handles=legend_handles, loc='lower center',
@@ -1324,7 +1326,7 @@ def plot_detected_anomalies_for_specific_periods(
                                ncol=len(legend_handles),
                                fontsize=FONT_SIZE - 1, frameon=True)
                     fig.suptitle(
-                        f'Anomaly Detection — {http_code} / {agg} / imputation={fill_nan}',
+                        f'Detected Anomalies — ${text_subset_wrapper(http_code,agg)}$ — {fill_nan} imputation',
                         fontsize=FONT_SIZE + 1, fontweight='bold',
                     )
 
