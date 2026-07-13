@@ -2,6 +2,7 @@ import ast
 import colorsys
 import itertools
 import os
+import string
 
 import hydra
 import matplotlib.pyplot as plt
@@ -849,6 +850,17 @@ def save_most_optimal_hyperparameters_to_latex(
     return out_path
 
 
+def _subplot_order_label(index):
+    # 0-25 -> a-z, 26-51 -> aa-az, etc., the same base-26 letter-only scheme
+    # spreadsheets use for column headers
+    letters = ''
+    index += 1
+    while index > 0:
+        index, remainder = divmod(index - 1, len(string.ascii_lowercase))
+        letters = string.ascii_lowercase[remainder] + letters
+    return letters
+
+
 def compare_model_performance_across_sliding_windows(
         optimal_hyperparameters_df, results_dir, supported_models, graph_models,
         supported_sliding_windows, http_codes, aggregations,
@@ -967,7 +979,8 @@ def compare_model_performance_across_sliding_windows(
 
             strategy_display_name = SCORING_STRATEGY_DISPLAY_SHORT_NAME_MAP.get(strategy, strategy)
             profile_display_name = NAB_PROFILE_DISPLAY_NAME_MAP.get(profile, profile)
-            ax.set_title(f'NAB Score\n${text_subset_wrapper(http_code,agg)}$ — {strategy_display_name} — {profile_display_name}',
+            order_label = _subplot_order_label(row_idx * n_cols + col_idx)
+            ax.set_title(f'({order_label}) NAB Score\n${text_subset_wrapper(http_code,agg)}$ — {strategy_display_name} — {profile_display_name}',
                         fontsize=TITLE_FONT_SIZE,
                          # fontweight='bold'
                          )
@@ -2179,7 +2192,7 @@ def main(cfg: DictConfig):
     # )
 
     supported_models = ['GRU','A3TGCN']
-    http_codes = ['5xx','4xx']
+    http_codes = ['4xx','5xx']
     aggregations = ['count']
     supported_sliding_windows = [6,12,18,24,30]
     null_padding_features= [True]
