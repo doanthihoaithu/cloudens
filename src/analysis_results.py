@@ -1448,7 +1448,9 @@ def plot_table_and_nab_score_together(
         f'{SCORING_STRATEGY_DISPLAY_SHORT_NAME_MAP.get(s, s)}: {t} triangle'
         for s, t in SCORING_STRATEGY_TRIANGLE_MAP.items()
     )
-    ax_table.set_title(strategy_triangle_note, fontsize=TICK_FONT_SIZE)
+    ax_table.set_title(f'({_subplot_order_label(0)}) Detected anomalies captured by two scoring strategies.\n{strategy_triangle_note}',
+                       fontsize=TICK_FONT_SIZE,
+                       fontweight='bold')
 
     # Each bar chart panel is rotated to horizontal bars so a subset's score
     # lines up with that subset's row in the table; one panel per nab_profile
@@ -1456,7 +1458,7 @@ def plot_table_and_nab_score_together(
     bar_height = 0.7 / n_strategies
     y = np.arange(len(subsets))
 
-    for ax_bars, profile in zip(ax_bars_list, nab_profiles):
+    for bar_panel_idx, (ax_bars, profile) in enumerate(zip(ax_bars_list, nab_profiles), start=1):
         profile_scores = scores[profile]
 
         all_scores = np.concatenate(list(profile_scores.values())) if subsets else np.array([0])
@@ -1480,8 +1482,12 @@ def plot_table_and_nab_score_together(
             ax_bars.bar_label(bars, labels=bar_value_labels, fontsize=TICK_FONT_SIZE, padding=2)
             _round_bar_corners(bars)
 
+        ax_bars.set_title(f'({_subplot_order_label(bar_panel_idx)}) NAB score\nunder {NAB_PROFILE_DISPLAY_NAME_MAP.get(profile, profile)} profile.',
+                          fontsize=TICK_FONT_SIZE,
+                          fontweight='bold'
+                          )
         ax_bars.set_xlabel(
-            f'NAB score\nunder {NAB_PROFILE_DISPLAY_NAME_MAP.get(profile, profile)} profile',
+            f'NAB score',
             fontsize=TITLE_FONT_SIZE
         )
         ax_bars.tick_params(axis='x', labelsize=TICK_FONT_SIZE)
@@ -1499,13 +1505,13 @@ def plot_table_and_nab_score_together(
     ax_table.legend(
         handles=anomaly_source_handles, title='Anomaly Source',
         fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
-        loc='lower center', bbox_to_anchor=(0.5, 1.1),
+        loc='lower center', bbox_to_anchor=(0.5, 1.15),
         ncol=len(anomaly_source_handles), frameon=True,
     )
     ax_bars_list[0].legend(
         title='Scoring strategy',
         fontsize=LEGEND_FONT_SIZE, title_fontsize=LEGEND_FONT_SIZE,
-        loc='lower center', bbox_to_anchor=(0.5, 1.1),
+        loc='lower center', bbox_to_anchor=(0.5, 1.15),
         ncol=n_strategies, frameon=True,
     )
 

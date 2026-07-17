@@ -477,6 +477,10 @@ def plot_only_time_series(dataloader, out_dir=None,
     plot_index = pd.to_datetime(index[:T0])
     plot_series = mean_series[:T0]
 
+    test_labels = np.array(dataloader.test_labels).ravel()[:T0]
+    n_anomalous = int((test_labels == 1).sum())
+    print(f'Number of anomalous timestamps in testing data: {n_anomalous} / {T0}')
+
     fig, ax = plt.subplots(figsize=(12, 2.5), constrained_layout=True)
 
     ax.plot(plot_index, plot_series, color='steelblue', linewidth=0.8)
