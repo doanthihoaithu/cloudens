@@ -15,7 +15,7 @@ ClouDens is an ensemble-based anomaly detection framework built on spatio-tempor
 This repository includes:
 
 - Preprocessing scripts for the IBM Cloud dataset, splitting it into per-HTTP-status-code / per-aggregation feature subsets
-- Forecasting-based model implementations: **ClouDens (A3T-GCN)** and eight baselines — **GRU**, **GDN**, **TranAD**, **AnomalyTransformer**, **OmniAnomaly**, **USAD**, **MTAD-GAT**, **GST-PRO**
+- Forecasting-based model implementations: **ClouDens (A3T-GCN)** and a **GRU** baseline, 
 - Anomaly scoring on forecast errors with multiple post-processing strategies, including the *Anomaly Likelihood Function* and *Mahalanobis Distance*
 - An ensemble stage that combines scores from models trained on different feature subsets
 - Evaluation via NAB scores (`standard` / `reward_fn` profiles), AUC-PR/VUS-PR, precision, recall, and false-positive-rate metrics, plus plotting and LaTeX table generation for the paper's figures/tables
