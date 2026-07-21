@@ -1,9 +1,10 @@
-# ClouDens: An Anomaly Detection Framework for Large-scale Cloud Systems Monitoring
+# ClouDens: Operational Context-Aware Anomaly Detection for Large-scale Cloud System Monitoring
 
+[![arXiv](https://img.shields.io/badge/arXiv-2607.18127-b31b1b.svg)](https://arxiv.org/abs/2607.18127)
 [![dataset DOI](https://img.shields.io/badge/dataset%20DOI-10.5281%2Fzenodo.14062900-blue.svg)](https://doi.org/10.5281/zenodo.14062900)
 ![python](https://img.shields.io/badge/python-3.12.2-blue.svg)
 
-This repository contains the official implementation of our paper submitted to **IEEE Transactions on Network and Service Management (TNSM)** with title **"ClouDens: An Anomaly Detection Framework for Large-scale Cloud Systems Monitoring"**.
+This repository contains the official implementation of our paper submitted to **IEEE Transactions on Network and Service Management (TNSM)** with title **"ClouDens: Operational Context-Aware Anomaly Detection for Large-scale Cloud System Monitoring"**.
 
 ClouDens is an ensemble-based anomaly detection framework built on spatio-temporal graph neural networks (ST-GNNs), with features tailored for large-scale cloud telemetry. This repository includes scripts for every step of the pipeline — data pre-processing, model training, anomaly scoring, ensembling, and evaluation/plotting — configured end-to-end with [Hydra](https://github.com/facebookresearch/hydra) so experiments can be reproduced or swept from the command line.
 
