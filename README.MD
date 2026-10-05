@@ -4,9 +4,14 @@
 [![dataset DOI](https://img.shields.io/badge/dataset%20DOI-10.5281%2Fzenodo.14062900-blue.svg)](https://doi.org/10.5281/zenodo.14062900)
 ![python](https://img.shields.io/badge/python-3.12.2-blue.svg)
 
-This repository contains the official implementation of our paper submitted to **IEEE Transactions on Network and Service Management (TNSM)** with title **"ClouDens: Operational Context-Aware Anomaly Detection for Large-scale Cloud System Monitoring"**.
+This repository contains the official implementation and replication package for our paper **"ClouDens: Operational Context-Aware Anomaly Detection for Large-scale Cloud System Monitoring"**, currently under major revision at **IEEE Transactions on Network and Service Management (TNSM)**.
 
 ClouDens is an ensemble-based anomaly detection framework built on spatio-temporal graph neural networks (ST-GNNs), with features tailored for large-scale cloud telemetry. This repository includes scripts for every step of the pipeline — data pre-processing, model training, anomaly scoring, ensembling, and evaluation/plotting — configured end-to-end with [Hydra](https://github.com/facebookresearch/hydra) so experiments can be reproduced or swept from the command line.
+
+## Authors
+
+Thu T. H. Doan, Mohammad Saiful Islam, Andriy Miranskyy, Ngoc-Thanh Nguyen, Rogardt Heldal, and Patrizio Pelliccione
+
 
 ## 🔍 Overview
 
@@ -230,3 +235,20 @@ Five ready-to-adapt Slurm scripts at the repo root wrap the commands from §6 (u
 - Keep `requirements.txt` up to date if new dependencies are added.
 - `conf/config.yaml`, `data/`, and `trained_models/` are git-ignored — set them up per §2.5/§3 rather than expecting them from a fresh clone.
 - Train all base models/subsets you intend to ensemble (§6.2/§6.3) before running the ensemble scripts (§6.4).
+
+
+## Citation
+
+If you use ClouDens or this replication package in your research, please cite our paper:
+
+```bibtex
+@misc{doan2026cloudensoperationalcontextawareanomaly,
+      title={ClouDens: Operational Context-Aware Anomaly Detection for Large-scale Cloud System Monitoring}, 
+      author={Thu T. H. Doan and Mohammad Saiful Islam and Andriy Miranskyy and Ngoc-Thanh Nguyen and Rogardt Heldal and Patrizio Pelliccione},
+      year={2026},
+      eprint={2607.18127},
+      archivePrefix={arXiv},
+      primaryClass={cs.NI},
+      url={https://arxiv.org/abs/2607.18127}, 
+}
+```
