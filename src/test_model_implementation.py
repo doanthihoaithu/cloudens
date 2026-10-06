@@ -233,9 +233,11 @@ def test_gst_pro() -> bool:
 
 def test_anomaly_transformer() -> bool:
     """
-    Anomaly Transformer: Anomaly-Attention (prior-GAT + series-GAT) + minimax.
-    Forward: model(inputs) → (forecast [B,N,F], recon [B,T,N,F], assoc_disc).
-    Minimax: Phase-1 maximises discrepancy (main params); Phase-2 minimises it (σ).
+    Anomaly Transformer: Anomaly-Attention (prior + series association) + minimax.
+    Forward: model(inputs) → (forecast [B,N,F], recon [B,T,N,F],
+                              series_disc [B,T], prior_disc [B,T]).
+    Minimax: maximise discrepancy via the series branch (P detached),
+             minimise it via the prior branch (S detached).
     Tracks forecast MSE as the indicator loss.
     """
     from model_wrappers.AnomalyTransformerWrapper import AnomalyTransformerWrapper
@@ -252,6 +254,61 @@ def test_anomaly_transformer() -> bool:
     return _report('AnomalyTransformer', losses)
 
 
+# ── STformer ──────────────────────────────────────────────────────────────────
+
+def test_stformer() -> bool:
+    """
+    STformer: stacked temporal (over T) + spatial (over N) self-attention.
+    Forward: model(inputs) → [B, N, F].  Loss: MSE.
+    """
+    from model_wrappers.STformerWrapper import STformerWrapper
+
+    w = STformerWrapper(num_nodes=N, node_features=F_DIM, slide_win=T,
+                        d_model=32, nhead=2, n_layers=2,
+                        device=DEVICE)
+    inputs, labels = make_batch()
+
+    losses = []
+    for _ in range(N_STEPS):
+        w.model.train()
+        pred = w.model(inputs)
+        loss = w.loss_fn(pred, labels)
+        w.optimizer.zero_grad()
+        loss.backward()
+        w.optimizer.step()
+        losses.append(loss.item())
+
+    return _report('STformer', losses)
+
+
+# ── STGformer ─────────────────────────────────────────────────────────────────
+
+def test_stgformer() -> bool:
+    """
+    STGformer: adaptive graph propagation + spatiotemporal linear attention.
+    Forward: model(inputs) → [B, N, F].  Loss: MSE.
+    """
+    from model_wrappers.STGformerWrapper import STGformerWrapper
+
+    w = STGformerWrapper(num_nodes=N, node_features=F_DIM, slide_win=T,
+                         input_embedding_dim=16, adaptive_embedding_dim=16,
+                         num_heads=2, num_layers=2, order=2,
+                         device=DEVICE)
+    inputs, labels = make_batch()
+
+    losses = []
+    for _ in range(N_STEPS):
+        w.model.train()
+        pred = w.model(inputs)
+        loss = w.loss_fn(pred, labels)
+        w.optimizer.zero_grad()
+        loss.backward()
+        w.optimizer.step()
+        losses.append(loss.item())
+
+    return _report('STGformer', losses)
+
+
 # ── Orchestrator ──────────────────────────────────────────────────────────────
 
 ALL_TESTS = [
@@ -262,6 +319,8 @@ ALL_TESTS = [
     ('MTAD-GAT',             test_mtad_gat),
     ('GST-Pro',              test_gst_pro),
     ('AnomalyTransformer',   test_anomaly_transformer),
+    ('STformer',             test_stformer),
+    ('STGformer',            test_stgformer),
 ]
 
 

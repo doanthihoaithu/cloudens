@@ -32,16 +32,22 @@ class AnomalyAttentionLayer(nn.Module):
     One Anomaly-Attention block from the Anomaly Transformer paper.
 
     Computes two attention distributions in parallel:
-      • Prior-association P: a learnable Gaussian kernel centred at each
-        position, parameterised by a per-head scale σ.  P is a smooth,
-        local prior — it can only concentrate near the query position.
+      • Prior-association P: a Gaussian kernel centred at each position,
+        whose scale σ is projected from the input (one σ per position and
+        head).  P is a smooth, local prior — it can only concentrate near
+        the query position.
       • Series-association S: standard scaled dot-product attention.
         Normal points can spread attention globally; anomalies tend to
         concentrate locally (similar to P), reducing the discrepancy.
 
-    Association discrepancy = symmetric KL(P ‖ S) averaged over batch,
-    heads, and positions.  It is large for normal windows and small for
-    anomalous ones — used as an auxiliary training signal via minimax.
+    Association discrepancy = symmetric KL(P ‖ S) per position, averaged
+    over heads.  It is large for normal points and small for anomalous
+    ones — used as a training signal via minimax and as a score weight.
+
+    Two copies of the discrepancy are returned with different stop-gradients
+    (as in the official implementation):
+      • series_disc: P detached → gradients only reach the series branch
+      • prior_disc:  S detached → gradients only reach the prior branch
 
     Reference: Xu et al., "Anomaly Transformer: Time Series Anomaly
                Detection with Association Discrepancy", ICLR 2022.
@@ -58,9 +64,8 @@ class AnomalyAttentionLayer(nn.Module):
         self.W_V = nn.Linear(d_model, d_model)
         self.W_O = nn.Linear(d_model, d_model)
 
-        # Learnable log-scale for the Gaussian prior — one σ per attention head.
-        # Initialised near 1.0 so the prior starts as a moderate local kernel.
-        self.log_sigma = nn.Parameter(torch.zeros(nhead))
+        # Input-dependent scale of the Gaussian prior — one σ per position and head
+        self.W_sigma = nn.Linear(d_model, nhead)
 
         self.ff = nn.Sequential(
             nn.Linear(d_model, 4 * d_model),
@@ -72,20 +77,31 @@ class AnomalyAttentionLayer(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
         self.drop = nn.Dropout(dropout)
 
-    def _prior(self, T: int, device) -> torch.Tensor:
-        """Gaussian prior P: [H, T, T], row-normalised."""
-        sigma = self.log_sigma.exp().clamp(min=0.01)              # [H]
-        idx = torch.arange(T, device=device).float()
+    def _prior(self, x: torch.Tensor) -> torch.Tensor:
+        """Gaussian prior P: [B, H, T, T], row-normalised."""
+        T = x.size(1)
+        # Bound σ to (0, 2] as in the official implementation
+        sigma = torch.sigmoid(5.0 * self.W_sigma(x)) + 1e-5       # [B, T, H]
+        sigma = (torch.pow(3.0, sigma) - 1.0).transpose(1, 2)     # [B, H, T]
+        idx = torch.arange(T, device=x.device).float()
         dist2 = (idx.unsqueeze(0) - idx.unsqueeze(1)).pow(2)      # [T, T]
-        P = torch.exp(
-            -dist2.unsqueeze(0) / (2.0 * sigma.pow(2).view(-1, 1, 1) + 1e-8)
-        )                                                          # [H, T, T]
+        P = torch.exp(-dist2 / (2.0 * sigma.unsqueeze(-1).pow(2))) \
+            / (math.sqrt(2.0 * math.pi) * sigma.unsqueeze(-1))     # [B, H, T, T]
         return P / (P.sum(dim=-1, keepdim=True) + 1e-8)
+
+    @staticmethod
+    def _sym_kl(P: torch.Tensor, S: torch.Tensor) -> torch.Tensor:
+        """Symmetric KL per position, averaged over heads: [B, H, T, T] → [B, T]."""
+        eps = 1e-8
+        Pc, Sc = P.clamp(min=eps), S.clamp(min=eps)
+        kl_ps = (Pc * (Pc.log() - Sc.log())).sum(-1)             # [B, H, T]
+        kl_sp = (Sc * (Sc.log() - Pc.log())).sum(-1)             # [B, H, T]
+        return (kl_ps + kl_sp).mean(dim=1)                        # [B, T]
 
     def forward(self, x: torch.Tensor):
         """
         x: [B, T, d_model]
-        Returns: x_out [B, T, d_model], assoc_disc (scalar tensor)
+        Returns: x_out [B, T, d_model], series_disc [B, T], prior_disc [B, T]
         """
         B, T, _ = x.shape
 
@@ -99,17 +115,12 @@ class AnomalyAttentionLayer(nn.Module):
             dim=-1,
         )                                                          # [B, H, T, T]
 
-        # Prior association P broadcast to batch
-        P = self._prior(T, x.device)                              # [H, T, T]
-        P_exp = P.unsqueeze(0).expand(B, -1, -1, -1)             # [B, H, T, T]
+        # Prior association P
+        P = self._prior(x)                                        # [B, H, T, T]
 
-        # Symmetric KL divergence: KL(P‖S) + KL(S‖P), averaged to scalar
-        eps = 1e-8
-        Pc = P_exp.clamp(min=eps)
-        Sc = S.clamp(min=eps)
-        kl_ps = (Pc * (Pc.log() - Sc.log())).sum(-1)             # [B, H, T]
-        kl_sp = (Sc * (Sc.log() - Pc.log())).sum(-1)             # [B, H, T]
-        assoc_disc = (kl_ps + kl_sp).mean()                       # scalar
+        # Association discrepancy with stop-gradient on one side
+        series_disc = self._sym_kl(P.detach(), S)                 # [B, T]
+        prior_disc = self._sym_kl(P, S.detach())                  # [B, T]
 
         # Attention-weighted value aggregation
         out = torch.matmul(S, V).transpose(1, 2).reshape(B, T, -1)   # [B, T, d]
@@ -117,7 +128,7 @@ class AnomalyAttentionLayer(nn.Module):
 
         x = self.norm1(x + self.drop(out))
         x = self.norm2(x + self.drop(self.ff(x)))
-        return x, assoc_disc
+        return x, series_disc, prior_disc
 
 
 # ── Anomaly Transformer Model ─────────────────────────────────────────────────
@@ -130,7 +141,9 @@ class AnomalyTransformerModel(nn.Module):
     The model returns three values:
       • forecast [B, N, F]: next-step prediction from the last token
       • recon    [B, T, N, F]: full-window reconstruction
-      • assoc_disc: mean association discrepancy across all layers (scalar)
+      • series_disc [B, T]: association discrepancy averaged over layers,
+                            P detached (for the maximise phase / scoring)
+      • prior_disc  [B, T]: same values, S detached (for the minimise phase)
     """
 
     def __init__(self, num_vars: int, slide_win: int,
@@ -167,45 +180,57 @@ class AnomalyTransformerModel(nn.Module):
 
         h = self.pos_enc(self.input_proj(x_flat))         # [B, T, d]
 
-        total_disc = 0.0
+        series_disc, prior_disc = 0.0, 0.0
         for layer in self.layers:
-            h, disc = layer(h)
-            total_disc = total_disc + disc
-        total_disc = total_disc / len(self.layers)        # average over layers
+            h, s_disc, p_disc = layer(h)
+            series_disc = series_disc + s_disc
+            prior_disc = prior_disc + p_disc
+        series_disc = series_disc / len(self.layers)      # [B, T], average over layers
+        prior_disc = prior_disc / len(self.layers)
 
         recon = self.recon_head(h).reshape(B, T, N, F_in)            # [B, T, N, F]
         forecast = self.forecast_head(h[:, -1]).reshape(B, N, F_in)  # [B, N, F]
 
-        return forecast, recon, total_disc
+        return forecast, recon, series_disc, prior_disc
 
 
 # ── Wrapper ───────────────────────────────────────────────────────────────────
 
 class AnomalyTransformerWrapper:
     """
-    Minimax training strategy (from the paper):
+    Minimax training strategy (from the paper), in one forward pass:
 
-    Phase 1 — model params (excluding σ):
-        minimise  MSE(recon, x) + MSE(forecast, y) − λ · AssocDisc
-        → maximises discrepancy so series attention spreads widely for
-          normal windows.
+    Maximise phase — series branch (P detached):
+        MSE(recon, x) + MSE(forecast, y) − λ · AssocDisc
+        → series attention spreads widely for normal windows.
 
-    Phase 2 — σ (Gaussian prior scale) only:
-        minimise  λ · AssocDisc
-        → shrinks the discrepancy by making P chase S.
+    Minimise phase — prior branch (S detached):
+        MSE(recon, x) + MSE(forecast, y) + λ · AssocDisc
+        → the Gaussian prior P chases S.
 
-    After training, normal windows have large AssocDisc (S spreads, P
-    can't follow) while anomalous windows have small AssocDisc (S
+    Both losses are back-propagated and applied in one optimiser step.
+    After training, normal points have large AssocDisc (S spreads, P
+    can't follow) while anomalous points have small AssocDisc (S
     concentrates locally, P approximates well).
 
-    Anomaly score at inference: |forecast − labels| (per-timestep
-    forecast error, consistent with all other pipeline wrappers).
+    Anomaly score at inference (score_mode):
+      • 'forecast'    : |forecast − labels|, consistent with all other
+                        pipeline wrappers (default).
+      • 'association' : |forecast − labels| weighted by the paper's
+                        association-based criterion Softmax(−AssocDisc · τ).
+                        Each window contributes the discrepancy of its last
+                        position; the softmax runs over all scored time
+                        points and is rescaled so the weights average to 1.
+                        (A softmax inside each window, as in the official
+                        code, is near one-hot and zeroes the last position.)
     """
 
     def __init__(self, num_nodes: int, node_features: int, slide_win: int,
                  d_model: int = 64, nhead: int = 4, n_layers: int = 3,
                  lambda_: float = 0.1, dropout: float = 0.1,
+                 score_mode: str = 'forecast', temperature: float = 1.0,
                  batch_size: int = 32, device='cpu'):
+        assert score_mode in ('forecast', 'association'), f'Unknown score_mode: {score_mode}'
         self.num_nodes = num_nodes
         self.node_features = node_features
         self.num_vars = num_nodes * node_features
@@ -215,6 +240,8 @@ class AnomalyTransformerWrapper:
         self.n_layers = n_layers
         self.lambda_ = lambda_
         self.dropout = dropout
+        self.score_mode = score_mode
+        self.temperature = temperature
         self.batch_size = batch_size
         self.device = device
         self.inference_time = 0
@@ -229,44 +256,36 @@ class AnomalyTransformerWrapper:
             n_layers=self.n_layers,
             dropout=self.dropout,
         ).to(self.device)
-
-        # Separate parameter groups for minimax optimisation
-        sigma_params = [p for n, p in self.model.named_parameters() if 'log_sigma' in n]
-        main_params  = [p for n, p in self.model.named_parameters() if 'log_sigma' not in n]
-
-        self.optimizer_main  = torch.optim.Adam(main_params,  lr=1e-3)
-        self.optimizer_sigma = torch.optim.Adam(sigma_params, lr=1e-3)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
         self.loss_fn = nn.MSELoss()
 
-        n_sigma = sum(p.numel() for p in sigma_params)
-        n_main  = sum(p.numel() for p in main_params)
+        n_params = sum(p.numel() for p in self.model.parameters())
         print(f'AnomalyTransformerWrapper — device: {self.device}, '
               f'vars: {self.num_vars}, d_model: {self.d_model}, '
-              f'nhead: {self.nhead}, layers: {self.n_layers}, λ: {self.lambda_}  '
-              f'[main: {n_main} params, σ: {n_sigma} params]')
+              f'nhead: {self.nhead}, layers: {self.n_layers}, λ: {self.lambda_}, '
+              f'score: {self.score_mode}  [{n_params} params]')
 
     def _minimax_step(self, inputs: torch.Tensor, labels: torch.Tensor) -> float:
         """
         One minimax step on a single batch.  Returns the forecast MSE (for logging).
         """
-        # ── Phase 1: main params — maximise discrepancy ─────────────────────
-        self.model.zero_grad()
-        forecast, recon, assoc_disc = self.model(inputs)
-        loss_main = (self.loss_fn(recon, inputs)
-                     + self.loss_fn(forecast, labels)
-                     - self.lambda_ * assoc_disc)
-        loss_main.backward()
-        self.optimizer_main.step()
+        forecast, recon, series_disc, prior_disc = self.model(inputs)
+        rec_loss = self.loss_fn(recon, inputs) + self.loss_fn(forecast, labels)
 
-        # ── Phase 2: σ params — minimise discrepancy ────────────────────────
-        self.model.zero_grad()
-        _, _, assoc_disc2 = self.model(inputs)
-        loss_sigma = self.lambda_ * assoc_disc2
-        loss_sigma.backward()
-        self.optimizer_sigma.step()
+        loss_max = rec_loss - self.lambda_ * series_disc.mean()   # maximise discrepancy
+        loss_min = rec_loss + self.lambda_ * prior_disc.mean()    # minimise discrepancy
 
-        self.model.zero_grad()
+        self.optimizer.zero_grad()
+        (loss_max + loss_min).backward()
+        self.optimizer.step()
+
         return self.loss_fn(forecast.detach(), labels).item()
+
+    def _association_weight(self, last_disc: np.ndarray) -> np.ndarray:
+        """Softmax(−AssocDisc · τ) over all time points, mean-normalised: [total] → [total]."""
+        z = -last_disc * self.temperature
+        w = np.exp(z - z.max())
+        return w / w.mean()
 
     def train(self, train_loader, val_loader, epochs: int):
         train_losses, valid_losses = [], []
@@ -297,15 +316,21 @@ class AnomalyTransformerWrapper:
 
     def predict(self, loader, mode: str):
         self.model.eval()
-        total_loss, errors, preds = [], [], []
+        total_loss, errors, preds, last_discs = [], [], [], []
         t0 = time.time()
 
         with torch.no_grad():
             for inputs, labels in tqdm(loader, total=len(loader), desc='Testing...'):
-                forecast, _, _ = self.model(inputs)
+                forecast, _, series_disc, _ = self.model(inputs)
                 preds.append(forecast.cpu().numpy())
                 total_loss.append(self.loss_fn(forecast, labels).item())
                 errors.append((forecast - labels).abs().cpu().numpy())
+                last_discs.append(series_disc[:, -1].cpu().numpy())
+
+        errors = np.concatenate(errors, axis=0)                   # [total, N, F]
+        if self.score_mode == 'association':
+            weight = self._association_weight(np.concatenate(last_discs, axis=0))
+            errors = errors * weight[:, None, None]
 
         if mode == 'test':
             self.inference_time = time.time() - t0
@@ -313,21 +338,22 @@ class AnomalyTransformerWrapper:
         return (
             np.concatenate(preds,   axis=0),   # [total, N, F]
             None,                               # no is_nan tracking
-            np.concatenate(errors,  axis=0),   # [total, N, F]
+            errors,                             # [total, N, F]
             sum(total_loss) / len(total_loss),
         )
 
     def save(self, path: str):
         torch.save({
-            'model':       self.model.state_dict(),
-            'opt_main':    self.optimizer_main.state_dict(),
-            'opt_sigma':   self.optimizer_sigma.state_dict(),
+            'model':     self.model.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
         }, path)
         print(f'Model saved to {path}')
 
     def load(self, path: str):
         ckpt = torch.load(path, map_location=self.device)
+        if 'optimizer' not in ckpt:
+            raise RuntimeError(f'{path} was saved by the old AnomalyTransformerWrapper '
+                               f'(global σ per head) and is incompatible — retrain the model.')
         self.model.load_state_dict(ckpt['model'])
-        self.optimizer_main.load_state_dict(ckpt['opt_main'])
-        self.optimizer_sigma.load_state_dict(ckpt['opt_sigma'])
+        self.optimizer.load_state_dict(ckpt['optimizer'])
         print(f'Model loaded from {path}')

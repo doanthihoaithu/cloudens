@@ -30,10 +30,12 @@ class GDNModel(nn.Module):
     """
 
     def __init__(self, num_nodes: int, node_features: int, slide_win: int,
-                 embed_dim: int = 64, hidden_dim: int = 64, topk: int = 20):
+                 embed_dim: int = 64, hidden_dim: int = 64, topk: int = 20,
+                 out_features: int = None):
         super().__init__()
         self.num_nodes = num_nodes
         self.node_features = node_features
+        out_features = out_features or node_features
         self.topk = min(topk, num_nodes - 1)
 
         # Learnable node embeddings — drive graph structure learning
@@ -52,7 +54,7 @@ class GDNModel(nn.Module):
         self.out_layer = nn.Sequential(
             nn.Linear(hidden_dim + embed_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, node_features),
+            nn.Linear(hidden_dim, out_features),
             nn.Sigmoid(),
         )
 
@@ -98,16 +100,20 @@ class GDNModel(nn.Module):
 
         # 5. Predict next time step from aggregated state + node embedding
         feat = torch.cat([agg, emb.unsqueeze(0).expand(B, -1, -1)], dim=-1)  # [B, N, hidden+d]
-        return self.out_layer(feat)                         # [B, N, F]
+        return self.out_layer(feat)                         # [B, N, F_out]
 
 
 class GDNWrapper:
 
     def __init__(self, num_nodes: int, node_features: int, slide_win: int,
                  embed_dim: int = 64, hidden_dim: int = 64, topk: int = 20,
+                 null_padding_feature: bool = False, null_padding_target: bool = False,
                  batch_size: int = 32, device='cpu'):
         self.num_nodes = num_nodes
         self.node_features = node_features
+        # Null padding appends an is_nan channel to the inputs and/or targets
+        self.null_padding_feature = null_padding_feature
+        self.null_padding_target = null_padding_target
         self.slide_win = slide_win
         self.embed_dim = embed_dim
         self.hidden_dim = hidden_dim
@@ -120,16 +126,18 @@ class GDNWrapper:
     def _init_model(self):
         self.model = GDNModel(
             num_nodes=self.num_nodes,
-            node_features=self.node_features,
+            node_features=self.node_features + int(self.null_padding_feature),
             slide_win=self.slide_win,
             embed_dim=self.embed_dim,
             hidden_dim=self.hidden_dim,
             topk=self.topk,
+            out_features=self.node_features + int(self.null_padding_target),
         ).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
         self.loss_fn = nn.MSELoss()
         print(f'GDNWrapper — device: {self.device}, nodes: {self.num_nodes}, '
-              f'features: {self.node_features}, topk: {self.model.topk}')
+              f'features: {self.node_features}, topk: {self.model.topk}, '
+              f'null padding feature/target: {self.null_padding_feature}/{self.null_padding_target}')
 
     def train(self, train_loader, val_loader, epochs: int):
         train_losses, valid_losses = [], []
@@ -166,21 +174,32 @@ class GDNWrapper:
     def predict(self, loader, mode: str):
         self.model.eval()
         total_loss, errors, preds = [], [], []
+        is_nan_preds, is_nan_labels = [], []
+        F_data = self.node_features
         t0 = time.time()
 
         with torch.no_grad():
             for inputs, labels in tqdm(loader, total=len(loader), desc='Testing...'):
                 y_hat = self.model(inputs)
-                preds.append(y_hat.cpu().numpy())
                 total_loss.append(self.loss_fn(y_hat, labels).item())
-                errors.append((y_hat - labels).abs().cpu().numpy())
+                # Score only the data channels; the is_nan channel is tracked separately
+                preds.append(y_hat[:, :, :F_data].cpu().numpy())
+                errors.append((y_hat - labels)[:, :, :F_data].abs().cpu().numpy())
+                if self.null_padding_target:
+                    is_nan_preds.append(y_hat[:, :, -1].cpu().numpy())
+                    is_nan_labels.append(labels[:, :, -1].cpu().numpy())
 
         if mode == 'test':
             self.inference_time = time.time() - t0
 
+        is_nan_results = None
+        if self.null_padding_target:
+            is_nan_results = np.array([np.concatenate(is_nan_preds, axis=0),
+                                       np.concatenate(is_nan_labels, axis=0)])   # [2, total, N]
+
         return (
             np.concatenate(preds, axis=0),          # [total, N, F]
-            None,                                   # no is_nan tracking
+            is_nan_results,
             np.concatenate(errors, axis=0),         # [total, N, F]
             sum(total_loss) / len(total_loss),
         )

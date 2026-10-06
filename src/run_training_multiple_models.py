@@ -62,14 +62,15 @@ def main(cfg: DictConfig):
 
     combination_list = []
     for model in models:
-        if model in ('GRU', 'TranAD', 'AnomalyTransformer'):
-            GRU_combinations = list(itertools.product([model], slide_wins,
+        # Null padding only applies to graph-based models
+        if model not in cfg.graph_models:
+            non_graph_combinations = list(itertools.product([model], slide_wins,
                                             http_codes,
                                             aggregations,
                                             fill_nan_values,
                                             [False],
                                             [False]))
-            combination_list.extend(GRU_combinations)
+            combination_list.extend(non_graph_combinations)
         else:
             graph_combinations = list(itertools.product([model], slide_wins,
                                             http_codes,
@@ -96,7 +97,7 @@ def main(cfg: DictConfig):
         experiment_config = cfg.evaluation
         model_configs = cfg.model_configs
 
-        if experiment_config.use_model in ('GRU','TranAD', 'AnomalyTransformer'):
+        if experiment_config.use_model not in cfg.graph_models:
             data_preparation_config.null_padding_feature = False
             data_preparation_config.null_padding_target = False
 

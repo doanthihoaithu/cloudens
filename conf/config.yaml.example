@@ -11,15 +11,18 @@ hydra:
 modeling:
   random_seed: 42
 
-supported_models: ['GRU','TranAD','AnomalyTransformer', 'T-GCN','ST-GCN','A3TGCN','GDN','MTAD-GAT','STformer'] # 'USAD'
-supported_sliding_windows: [6, 12, 24, 48]
+# supported_models: ['GRU','TranAD','AnomalyTransformer', 'T-GCN','ST-GCN','A3TGCN','GDN','MTAD-GAT','STformer'] # 'USAD'
+supported_models: ['GRU','A3TGCN']
+supported_sliding_windows: [6, 12, 18, 24, 30]
+# Graph-based models: the only ones null_padding_feature / null_padding_target apply to
+graph_models: ['A3TGCN', 'GDN', 'GST_PRO', 'STGformer']
 
 evaluation:
   retrain: true
   retest:  false
   re_calculate_mahalanobis: false
   top_k_contribution: 5
-  use_model: 'GRU' # 'A3TGCN' or 'GRU', 'GDN', 'TranAD', 'OmniAnomaly', 'USAD','MTAD-GAT','GST_PRO','AnomalyTransformer'
+  use_model: 'AnomalyTransformer' # 'A3TGCN' or 'GRU', 'GDN', 'TranAD', 'OmniAnomaly', 'USAD','MTAD-GAT','GST_PRO','AnomalyTransformer'
   null_padding_feature: false
   null_padding_target: false
   train_batch_size: 16 # 16  # training batch size
@@ -41,14 +44,14 @@ evaluation:
 #    aggregations: [ 'count', 'avg', 'min', 'max' ]
     combination_mode: 'manual'        # ['auto', 'manual']
     auto_combination:
-      num_selection: 3
+      num_selection: 7
       http_codes: ['5xx','4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
       aggregations: ['count','avg','min', 'max']
     manual_combination:
 #      http_codes: [ '5xx','4xx' ] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
 #      aggregations: [ 'count','min']
       http_codes: [ '5xx','4xx' ] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
-      aggregations: [ 'max','avg']
+      aggregations: [ 'count','avg']
 
 #  post_processing:
 #    distance: 'mahala'
@@ -108,18 +111,19 @@ plotting:
   nab_profiles: ['standard', 'low_fn']
 
 multiple_evaluation:
-  models: ['GRU','TranAD'] # 'A3TGCN','GDN',
+  models: ['AnomalyTransformer'] # 'A3TGCN','GDN',
 #  models: ['GRU']
   slide_wins: ${supported_sliding_windows}
-#  slide_wins: [6,8,12]
+#  slide_wins: [6]
   subsets:
-#    http_codes: [ '5xx', '4xx']
-    http_codes: [ '5xx','4xx','2xx']
-    aggregations: [ 'count', 'avg','min','max' ]
-#    aggregations: ['max']
-  fill_nan_values: ['zero','mean', 'median']
-  null_padding_feature: [true, false]
-  null_padding_target: [true, false]
+    http_codes: [ '5xx']
+#    http_codes: ['4xx']
+    aggregations: [ 'count']
+#    aggregations: ['count']
+  fill_nan_values: ['zero','mean','median']
+#  fill_nan_values: ['zero']
+  null_padding_feature: [true]
+  null_padding_target: [false]
 
 model_configs:
   AnomalyTransformer:
@@ -127,11 +131,13 @@ model_configs:
     slide_win: ${evaluation.slide_win}
     null_padding_target: false
     null_padding_feature: false
+    score_mode: 'forecast'      # 'forecast' or 'association' (results go to AnomalyTransformer_<score_mode>/)
+    score_temperature: 1.0      # τ in Softmax(-AssocDisc * τ), used only when score_mode == 'association'
   GST_PRO:
     model_filename: 'GST_PRO_model.pt'
     slide_win: ${evaluation.slide_win}
-    null_padding_target: false
-    null_padding_feature: false
+    null_padding_target: ${evaluation.null_padding_target}
+    null_padding_feature: ${evaluation.null_padding_feature}
   MTAD_GAT:
     model_filename: 'MTAD_GAT_model.pt'
     slide_win: ${evaluation.slide_win}
@@ -155,8 +161,16 @@ model_configs:
   GDN:
     model_filename: 'GDN_model.pt'
     slide_win: ${evaluation.slide_win}
-    null_padding_target: false
-    null_padding_feature: false
+    null_padding_target: ${evaluation.null_padding_target}
+    null_padding_feature: ${evaluation.null_padding_feature}
+  STformer:
+    model_filename: 'STformer_model.pt'
+    slide_win: ${evaluation.slide_win}
+  STGformer:
+    model_filename: 'STGformer_model.pt'
+    slide_win: ${evaluation.slide_win}
+    null_padding_target: ${evaluation.null_padding_target}
+    null_padding_feature: ${evaluation.null_padding_feature}
   GRU:
     model_filename: 'GRU_autoencoder.h5'
 #    encoding_dim: 32

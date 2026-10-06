@@ -36,10 +36,11 @@ class GSTPROModel(nn.Module):
 
     def __init__(self, num_nodes: int, node_features: int,
                  embed_dim: int = 32, hidden_dim: int = 64,
-                 K: int = 2, dropout: float = 0.1):
+                 K: int = 2, dropout: float = 0.1, out_features: int = None):
         super().__init__()
         self.num_nodes = num_nodes
         self.node_features = node_features
+        out_features = out_features or node_features
         self.hidden_dim = hidden_dim
         self.K = K
 
@@ -70,7 +71,7 @@ class GSTPROModel(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, node_features),
+            nn.Linear(hidden_dim, out_features),
             nn.Sigmoid(),
         )
 
@@ -98,7 +99,7 @@ class GSTPROModel(nn.Module):
     def forward(self, x: torch.Tensor):
         """
         x: [B, T, N, F] — may contain NaN for missing observations.
-        Returns: forecast [B, N, F] for next time step, and nan_mask [B, T, N, F].
+        Returns: forecast [B, N, F_out] for next time step, and nan_mask [B, T, N, F].
         """
         B, T, N, F_in = x.shape
 
@@ -130,7 +131,7 @@ class GSTPROModel(nn.Module):
 
             H = H_new
 
-        forecast = self.forecast_head(Z)       # [B, N, F]
+        forecast = self.forecast_head(Z)       # [B, N, F_out]
         return forecast, obs_mask
 
 
@@ -138,9 +139,14 @@ class GSTPROWrapper:
 
     def __init__(self, num_nodes: int, node_features: int, slide_win: int,
                  embed_dim: int = 32, hidden_dim: int = 64, K: int = 2,
-                 dropout: float = 0.1, batch_size: int = 32, device='cpu'):
+                 dropout: float = 0.1,
+                 null_padding_feature: bool = False, null_padding_target: bool = False,
+                 batch_size: int = 32, device='cpu'):
         self.num_nodes = num_nodes
         self.node_features = node_features
+        # Null padding appends an is_nan channel to the inputs and/or targets
+        self.null_padding_feature = null_padding_feature
+        self.null_padding_target = null_padding_target
         self.slide_win = slide_win
         self.embed_dim = embed_dim
         self.hidden_dim = hidden_dim
@@ -154,15 +160,17 @@ class GSTPROWrapper:
     def _init_model(self):
         self.model = GSTPROModel(
             num_nodes=self.num_nodes,
-            node_features=self.node_features,
+            node_features=self.node_features + int(self.null_padding_feature),
             embed_dim=self.embed_dim,
             hidden_dim=self.hidden_dim,
             K=self.K,
             dropout=self.dropout,
+            out_features=self.node_features + int(self.null_padding_target),
         ).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
         print(f'GSTPROWrapper — device: {self.device}, nodes: {self.num_nodes}, '
-              f'features: {self.node_features}, hidden: {self.hidden_dim}, K: {self.K}')
+              f'features: {self.node_features}, hidden: {self.hidden_dim}, K: {self.K}, '
+              f'null padding feature/target: {self.null_padding_feature}/{self.null_padding_target}')
 
     def _masked_l1(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """L1 loss that ignores NaN positions in target."""
@@ -208,27 +216,38 @@ class GSTPROWrapper:
     def predict(self, loader, mode: str):
         self.model.eval()
         total_loss, errors, preds = [], [], []
+        is_nan_preds, is_nan_labels = [], []
+        F_data = self.node_features
         t0 = time.time()
 
         with torch.no_grad():
             for inputs, labels in tqdm(loader, total=len(loader), desc='Testing...'):
                 forecast, _ = self.model(inputs)
-                preds.append(forecast.cpu().numpy())
+                # Score only the data channels; the is_nan channel is tracked separately
+                preds.append(forecast[:, :, :F_data].cpu().numpy())
 
                 # Error: NaN-safe absolute forecast error
                 mask = (~torch.isnan(labels)).float()
                 labels_clean = labels.nan_to_num(0.0)
                 err = mask * (forecast - labels_clean).abs()
-                errors.append(err.cpu().numpy())
+                errors.append(err[:, :, :F_data].cpu().numpy())
+                if self.null_padding_target:
+                    is_nan_preds.append(forecast[:, :, -1].cpu().numpy())
+                    is_nan_labels.append(labels_clean[:, :, -1].cpu().numpy())
 
                 total_loss.append(self._masked_l1(forecast, labels).item())
 
         if mode == 'test':
             self.inference_time = time.time() - t0
 
+        is_nan_results = None
+        if self.null_padding_target:
+            is_nan_results = np.array([np.concatenate(is_nan_preds, axis=0),
+                                       np.concatenate(is_nan_labels, axis=0)])   # [2, total, N]
+
         return (
             np.concatenate(preds, axis=0),    # [total, N, F]
-            None,                              # no is_nan tracking
+            is_nan_results,
             np.concatenate(errors, axis=0),   # [total, N, F]
             sum(total_loss) / len(total_loss),
         )

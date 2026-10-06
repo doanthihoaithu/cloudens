@@ -744,7 +744,7 @@ def main(cfg: DictConfig):
     if ensembles_config:
         # analyze_reconstruction_errors_essembles(cfg)
 
-        graph_models = ['A3TGCN']
+        graph_models = list(cfg.graph_models)
 
         proposed_model_name = 'A3TGCN'
         proposed_model_detail = dict(

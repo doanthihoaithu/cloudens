@@ -29,6 +29,8 @@ from model_wrappers.USADWrapper import USADWrapper
 from model_wrappers.MTADGATWrapper import MTADGATWrapper
 from model_wrappers.GSTPROWrapper import GSTPROWrapper
 from model_wrappers.AnomalyTransformerWrapper import AnomalyTransformerWrapper
+from model_wrappers.STformerWrapper import STformerWrapper
+from model_wrappers.STGformerWrapper import STGformerWrapper
 from plotting_module import plot_training_history, plot_reconstruction_and_mahalanobis
 from anomaly_likelihood import compute_anomaly_likelihood
 from nab_scoring import calculate_nab_score_with_window_based_tp_fn
@@ -56,6 +58,8 @@ def load_wrapper(model_name, config, static_edge_index, static_edge_weight):
     elif model_name == 'GDN':
         return GDNWrapper(num_nodes, node_features, periods,
                           embed_dim=64, hidden_dim=hidden_units * 2, topk=20,
+                          null_padding_feature=null_padding_feature,
+                          null_padding_target=null_padding_target,
                           batch_size=batch_size, device=device)
     elif model_name == 'TranAD':
         return TranADWrapper(num_nodes, node_features, periods,
@@ -78,12 +82,27 @@ def load_wrapper(model_name, config, static_edge_index, static_edge_weight):
     elif model_name == 'GST_PRO':
         return GSTPROWrapper(num_nodes, node_features, periods,
                              embed_dim=32, hidden_dim=hidden_units * 2, K=2,
+                             null_padding_feature=null_padding_feature,
+                             null_padding_target=null_padding_target,
                              batch_size=batch_size, device=device)
     elif model_name == 'AnomalyTransformer':
         return AnomalyTransformerWrapper(num_nodes, node_features, periods,
                                          d_model=hidden_units * 2, nhead=4, n_layers=3,
                                          lambda_=0.1,
+                                         score_mode=config.get('score_mode', 'forecast'),
+                                         temperature=config.get('score_temperature', 1.0),
                                          batch_size=batch_size, device=device)
+    elif model_name == 'STformer':
+        return STformerWrapper(num_nodes, node_features, periods,
+                               d_model=hidden_units * 2, nhead=4, n_layers=2,
+                               batch_size=batch_size, device=device)
+    elif model_name == 'STGformer':
+        return STGformerWrapper(num_nodes, node_features, periods,
+                                input_embedding_dim=24, adaptive_embedding_dim=hidden_units + 8,
+                                num_heads=4, num_layers=3, order=2,
+                                null_padding_feature=null_padding_feature,
+                                null_padding_target=null_padding_target,
+                                batch_size=batch_size, device=device)
     # if model_name == 'ASTGCN':
     #     return ASTGCNWrapper(num_nodes, node_features, periods, static_edge_index, batch_size=batch_size, device=device)
     # if model_name == 'MTGNN':
@@ -134,7 +153,8 @@ def main(cfg: DictConfig):
     # })
 
     data_preparation_config = cfg.data_preparation_pipeline
-    if experiment_config.use_model in ('GRU', 'GDN', 'TranAD', 'OmniAnomaly', 'USAD', 'MTAD_GAT', 'GST_PRO', 'AnomalyTransformer'):
+    # Null padding only applies to graph-based models
+    if experiment_config.use_model not in cfg.graph_models:
         data_preparation_config.null_padding_feature = False
         data_preparation_config.null_padding_target = False
 
@@ -272,6 +292,12 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                      f'fill_nan_with_{fill_nan}',
                                      f'{model}_null_padding_both')
 
+        # Models with a configurable anomaly score keep each mode's results apart,
+        # e.g. AnomalyTransformer_forecast / AnomalyTransformer_association
+        score_mode = model_config.get('score_mode', None)
+        if score_mode is not None:
+            model_dir = f'{model_dir}_{score_mode}'
+
         os.makedirs(model_dir, exist_ok=True)
         model_filename = os.path.join(model_dir, model_config['model_filename'])
         # Check if the model file exists
@@ -284,6 +310,8 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                  'num_nodes': data_loader.num_nodes,
                                  'null_padding_feature': experiment_config.null_padding_feature,
                                  'null_padding_target': experiment_config.null_padding_target,
+                                 'score_mode': score_mode or 'forecast',
+                                 'score_temperature': model_config.get('score_temperature', 1.0),
                                  'device': DEVICE})
             model_wrapper = load_wrapper(model_name=model, config=graph_config,
                                          static_edge_index=data_loader.get_edges_as_tensor(device=DEVICE),
@@ -309,6 +337,8 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                  'num_nodes': data_loader.num_nodes,
                                  'null_padding_target': experiment_config.null_padding_target,
                                  'null_padding_feature': experiment_config.null_padding_feature,
+                                 'score_mode': score_mode or 'forecast',
+                                 'score_temperature': model_config.get('score_temperature', 1.0),
                                  'device': DEVICE})
             model_wrapper = load_wrapper(model_name=model, config=graph_config,
                                          static_edge_index=data_loader.get_edges_as_tensor(device=DEVICE),

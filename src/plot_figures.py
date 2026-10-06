@@ -1374,7 +1374,8 @@ def main(cfg: DictConfig):
 
     data_preparation_config = cfg.data_preparation_pipeline
 
-    if shown_model in ('GRU', 'TranAD', 'AnomalyTransformer'):
+    # Null padding only applies to graph-based models
+    if shown_model not in cfg.graph_models:
         data_preparation_config.null_padding_feature = False
         data_preparation_config.null_padding_target = False
 

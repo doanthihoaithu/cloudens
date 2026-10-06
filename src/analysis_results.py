@@ -2125,8 +2125,7 @@ def main(cfg: DictConfig):
     supported_models  = cfg.supported_models
     supported_sliding_windows = cfg.supported_sliding_windows
 
-    # graph_models = ['T-GCN','ST-GCN','A3TGCN','GDN','MTAD-GAT','STformer']
-    graph_models = ['A3TGCN']
+    graph_models = list(cfg.graph_models)
     missing_imputation_stategies = ['zero','mean','median']
     http_codes = ['5xx','4xx']
     aggregations = ['count','avg','min','max']
