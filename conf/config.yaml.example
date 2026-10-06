@@ -31,7 +31,7 @@ evaluation:
   fill_nan: 'zero' # 'zero','mean', 'median'
   nab_scoring_profiles: [ "standard", "reward_fn" ] # Options: "standard", "reward_fn"
   model_save_path: "trained_models/"
-  epochs: 15
+  epochs: 30
   post_processing_strategies: ['likelihood', 'mahalanobis']
   topks: [1]
   distribution_anomaly_thresholds: [99.5, 99.6, 99.7, 99.8, 99.9]
