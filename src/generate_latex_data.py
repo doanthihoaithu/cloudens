@@ -13,7 +13,7 @@ from tqdm import tqdm
 from ibm_dataset_loader import IBMDatasetLoader
 from plotting_module import generate_latex_training_inference_time, generate_latex_full_table, \
     generate_latex_ensemble_table, generate_latex_selected_table
-from utils import set_random_seed, get_project_root
+from utils import set_random_seed, get_project_root, results_root_dir
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -62,7 +62,8 @@ def main(cfg: DictConfig):
 
     experiment_config = cfg.evaluation
     ensemble_combine_dir = os.path.join(get_project_root(),
-                                        experiment_config.model_save_path,
+                                        results_root_dir(experiment_config.model_save_path,
+                                                         cfg.data_preparation_pipeline.get('log_transform', False)),
                                         f'window_{window_size}',
                                         'ensemble')
     os.makedirs(ensemble_combine_dir, exist_ok=True)

@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from ibm_dataset_loader import IBMDatasetLoader
 from plotting_module import generate_figure_for_fdr
-from utils import set_random_seed
+from utils import set_random_seed, score_normalizations
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -49,7 +49,8 @@ def main(cfg: DictConfig):
     # null_padding_feature: ${evaluation.null_padding_feature}
     # null_padding_target: ${evaluation.null_padding_target}
 
-    generate_figure_for_fdr(plotting_config)
+    generate_figure_for_fdr(plotting_config, score_normalization=score_normalizations(cfg.evaluation)[0],
+                            log_transform=cfg.data_preparation_pipeline.get('log_transform', False))
 
 
 

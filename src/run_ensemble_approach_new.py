@@ -19,17 +19,19 @@ from ibm_dataset_loader import IBMDatasetLoader
 from run_preprocessing import set_random_seed
 from run_training_single_model import evaluate_performance
 from nab_scoring import calculate_nab_score_with_window_based_tp_fn
-from utils import get_project_root, NumpyEncoder
+from utils import get_project_root, NumpyEncoder, scoring_result_file_name, results_root_dir, score_normalizations
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 def analyze_reconstruction_errors_essembles(cfg):
+    score_normalization = score_normalizations(cfg.evaluation)[0]
     experiment_config = cfg.evaluation
     ensembles_config = experiment_config.ensembles
     plotting_config = cfg.plotting
     project_root_dir = get_project_root()
-    trained_models_dir = os.path.join(project_root_dir, experiment_config.model_save_path)
+    trained_models_dir = os.path.join(project_root_dir, results_root_dir(
+        experiment_config.model_save_path, cfg.data_preparation_pipeline.get('log_transform', False)))
     # os.makedirs(trained_models_dir, exist_ok=True)  # Ensure the directory exists
     slide_win = experiment_config.slide_win
     ensemble_model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', 'ensemble')
@@ -231,13 +233,13 @@ def analyze_reconstruction_errors_essembles(cfg):
 
                 grid_search_combine_dir = os.path.join(get_project_root(), result_dir_from_project_root[1:])
 
-                label_ensemble_file = os.path.join(grid_search_combine_dir, f'{model}_predictions_for_assembles.csv')
+                label_ensemble_file = os.path.join(grid_search_combine_dir, scoring_result_file_name(model, 'predictions_for_assembles', score_normalization))
                 if not os.path.exists(label_ensemble_file):
                     raise RuntimeError('Label Ensembles file not found')
                 else:
                     label_essemble_df = pd.read_csv(label_ensemble_file)
 
-                grid_search_file = os.path.join(grid_search_combine_dir, f'{model}_grid_search.csv')
+                grid_search_file = os.path.join(grid_search_combine_dir, scoring_result_file_name(model, 'grid_search', score_normalization))
                 if not os.path.exists(grid_search_file):
                     raise RuntimeError('Grid Search file not found')
                 else:
@@ -439,10 +441,12 @@ def analyze_reconstruction_errors_essembles(cfg):
 
 
 def analyze_reconstruction_errors_essembles_of_optimal_configuration(cfg, most_optimal_hyperparameters_df):
+    score_normalization = score_normalizations(cfg.evaluation)[0]
     experiment_config = cfg.evaluation
     ensembles_config = experiment_config.ensembles
     project_root_dir = get_project_root()
-    trained_models_dir = os.path.join(project_root_dir, experiment_config.model_save_path)
+    trained_models_dir = os.path.join(project_root_dir, results_root_dir(
+        experiment_config.model_save_path, cfg.data_preparation_pipeline.get('log_transform', False)))
     slide_win = experiment_config.slide_win
     ensemble_model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', 'ensemble')
     os.makedirs(ensemble_model_dir, exist_ok=True)
@@ -524,12 +528,12 @@ def analyze_reconstruction_errors_essembles_of_optimal_configuration(cfg, most_o
                 model_folder,
             )
 
-            label_ensemble_file = os.path.join(result_dir, f'{proposed_model_name}_predictions_for_assembles.csv')
+            label_ensemble_file = os.path.join(result_dir, scoring_result_file_name(proposed_model_name, 'predictions_for_assembles', score_normalization))
             if not os.path.exists(label_ensemble_file):
                 raise RuntimeError(f'Label Ensembles file not found: {label_ensemble_file}')
             label_essemble_df = pd.read_csv(label_ensemble_file)
 
-            grid_search_file = os.path.join(result_dir, f'{proposed_model_name}_grid_search.csv')
+            grid_search_file = os.path.join(result_dir, scoring_result_file_name(proposed_model_name, 'grid_search', score_normalization))
             if not os.path.exists(grid_search_file):
                 raise RuntimeError(f'Grid Search file not found: {grid_search_file}')
             grid_search_df = pd.read_csv(grid_search_file)
@@ -551,7 +555,7 @@ def analyze_reconstruction_errors_essembles_of_optimal_configuration(cfg, most_o
                     np.isclose(grid_search_df['long_window'], strategy_row['long_window']) &
                     np.isclose(grid_search_df['short_window'], strategy_row['short_window']) &
                     np.isclose(grid_search_df['anomaly_threshold'], strategy_row['anomaly_threshold']) &
-                    np.isclose(grid_search_df['topk'], strategy_row['topk'])
+                    np.isclose(grid_search_df['topk'], strategy_row['topk'], equal_nan=True)   # NaN topk = mean over sensors
                 ]
                 assert len(matches) == 1, (
                     f'Expected exactly one grid search row matching optimal {strategy} hyperparameters for '
@@ -754,7 +758,7 @@ def main(cfg: DictConfig):
             is_graph=proposed_model_name in graph_models,
         )
 
-        results_dir = cfg.evaluation.model_save_path
+        results_dir = results_root_dir(cfg.evaluation.model_save_path, cfg.data_preparation_pipeline.get('log_transform', False))
         results_dir = os.path.join(get_project_root(), results_dir)
 
         supported_sliding_windows = cfg.supported_sliding_windows
@@ -769,7 +773,8 @@ def main(cfg: DictConfig):
             http_codes,
             aggregations,
             missing_imputation_stategies,
-            use_existing_file=True
+            use_existing_file=True,
+            score_normalization=score_normalizations(cfg.evaluation)[0],
         )
 
         most_optimal_hyperparameters_df = extract_most_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(

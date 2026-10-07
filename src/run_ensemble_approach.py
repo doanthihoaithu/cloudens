@@ -16,14 +16,16 @@ from ibm_dataset_loader import IBMDatasetLoader
 from run_preprocessing import set_random_seed
 from run_training_single_model import evaluate_performance
 from nab_scoring import calculate_nab_score_with_window_based_tp_fn
-from utils import get_project_root, NumpyEncoder
+from utils import get_project_root, NumpyEncoder, scoring_result_file_name, results_root_dir, score_normalizations
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 def analyze_reconstruction_errors_essembles(ensembles_config, data_preparation_config, model_configs, experiment_config):
+    score_normalization = score_normalizations(experiment_config)[0]
     project_root_dir = get_project_root()
-    trained_models_dir = os.path.join(project_root_dir, experiment_config.model_save_path)
+    trained_models_dir = os.path.join(project_root_dir, results_root_dir(
+        experiment_config.model_save_path, data_preparation_config.get('log_transform', False)))
     os.makedirs(trained_models_dir, exist_ok=True)  # Ensure the directory exists
     slide_win = ensembles_config.slide_win
     ensemble_model_dir = os.path.join(trained_models_dir, f'window_{slide_win}', 'ensemble')
@@ -194,13 +196,13 @@ def analyze_reconstruction_errors_essembles(ensembles_config, data_preparation_c
                 #
                 # assert reconstruction_error_raw.shape[0] == len(data_loader.test_index)
 
-                label_ensemble_file = os.path.join(model_dir, f'{model}_predictions_for_assembles.csv')
+                label_ensemble_file = os.path.join(model_dir, scoring_result_file_name(model, 'predictions_for_assembles', score_normalization))
                 if not os.path.exists(label_ensemble_file):
                     raise RuntimeError('Label Ensembles file not found')
                 else:
                     label_essemble_df = pd.read_csv(label_ensemble_file)
 
-                grid_search_file = os.path.join(model_dir, f'{model}_grid_search.csv')
+                grid_search_file = os.path.join(model_dir, scoring_result_file_name(model, 'grid_search', score_normalization))
                 if not os.path.exists(grid_search_file):
                     raise RuntimeError('Grid Search file not found')
                 else:

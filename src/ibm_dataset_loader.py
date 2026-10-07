@@ -19,7 +19,7 @@ import pandas as pd
 from torch_geometric_temporal import StaticGraphTemporalSignal, A3TGCN2, temporal_signal_split
 from tqdm import tqdm
 
-from preprocessing import clean_training_data, filter_anomaly_windows,\
+from preprocessing import filter_anomaly_windows,\
     load_and_prepare_data_according_to_config
 from utils import get_project_root, ProgressBar, NumpyEncoder
 
@@ -136,32 +136,57 @@ class IBMDatasetLoader(object):
         # Filter data for training and testing
         working_data = self.X_raw.loc[start_date:end_date]
         working_is_nan_mask = self.X_raw_is_nan_mask[start_date:end_date]
-        train_data = working_data.loc[start_date:train_end_date]
-        train_is_nan_mask = working_is_nan_mask.loc[start_date:train_end_date]
-        train_data, train_is_nan_mask = clean_training_data(train_data, train_is_nan_mask, self.anomaly_windows)
+        labels = self.timestamp_and_label_df['is_anomaly']
 
-        assert train_data.shape, train_is_nan_mask.shape
-        self.train_is_nan_mask: pd.DataFrame = train_is_nan_mask
+        # Split the training period chronologically into train / valid. Anomalies are not
+        # removed here: train windows containing anomalies are dropped in _generate_task,
+        # valid windows are kept as they are.
+        train_period = working_data.loc[start_date:train_end_date]
+        train_valid_ratio = self.data_preparation_config.get('train_valid_ratio', 0.8)
+        assert 0 < train_valid_ratio <= 1, f'train_valid_ratio must be in (0, 1], got {train_valid_ratio}'
+        train_offset = int(train_valid_ratio * len(train_period))
+        split_data = {
+            'train': train_period.iloc[:train_offset],
+            'valid': train_period.iloc[train_offset:],
+            'test': working_data.loc[test_start_date:end_date],
+        }
+        self.split_index = {split: df.index for split, df in split_data.items()}
+        self.split_labels = {split: labels.loc[idx].values.astype(int) for split, idx in self.split_index.items()}
+        self.split_is_nan_mask = {split: working_is_nan_mask.loc[idx] for split, idx in self.split_index.items()}
+        self.feature_columns = [str(c) for c in working_data.columns]
+        log.info('Train / valid / test timestamps: {}'.format({k: len(v) for k, v in self.split_index.items()}))
 
-        test_data = working_data.loc[test_start_date:end_date]
-        test_is_nan_mask =working_is_nan_mask.loc[test_start_date:end_date]
-        self.test_labels = self.timestamp_and_label_df.loc[test_start_date:end_date]['is_anomaly']
-        self.test_index = test_data.index
-        self.test_is_nan_mask = test_is_nan_mask
+        self.X_train_raw = split_data['train']
+        self.X_valid_raw = split_data['valid']
+        self.X_test_raw = split_data['test']
+        self.train_is_nan_mask: pd.DataFrame = self.split_is_nan_mask['train']
+        self.test_is_nan_mask = self.split_is_nan_mask['test']
+        self.test_index = self.split_index['test']
+        self.test_labels = labels.loc[self.test_index]
         assert len(self.test_labels) == len(self.test_index)
 
-        self.X_train_raw = train_data
-        self.X_test_raw = test_data
+        # Optional log1p of the (heavy-tailed) counts before scaling, so that bursts in
+        # the test period do not land far outside the range seen in training
+        self.log_transform = self.data_preparation_config.get('log_transform', False)
+        if self.log_transform:
+            assert all(df.min().min() > -1 for df in split_data.values()), 'log1p needs values > -1'
+            split_data = {split: np.log1p(df) for split, df in split_data.items()}
+            log.info('Applied log1p to the features before scaling')
 
+        # Fit the scaler on the normal (non-anomalous) timestamps of the train split only
         scaler = MinMaxScaler()
-        self.X_train_scaled = scaler.fit_transform(self.X_train_raw)
-        self.X_test_scaled = scaler.transform(self.X_test_raw)
+        scaler.fit(split_data['train'][self.split_labels['train'] == 0])
+        self.split_scaled = {split: scaler.transform(df) for split, df in split_data.items()}
         self.scaler = scaler
+        self.X_train_scaled = self.split_scaled['train']
+        self.X_valid_scaled = self.split_scaled['valid']
+        self.X_test_scaled = self.split_scaled['test']
 
         assert self.X_train_scaled.shape == self.train_is_nan_mask.shape
         assert self.X_test_scaled.shape == self.test_is_nan_mask.shape
 
-        print(f'Train data raw shape {self.X_train_raw.shape}, Test data raw shape {self.X_test_raw.shape}')
+        print(f'Train data raw shape {self.X_train_raw.shape}, Valid data raw shape {self.X_valid_raw.shape}, '
+              f'Test data raw shape {self.X_test_raw.shape}')
 
 
     def _load_anomaly_windows(self):
@@ -203,154 +228,57 @@ class IBMDatasetLoader(object):
     #
     #     return dataset_train, dataset_valid, dataset_test
 
-    def _generate_task(self, window_size: int, null_padding_feature,  null_padding_target, train_val_ratio: float=0.8):
-        if null_padding_target == False and null_padding_feature == False:
+    def _window_split(self, split, window_size, with_is_nan_channel):
+        """
+        Sliding windows [L, window_size + 1, N, F(+1)] of one split, one per timestamp: the
+        series is front-padded with its first value so the first timestamp is a target too.
+        With with_is_nan_channel the is_nan mask is appended as the last channel.
+        """
+        values = self.split_scaled[split].reshape(-1, self.num_nodes, self.num_node_features)
+        if with_is_nan_channel:
+            mask = self.split_is_nan_mask[split].values.reshape(-1, self.num_nodes, self.num_node_features)
+            values = np.concatenate((values, mask), axis=-1)
+        padded = np.concatenate([values[0:1].repeat(window_size, axis=0), values], axis=0)
+        windows = torch.tensor(padded).unfold(dimension=0, size=window_size + 1, step=1)   # [L, N, C, W+1]
+        return windows.permute(0, 3, 1, 2).numpy()                                         # [L, W+1, N, C]
 
-            windowed_data = (torch.tensor(self.X_train_scaled).unfold(dimension=0, size=window_size + 1, step=1).permute(0, 2, 1)
-                             .reshape(-1,window_size+1, self.num_nodes, self.num_node_features)).numpy()
+    def _anomaly_free_windows(self, split, window_size):
+        """True for the windows of a split whose timestamps (inputs and target) carry no anomaly label."""
+        labels = self.split_labels[split]
+        padded = np.concatenate([labels[0:1].repeat(window_size), labels])
+        return pd.Series(padded).rolling(window_size + 1).max().values[window_size:] == 0
 
-            train_offset = int(train_val_ratio * windowed_data.shape[0])
-            windowed_data_train = windowed_data[0:train_offset]
-            windowed_data_valid = windowed_data[train_offset:]
+    def _generate_task(self, window_size: int, null_padding_feature, null_padding_target):
+        """
+        Builds features [L, W, N, F_in] and targets [L, N, F_out] for every split.
+        Train and valid windows containing an anomaly are removed for training and for
+        monitoring the validation loss (features_train / targets_train, features_valid /
+        targets_valid); the full windows are kept (*_full) to predict on the whole series later.
+        """
+        F = self.num_node_features
+        with_mask = null_padding_feature or null_padding_target
+        windows = {split: self._window_split(split, window_size, with_mask) for split in ('train', 'valid', 'test')}
+        features = {split: w[:, :window_size, :, :] if null_padding_feature else w[:, :window_size, :, :F]
+                    for split, w in windows.items()}
+        targets = {split: w[:, window_size, :, :] if null_padding_target else w[:, window_size, :, :F]
+                   for split, w in windows.items()}
 
-            self.features_train = windowed_data_train[:, :window_size, :,:]
-            self.targets_train = windowed_data_train[:, window_size, :,:]
+        self.train_clean_mask = self._anomaly_free_windows('train', window_size)
+        log.info('Train windows: {} in total, {} without anomalies'.format(len(self.train_clean_mask), self.train_clean_mask.sum()))
 
-            self.features_valid = windowed_data_valid[:, :window_size, :, :]
-            self.targets_valid = windowed_data_valid[:, window_size, :, :]
+        self.valid_clean_mask = self._anomaly_free_windows('valid', window_size)
+        log.info('Valid windows: {} in total, {} without anomalies'.format(len(self.valid_clean_mask), self.valid_clean_mask.sum()))
+        if not self.valid_clean_mask.any():
+            log.warning('Every valid window contains an anomaly: the validation loss is computed on all of them')
+            self.valid_clean_mask[:] = True
 
-            windowed_data = np.concatenate([self.X_test_scaled[0:1,:].repeat(window_size, 0), self.X_test_scaled], axis=0)
-            windowed_data = torch.tensor(windowed_data).unfold(dimension=0,size=window_size+1,step=1).permute(0,2,1).reshape(-1,window_size+1, self.num_nodes, self.num_node_features).numpy()
-            self.features_test = windowed_data[:, :window_size,:,:]
-            self.targets_test = windowed_data[:, window_size,:,:]
-        elif null_padding_target == True and null_padding_feature == False:
-            assert self.X_train_scaled.shape == self.train_is_nan_mask.shape
-            windowed_data = (
-                torch.tensor(self.X_train_scaled).unfold(dimension=0, size=window_size + 1, step=1).permute(0, 2, 1)
-                .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features)).numpy()
-
-            is_nan_mask_windowed_data = (
-                torch.tensor(self.train_is_nan_mask.values).unfold(dimension=0, size=window_size + 1, step=1).permute(0, 2, 1)
-                .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features)).numpy()
-
-            assert windowed_data.ndim == is_nan_mask_windowed_data.ndim
-            assert windowed_data.ndim == 4
-            windowed_data = np.concatenate((windowed_data, is_nan_mask_windowed_data), axis=3)
-            train_offset = int(train_val_ratio * windowed_data.shape[0])
-            windowed_data_train = windowed_data[0:train_offset]
-            windowed_data_valid = windowed_data[train_offset:]
-
-            self.features_train = windowed_data_train[:, :window_size, :, :-1]
-            self.targets_train = windowed_data_train[:, window_size, :, :]
-
-            self.features_valid = windowed_data_valid[:, :window_size, :, :-1]
-            self.targets_valid = windowed_data_valid[:, window_size, :, :]
-
-            windowed_data = np.concatenate([self.X_test_scaled[0:1, :].repeat(window_size, 0), self.X_test_scaled],
-                                           axis=0)
-            is_nan_mask_windowed_data = np.concatenate([self.test_is_nan_mask.values[0:1, :].repeat(window_size, 0), self.test_is_nan_mask],
-                                           axis=0)
-            windowed_data = (torch.tensor(windowed_data).unfold(dimension=0, size=window_size + 1, step=1)
-                             .permute(0, 2, 1)
-                             .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features).numpy())
-            is_nan_mask_windowed_data = (torch.tensor(is_nan_mask_windowed_data)
-                                          .unfold(dimension=0, size=window_size + 1, step=1)
-                                          .permute(0, 2, 1)
-                                          .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features).numpy())
-            assert windowed_data.ndim == is_nan_mask_windowed_data.ndim
-            assert windowed_data.ndim == 4
-            windowed_data = np.concatenate((windowed_data, is_nan_mask_windowed_data), axis=3)
-
-            self.features_test = windowed_data[:, :window_size, :, :-1]
-            self.targets_test = windowed_data[:, window_size, :, :]
-        elif null_padding_target == False and null_padding_feature == True:
-            assert self.X_train_scaled.shape == self.train_is_nan_mask.shape
-            windowed_data = (
-                torch.tensor(self.X_train_scaled).unfold(dimension=0, size=window_size + 1, step=1).permute(0, 2, 1)
-                .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features)).numpy()
-
-            is_nan_mask_windowed_data = (
-                torch.tensor(self.train_is_nan_mask.values).unfold(dimension=0, size=window_size + 1, step=1).permute(
-                    0, 2, 1)
-                .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features)).numpy()
-
-            assert windowed_data.ndim == is_nan_mask_windowed_data.ndim
-            assert windowed_data.ndim == 4
-            windowed_data = np.concatenate((windowed_data, is_nan_mask_windowed_data), axis=3)
-            train_offset = int(train_val_ratio * windowed_data.shape[0])
-            windowed_data_train = windowed_data[0:train_offset]
-            windowed_data_valid = windowed_data[train_offset:]
-
-            self.features_train = windowed_data_train[:, :window_size, :, :]
-            self.targets_train = windowed_data_train[:, window_size, :, :-1]
-
-            self.features_valid = windowed_data_valid[:, :window_size, :, :]
-            self.targets_valid = windowed_data_valid[:, window_size, :, :-1]
-
-            windowed_data = np.concatenate([self.X_test_scaled[0:1, :].repeat(window_size, 0), self.X_test_scaled],
-                                           axis=0)
-            is_nan_mask_windowed_data = np.concatenate(
-                [self.test_is_nan_mask.values[0:1, :].repeat(window_size, 0), self.test_is_nan_mask],
-                axis=0)
-            windowed_data = (torch.tensor(windowed_data).unfold(dimension=0, size=window_size + 1, step=1)
-                             .permute(0, 2, 1)
-                             .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features).numpy())
-            is_nan_mask_windowed_data = (torch.tensor(is_nan_mask_windowed_data)
-                                          .unfold(dimension=0, size=window_size + 1, step=1)
-                                          .permute(0, 2, 1)
-                                          .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features).numpy())
-            assert windowed_data.ndim == is_nan_mask_windowed_data.ndim
-            assert windowed_data.ndim == 4
-            windowed_data = np.concatenate((windowed_data, is_nan_mask_windowed_data), axis=3)
-
-            self.features_test = windowed_data[:, :window_size, :, :]
-            self.targets_test = windowed_data[:, window_size, :, :-1]
-        else:
-            assert self.X_train_scaled.shape == self.train_is_nan_mask.shape
-            windowed_data = (
-                torch.tensor(self.X_train_scaled).unfold(dimension=0, size=window_size + 1, step=1).permute(0, 2, 1)
-                .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features)).numpy()
-
-            is_nan_mask_windowed_data = (
-                torch.tensor(self.train_is_nan_mask.values).unfold(dimension=0, size=window_size + 1, step=1).permute(
-                    0, 2, 1)
-                .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features)).numpy()
-
-            assert windowed_data.ndim == is_nan_mask_windowed_data.ndim
-            assert windowed_data.ndim == 4
-            windowed_data = np.concatenate((windowed_data, is_nan_mask_windowed_data), axis=3)
-            train_offset = int(train_val_ratio * windowed_data.shape[0])
-            windowed_data_train = windowed_data[0:train_offset]
-            windowed_data_valid = windowed_data[train_offset:]
-
-            self.features_train = windowed_data_train[:, :window_size, :, :]
-            self.targets_train = windowed_data_train[:, window_size, :, :]
-
-            self.features_valid = windowed_data_valid[:, :window_size, :, :]
-            self.targets_valid = windowed_data_valid[:, window_size, :, :]
-
-            windowed_data = np.concatenate([self.X_test_scaled[0:1, :].repeat(window_size, 0), self.X_test_scaled],
-                                           axis=0)
-            is_nan_mask_windowed_data = np.concatenate(
-                [self.test_is_nan_mask.values[0:1, :].repeat(window_size, 0), self.test_is_nan_mask],
-                axis=0)
-            windowed_data = (torch.tensor(windowed_data).unfold(dimension=0, size=window_size + 1, step=1)
-                             .permute(0, 2, 1)
-                             .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features).numpy())
-            is_nan_mask_windowed_data = (torch.tensor(is_nan_mask_windowed_data)
-                                          .unfold(dimension=0, size=window_size + 1, step=1)
-                                          .permute(0, 2, 1)
-                                          .reshape(-1, window_size + 1, self.num_nodes, self.num_node_features).numpy())
-            assert windowed_data.ndim == is_nan_mask_windowed_data.ndim
-            assert windowed_data.ndim == 4
-            windowed_data = np.concatenate((windowed_data, is_nan_mask_windowed_data), axis=3)
-
-            self.features_test = windowed_data[:, :window_size, :, :]
-            self.targets_test = windowed_data[:, window_size, :, :]
-
-        del self.X_raw
-        del self.X_train_raw
-        del self.X_test_raw
+        self.features_train_full, self.targets_train_full = features['train'], targets['train']
+        self.features_train = features['train'][self.train_clean_mask]
+        self.targets_train = targets['train'][self.train_clean_mask]
+        self.features_valid_full, self.targets_valid_full = features['valid'], targets['valid']
+        self.features_valid = features['valid'][self.valid_clean_mask]
+        self.targets_valid = targets['valid'][self.valid_clean_mask]
+        self.features_test, self.targets_test = features['test'], targets['test']
 
     def _get_edges_and_weights(self):
         # self.edges = np.array(self.adjacency_matrix)
@@ -904,45 +832,33 @@ class IBMDatasetLoader(object):
         return self.num_node_features
 
 
+    @staticmethod
+    def _make_loader(features, targets, batch_size, shuffle, device):
+        dataset = torch.utils.data.TensorDataset(
+            torch.from_numpy(features).type(torch.FloatTensor).to(device),   # [L, W, N, F_in]
+            torch.from_numpy(targets).type(torch.FloatTensor).to(device))    # [L, N, F_out]
+        return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=False)
+
     def get_index_dataset(self, window_size, null_padding_feature, null_padding_target, batch_size=8, shuffle=False, device='cpu'):
+        """Loaders for training and validation (windows without anomalies) and test (all windows)."""
         self._get_edges_and_weights()
         self._generate_task(window_size, null_padding_feature, null_padding_target)
-        # dataset_train = StaticGraphTemporalSignal(
-        #     self.edges, self.edge_weights, self.features_train, self.targets_train
-        # )
-        #
-        # dataset_train, dataset_valid = temporal_signal_split(dataset_train, train_ratio=0.8)
-        #
-        # dataset_test = StaticGraphTemporalSignal(
-        #     self.edges, self.edge_weights, self.features_test, self.targets_test
-        # )
 
-        train_input = self.features_train  # (27399, 207, 2, 12)
-        train_target = self.targets_train  # (27399, 207, 12)
-        train_x_tensor = torch.from_numpy(train_input).type(torch.FloatTensor).to(device)  # (B, N, F, T)
-        train_target_tensor = torch.from_numpy(train_target).type(torch.FloatTensor).to(device)  # (B, N, T)
-        train_dataset_new = torch.utils.data.TensorDataset(train_x_tensor, train_target_tensor)
-        train_loader = torch.utils.data.DataLoader(train_dataset_new, batch_size=batch_size, shuffle=shuffle,
-                                                   drop_last=False)
-
-        valid_input = self.features_valid  # (27399, 207, 2, 12)
-        valid_target = self.targets_valid  # (27399, 207, 12)
-        valid_x_tensor = torch.from_numpy(valid_input).type(torch.FloatTensor).to(device)  # (B, N, F, T)
-        valid_target_tensor = torch.from_numpy(valid_target).type(torch.FloatTensor).to(device)  # (B, N, T)
-        valid_dataset_new = torch.utils.data.TensorDataset(valid_x_tensor, valid_target_tensor)
-        valid_loader = torch.utils.data.DataLoader(valid_dataset_new, batch_size=batch_size, shuffle=shuffle,
-                                                   drop_last=False)
-
-        test_input = self.features_test  # (, 207, 2, 12)
-        test_target = self.targets_test  # (, 207, 12)
-        self.count_5xx = test_target[:,:,0].sum(axis=-1)
-        test_x_tensor = torch.from_numpy(test_input).type(torch.FloatTensor).to(device)  # (B, N, F, T)
-        test_target_tensor = torch.from_numpy(test_target).type(torch.FloatTensor).to(device)  # (B, N, T)
-        test_dataset_new = torch.utils.data.TensorDataset(test_x_tensor, test_target_tensor)
-        test_loader = torch.utils.data.DataLoader(test_dataset_new, batch_size=batch_size, shuffle=shuffle,
-                                                  drop_last=False)
+        train_loader = self._make_loader(self.features_train, self.targets_train, batch_size, shuffle, device)
+        valid_loader = self._make_loader(self.features_valid, self.targets_valid, batch_size, shuffle, device)
+        test_loader = self._make_loader(self.features_test, self.targets_test, batch_size, shuffle, device)
+        self.count_5xx = self.targets_test[:, :, 0].sum(axis=-1)
 
         return train_loader, valid_loader, test_loader, torch.LongTensor(self.edges)
+
+    def get_split_loader(self, split, batch_size=8, device='cpu'):
+        """Ordered loader over all windows of a split (train / valid include the windows with anomalies)."""
+        features, targets = {
+            'train': (self.features_train_full, self.targets_train_full),
+            'valid': (self.features_valid_full, self.targets_valid_full),
+            'test': (self.features_test, self.targets_test),
+        }[split]
+        return self._make_loader(features, targets, batch_size, False, device)
 
 # @hydra.main(config_path="../conf", config_name="config.yaml")
 # def main(cfg: DictConfig):

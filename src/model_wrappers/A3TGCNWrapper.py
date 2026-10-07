@@ -129,8 +129,11 @@ class A3TGCNWrapper:
             # Get model predictions
             y_hat = self.model(encoder_inputs, self.static_edge_index, self.static_edge_weight)
             predictions.append(y_hat.detach().cpu().numpy()[:,:,0])
-            is_nan_predictions.append(y_hat.detach().cpu().numpy()[:,:,-1])
-            is_nan_labels.append(labels.detach().cpu().numpy()[:,:,-1])
+            # The last channel is the is_nan channel only when the target is null-padded;
+            # otherwise it is the data itself and must not be used as a mask
+            if self.null_padding_target:
+                is_nan_predictions.append(y_hat.detach().cpu().numpy()[:,:,-1])
+                is_nan_labels.append(labels.detach().cpu().numpy()[:,:,-1])
             # Mean squared error
             loss = self.loss_fn(y_hat, labels)
             total_loss.append(loss.item())
@@ -145,10 +148,11 @@ class A3TGCNWrapper:
         reconstruction_errors = np.concatenate(batch_reconstruction_errors, axis=0)
         print(f"Reconstruction errors: {reconstruction_errors.shape}")
         predictions = np.concatenate(predictions, axis=0)
-        is_nan_predictions = np.concatenate(is_nan_predictions, axis=0)
-        is_nan_labels = np.concatenate(is_nan_labels, axis=0)
-        is_nan_results = [is_nan_predictions, is_nan_labels]
-        return predictions, np.array(is_nan_results), reconstruction_errors, sum(total_loss) / len(total_loss)
+        is_nan_results = None
+        if self.null_padding_target:
+            is_nan_results = np.array([np.concatenate(is_nan_predictions, axis=0),
+                                       np.concatenate(is_nan_labels, axis=0)])   # [2, total, N]
+        return predictions, is_nan_results, reconstruction_errors, sum(total_loss) / len(total_loss)
 
     def save(self, path):
         torch.save(self.model.state_dict(), path)

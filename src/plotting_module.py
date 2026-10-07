@@ -8,7 +8,7 @@ import pandas as pd
 import os
 import numpy as np
 
-from utils import get_project_root
+from utils import get_project_root, scoring_result_file_name, results_root_dir
 
 
 # ── Reconstruction Error & Mahalanobis Distance Plot ─────────────────────────
@@ -47,7 +47,8 @@ def plot_reconstruction_and_mahalanobis(
     reconstruction_error_raw : np.ndarray [total, N, F]
         Absolute per-timestep reconstruction / forecast error.
     mahalanobis_distances : np.ndarray [total]
-        Raw Mahalanobis distance, one value per test timestep.
+        Mahalanobis distance (raw or already scaled), one value per test timestep;
+        min-max scaled again over the test timesteps for the plot.
     test_index : array-like [total]
         Datetime (or integer) index for the x-axis.
     test_labels : array-like [total]
@@ -241,7 +242,7 @@ def plot_results(results_df, is_anomalies, anomaly_windows, result_directory, fi
 
     # Show the plot
     plt.show()
-def generate_figure_for_fdr(plotting_config):
+def generate_figure_for_fdr(plotting_config, score_normalization='per_node', log_transform=False):
     models = plotting_config.false_discovery_rate.models
     model_name_1 = 'A3TGCN' if 'A3TGCN' in models else 'GRU'
     model_name_2 = 'GRU' if 'GRU' in models else 'GRU'
@@ -250,7 +251,7 @@ def generate_figure_for_fdr(plotting_config):
     null_padding_features = plotting_config.null_padding_features
     null_padding_targets = [False]
     fill_nan_values= plotting_config.fill_nan_values
-    train_models_dir = plotting_config.model_save_path
+    train_models_dir = results_root_dir(plotting_config.model_save_path, log_transform)
     window_size = plotting_config.slide_win
 
     nab_profiles = plotting_config.nab_profiles
@@ -282,8 +283,8 @@ def generate_figure_for_fdr(plotting_config):
         # if not os.path.exists(os.path.join(train_models_dir, f'window_{window_size}', feature_subset, model_config_1)):
         #     model_config_1 = f'{model_name_1}'
 
-        gridsearch_file_name_1 = f'{model_name_1}_grid_search.csv'
-        gridsearch_file_name_2 = f'{model_name_2}_grid_search.csv'
+        gridsearch_file_name_1 = scoring_result_file_name(model_name_1, 'grid_search', score_normalization)
+        gridsearch_file_name_2 = scoring_result_file_name(model_name_2, 'grid_search', score_normalization)
 
 
         gridsearch_file_1 = os.path.join(get_project_root(), train_models_dir,

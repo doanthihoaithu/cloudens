@@ -12,8 +12,9 @@ from omegaconf import DictConfig
 from analysis_results import text_subset_wrapper_latex, text_subset_wrapper, SCORING_STRATEGY_DISPLAY_FULL_NAME_MAP, \
     MODEL_DISPLAY_NAME_MAP
 from ibm_dataset_loader import IBMDatasetLoader
-from run_training_single_model import label_reconstruction_errors
-from utils import get_project_root
+from model_outputs import (PREDICTION_FILES, MEAN_ERROR_COLUMN, parse_topk, likelihood_column,
+                           label_from_scores, load_anomaly_scores)
+from utils import get_project_root, scoring_result_file_name, results_root_dir, score_normalizations
 
 FONT_SIZE = 12
 
@@ -59,7 +60,7 @@ def plot_reconstruction_errors(dataloader, results_dir, model_name,
                                 http_code, aggregation, fill_nan, slide_win,
                                 shown_nodes=None):
     """
-    Load reconstruction_errors.npy saved during inference and plot the mean
+    Load the test rows of reconstruction_error.parquet saved after inference and plot the mean
     per-timestep reconstruction error together with ground-truth anomaly regions.
 
     Parameters
@@ -81,13 +82,14 @@ def plot_reconstruction_errors(dataloader, results_dir, model_name,
         f'fill_nan_with_{fill_nan}',
         model_name,
     )
-    recon_path = os.path.join(model_dir, 'reconstruction_errors.npy')
+    recon_path = os.path.join(model_dir, PREDICTION_FILES['error'])
     if not os.path.exists(recon_path):
-        print(f'reconstruction_errors.npy not found at {recon_path}')
+        print(f'{PREDICTION_FILES["error"]} not found at {recon_path}')
         return None
 
     # reconstruction_errors: [total, N, F] → collapse to 1-D score
-    recon_errors = np.load(recon_path)             # [T, N, F]
+    recon_errors = pd.read_parquet(recon_path).loc[dataloader.test_index].values.reshape(
+        len(dataloader.test_index), dataloader.num_nodes, dataloader.num_node_features)   # [T, N, F]
     recon_score = recon_errors.mean(axis=-1).mean(axis=-1)  # [T]
 
     test_labels = np.array(dataloader.test_labels).ravel()
@@ -548,7 +550,8 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                             null_padding_features,
                             null_padding_targets,
                             out_dir=None,
-                            fix_scoring_parameters=None):
+                            fix_scoring_parameters=None,
+                            score_normalization='per_node'):
 
     slide_win = dataloader.data_preparation_config.slide_win
     index = dataloader.test_index
@@ -589,31 +592,29 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                             f'fill_nan_with_{fill_nan}',
                             model_folder,
                         )
-                        recon_path = os.path.join(model_dir, 'reconstruction_errors.npy')
-                        maha_path = os.path.join(model_dir, 'mahalanobis.npy')
+                        scores_path = os.path.join(model_dir, scoring_result_file_name(model, 'anomaly_scores', score_normalization))
 
-                        required_exists = os.path.exists(recon_path)
+                        required_exists = os.path.exists(scores_path)
                         if fix_scoring_parameters is None:
-                            csv_path = os.path.join(model_dir, f'{model}_grid_search.csv')
+                            csv_path = os.path.join(model_dir, scoring_result_file_name(model, 'grid_search', score_normalization))
                             required_exists = required_exists and os.path.exists(csv_path)
 
                         if not required_exists:
                             print(f'Skipping {model}: missing files in {model_dir}')
                             continue
 
-                        reconstruction_errors = np.load(recon_path)
-                        mahalanobis = np.load(maha_path) if os.path.exists(maha_path) else np.zeros(len(reconstruction_errors))
+                        test_scores = load_anomaly_scores(model_dir, model, score_normalization)
+                        test_scores = test_scores[test_scores['split'] == 'test'].reset_index(drop=True)
 
                         if fix_scoring_parameters is None:
                             grid_df = pd.read_csv(csv_path)
 
-                        T = min(len(reconstruction_errors), len(index))
-                        recon = reconstruction_errors[:T]
-                        maha = mahalanobis[:T]
+                        T = min(len(test_scores), len(index))
+                        test_scores = test_scores.iloc[:T]
                         idx = index[:T]
 
                         # Reconstruction error panel: mean across all N×F dimensions, scaled to [0,1]
-                        _rm = recon.mean(axis=(1, 2))
+                        _rm = test_scores[MEAN_ERROR_COLUMN].values
                         _rm = (_rm - _rm.min()) / max(_rm.max() - _rm.min(), 1e-8)
                         all_panels.append({
                             'type': 'recon',
@@ -628,25 +629,36 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                                     continue
                                 params = fix_scoring_parameters[strategy]
                                 anomaly_threshold = float(params['anomaly_threshold'])
-                                topk = int(params['topk'])
+                                topk = parse_topk(params['topk'])
                                 long_window = params.get('long_window', None)
                                 short_window = params.get('short_window', None)
+                                normalization = params.get('score_normalization', score_normalization)
+                                likelihood_threshold_mode = params.get('threshold_type', 'absolute')
                             else:
                                 strat_df = grid_df[grid_df['post_processing_strategy'] == strategy]
                                 if strat_df.empty:
                                     continue
                                 best_row = strat_df.loc[strat_df['NAB_reward_fn_rank'].idxmin()]
                                 anomaly_threshold = float(best_row['anomaly_threshold'])
-                                topk = int(best_row['topk'])
+                                topk = parse_topk(best_row['topk'])
                                 lw = best_row.get('long_window', None)
                                 sw = best_row.get('short_window', None)
                                 long_window = None if pd.isna(lw) else int(lw)
                                 short_window = None if pd.isna(sw) else int(sw)
+                                # grid searches run before the option existed have no column
+                                normalization = best_row.get('score_normalization', score_normalization)
+                                if pd.isna(normalization):
+                                    normalization = score_normalization
+                                # grid searches run before likelihood percentile thresholds have no column
+                                likelihood_threshold_mode = best_row.get('threshold_type', 'absolute')
+                                if pd.isna(likelihood_threshold_mode):
+                                    likelihood_threshold_mode = 'absolute'
 
-                            is_anom, likelihoods, _, _ = label_reconstruction_errors(
-                                idx, recon, maha, strategy, topk, anomaly_threshold,
-                                long_window, short_window,
-                            )
+                            with_windows = likelihood_column(topk, long_window, short_window) not in test_scores.columns
+                            is_anom, likelihoods = label_from_scores(test_scores, strategy, topk, anomaly_threshold,
+                                                                     long_window, short_window, with_windows,
+                                                                     likelihood_threshold_mode)
+                            is_anom = pd.Series(is_anom)
 
                             all_panels.append({
                                 'type': 'score',
@@ -1063,7 +1075,8 @@ def plot_detected_anomalies_for_specific_periods(
         null_padding_targets,
         zoom_in_periods,
         out_dir=None,
-        fix_scoring_parameters=None):
+        fix_scoring_parameters=None,
+        score_normalization='per_node'):
 
     slide_win = dataloader.data_preparation_config.slide_win
     index = dataloader.test_index
@@ -1104,28 +1117,25 @@ def plot_detected_anomalies_for_specific_periods(
                             f'fill_nan_with_{fill_nan}',
                             model_folder,
                         )
-                        recon_path = os.path.join(model_dir, 'reconstruction_errors.npy')
-                        maha_path = os.path.join(model_dir, 'mahalanobis.npy')
-                        required_exists = os.path.exists(recon_path)
+                        scores_path = os.path.join(model_dir, scoring_result_file_name(model, 'anomaly_scores', score_normalization))
+                        required_exists = os.path.exists(scores_path)
                         if fix_scoring_parameters is None:
-                            csv_path = os.path.join(model_dir, f'{model}_grid_search.csv')
+                            csv_path = os.path.join(model_dir, scoring_result_file_name(model, 'grid_search', score_normalization))
                             required_exists = required_exists and os.path.exists(csv_path)
                         if not required_exists:
                             print(f'Skipping {model}: missing files in {model_dir}')
                             continue
 
-                        reconstruction_errors = np.load(recon_path)
-                        mahalanobis_dist = (np.load(maha_path) if os.path.exists(maha_path)
-                                            else np.zeros(len(reconstruction_errors)))
+                        test_scores = load_anomaly_scores(model_dir, model, score_normalization)
+                        test_scores = test_scores[test_scores['split'] == 'test'].reset_index(drop=True)
                         if fix_scoring_parameters is None:
                             grid_df = pd.read_csv(csv_path)
 
-                        T = min(len(reconstruction_errors), len(index))
-                        recon = reconstruction_errors[:T]
-                        maha = mahalanobis_dist[:T]
+                        T = min(len(test_scores), len(index))
+                        test_scores = test_scores.iloc[:T]
                         idx = index[:T]
 
-                        _rm = recon.mean(axis=(1, 2))
+                        _rm = test_scores[MEAN_ERROR_COLUMN].values
                         _rm = (_rm - _rm.min()) / max(_rm.max() - _rm.min(), 1e-8)
                         all_panels.append({'type': 'recon', 'model': model_folder,
                                            'series': _rm, 'index': idx})
@@ -1136,25 +1146,36 @@ def plot_detected_anomalies_for_specific_periods(
                                     continue
                                 params = fix_scoring_parameters[strategy]
                                 anomaly_threshold = float(params['anomaly_threshold'])
-                                topk = int(params['topk'])
+                                topk = parse_topk(params['topk'])
                                 long_window = params.get('long_window', None)
                                 short_window = params.get('short_window', None)
+                                normalization = params.get('score_normalization', score_normalization)
+                                likelihood_threshold_mode = params.get('threshold_type', 'absolute')
                             else:
                                 strat_df = grid_df[grid_df['post_processing_strategy'] == strategy]
                                 if strat_df.empty:
                                     continue
                                 best_row = strat_df.loc[strat_df['NAB_reward_fn_rank'].idxmin()]
                                 anomaly_threshold = float(best_row['anomaly_threshold'])
-                                topk = int(best_row['topk'])
+                                topk = parse_topk(best_row['topk'])
                                 lw = best_row.get('long_window', None)
                                 sw = best_row.get('short_window', None)
                                 long_window = None if pd.isna(lw) else int(lw)
                                 short_window = None if pd.isna(sw) else int(sw)
+                                # grid searches run before the option existed have no column
+                                normalization = best_row.get('score_normalization', score_normalization)
+                                if pd.isna(normalization):
+                                    normalization = score_normalization
+                                # grid searches run before likelihood percentile thresholds have no column
+                                likelihood_threshold_mode = best_row.get('threshold_type', 'absolute')
+                                if pd.isna(likelihood_threshold_mode):
+                                    likelihood_threshold_mode = 'absolute'
 
-                            is_anom, likelihoods, _, _ = label_reconstruction_errors(
-                                idx, recon, maha, strategy, topk,
-                                anomaly_threshold, long_window, short_window,
-                            )
+                            with_windows = likelihood_column(topk, long_window, short_window) not in test_scores.columns
+                            is_anom, likelihoods = label_from_scores(test_scores, strategy, topk, anomaly_threshold,
+                                                                     long_window, short_window, with_windows,
+                                                                     likelihood_threshold_mode)
+                            is_anom = pd.Series(is_anom)
                             all_panels.append({
                                 'type': 'score', 'model': model_folder, 'strategy': strategy,
                                 'scores': likelihoods, 'is_anomalies': is_anom.values,
@@ -1348,7 +1369,7 @@ def plot_detected_anomalies_for_specific_periods(
 @hydra.main(config_path="../conf", config_name="config.yaml")
 def main(cfg: DictConfig):
 
-    results_dir = cfg.evaluation.model_save_path
+    results_dir = results_root_dir(cfg.evaluation.model_save_path, cfg.data_preparation_pipeline.get('log_transform', False))
     shown_model = 'GRU'
     shown_http_code = '5xx'
     shown_aggregation = 'count'
@@ -1465,7 +1486,8 @@ def main(cfg: DictConfig):
                                                 null_padding_targets,
                                                 zoom_in_periods,
                                                 output_dir,
-                                                fix_scoring_parameters=fix_scoring_parameters)
+                                                fix_scoring_parameters=fix_scoring_parameters,
+                                                score_normalization=score_normalizations(cfg.evaluation)[0])
 
 
 if __name__ == '__main__':

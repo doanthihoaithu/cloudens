@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 
 class GRUCustom(torch.nn.Module):
-    def __init__(self, num_nodes, node_features, hidden_dim, layer_dim, batch_size):
+    def __init__(self, num_nodes, node_features, hidden_dim, layer_dim, batch_size, dropout=0.3):
         super(GRUCustom, self).__init__()
         self.num_nodes = num_nodes
         self.node_features = node_features
@@ -19,7 +19,7 @@ class GRUCustom(torch.nn.Module):
         self.rnn = GRU(input_size=num_nodes*node_features,
                        hidden_size=hidden_dim,
                        num_layers=layer_dim,
-                       dropout=0.3,
+                       dropout=dropout,  # only applied between GRU layers (layer_dim > 1)
                        batch_first=True)  # node_features=2, periods=12
         # Equals single-shot prediction
         self.linear = torch.nn.Linear(hidden_dim, num_nodes*node_features)
@@ -43,13 +43,15 @@ class GRUCustom(torch.nn.Module):
         return out
 class GRUWrapper:
 
-    def __init__(self, num_nodes, node_features, hidden_dim, layer_dim, batch_size=32, device='cpu'):
+    def __init__(self, num_nodes, node_features, hidden_dim, layer_dim, batch_size=32, dropout=0.3, lr=0.001, device='cpu'):
         self.device = device
         self.num_nodes = num_nodes
         self.node_features = node_features
         self.hidden_dim = hidden_dim
         self.layer_dim = layer_dim
         self.batch_size = batch_size
+        self.dropout = dropout
+        self.lr = lr
         self._init_model()
         self.inference_time = 0
 
@@ -61,9 +63,10 @@ class GRUWrapper:
         model = GRUCustom(num_nodes=self.num_nodes, node_features=self.node_features,
                           hidden_dim=self.hidden_dim,
                           layer_dim=self.layer_dim,
-                          batch_size=self.batch_size).to(self.device)
+                          batch_size=self.batch_size,
+                          dropout=self.dropout).to(self.device)
 
-        self.optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        self.optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
         self.loss_fn = torch.nn.MSELoss()
 
         # print('Net\'s state_dict:')

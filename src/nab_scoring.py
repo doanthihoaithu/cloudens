@@ -1,6 +1,10 @@
+import logging
 import math
+
+import numpy as np
 import pandas as pd
-from scipy.stats import norm
+
+log = logging.getLogger(__name__)
 
 def sigmoid(x):
     """
@@ -30,6 +34,27 @@ def scaledSigmoid(relativePositionInWindow):
     else:
         return 2 * sigmoid(-5 * relativePositionInWindow) - 1.0
 
+def _label_windows(df, true_col='true_anomaly'):
+    """
+    Windows (start, end) of the runs of true_col == 1, as index labels: start is the first
+    timestamp of a run, end the first timestamp after it (the last timestamp of df when the
+    run reaches the end).
+    """
+    labels = df[true_col].to_numpy()
+    previous = np.concatenate([[0], labels[:-1]])
+    starts = np.flatnonzero((labels == 1) & (previous == 0))
+    ends = np.flatnonzero((labels == 0) & (previous == 1))
+    end_labels = list(df.index[ends])
+    if len(starts) > len(ends):   # a run reaching the end of the series
+        end_labels.append(df.index[-1])
+    return list(zip(df.index[starts], end_labels))
+
+
+# Score of a detection at the very start of its window: TP scores are divided by it so that the
+# earliest detection earns exactly reward_tp, as in NAB (Sweeper.calcSweepScore)
+MAX_TP = scaledSigmoid(-1.0)
+
+
 def calculate_relative_position(df, true_col='true_anomaly', pred_col='predicted_anomaly'):
     """
     Calculate relative positions of detected anomalies within true anomaly windows.
@@ -42,35 +67,13 @@ def calculate_relative_position(df, true_col='true_anomaly', pred_col='predicted
     Returns:
     - DataFrame with an additional column 'relative_position'.
     """
-    df['shift'] = df[true_col].shift(1, fill_value=0)
-    df['start_window'] = (df[true_col] == 1) & (df['shift'] == 0)
-    df['end_window'] = (df[true_col] == 0) & (df['shift'] == 1)
-
-    windows = []
-    start_time = None
-
-    for time, row in df.iterrows():
-        if row['start_window']:
-            start_time = time
-        if row['end_window'] and start_time is not None:
-            windows.append((start_time, time))
-            start_time = None
-
-    if start_time is not None:
-        windows.append((start_time, df.index[-1]))
-
-    df.drop(['shift', 'start_window', 'end_window'], axis=1, inplace=True)
-
     df['relative_position'] = 0.0
-    for start, end in windows:
+    for start, end in _label_windows(df, true_col):
         window_length = (end - start).total_seconds()
-        window_detected = df.loc[start:end, pred_col].any()
-
-        if window_detected:
-            first_detection = df.loc[start:end, pred_col].idxmax()
-            relative_position_tp = -(end - first_detection).total_seconds() / window_length
-            df.loc[first_detection, 'relative_position'] = relative_position_tp
-
+        predictions = df.loc[start:end, pred_col]
+        if predictions.any():
+            first_detection = predictions.idxmax()
+            df.loc[first_detection, 'relative_position'] = -(end - first_detection).total_seconds() / window_length
     return df
 
 def calculate_baseline_score(df, true_col='true_anomaly', penalty_fn=2.0):
@@ -85,29 +88,8 @@ def calculate_baseline_score(df, true_col='true_anomaly', penalty_fn=2.0):
     Returns:
     - Float, baseline NAB score.
     """
-    df['shift'] = df[true_col].shift(1, fill_value=0)
-    df['start_window'] = (df[true_col] == 1) & (df['shift'] == 0)
-    df['end_window'] = (df[true_col] == 0) & (df['shift'] == 1)
-
-    windows = []
-    start_idx = None
-
-    for i, row in df.iterrows():
-        if row['start_window']:
-            start_idx = i
-        if row['end_window']:
-            if start_idx is not None:
-                windows.append((start_idx, i))
-                start_idx = None
-
-    if start_idx is not None:
-        windows.append((start_idx, df.index[-1]))
-
-    df.drop(['shift', 'start_window', 'end_window'], axis=1, inplace=True)
-
-    fn_count = len(windows)  # Count of all anomaly windows (false negatives if undetected)
-    baseline_score = -penalty_fn * fn_count
-    return baseline_score
+    fn_count = len(_label_windows(df, true_col))  # Count of all anomaly windows (false negatives if undetected)
+    return -penalty_fn * fn_count
 
 def calculate_perfect_score(df, true_col='true_anomaly', reward_tp=1.0):
     """
@@ -122,29 +104,8 @@ def calculate_perfect_score(df, true_col='true_anomaly', reward_tp=1.0):
     - Float, perfect NAB score.
     - Integer, count of anomaly windows.
     """
-    df['shift'] = df[true_col].shift(1, fill_value=0)
-    df['start_window'] = (df[true_col] == 1) & (df['shift'] == 0)
-    df['end_window'] = (df[true_col] == 0) & (df['shift'] == 1)
-
-    windows = []
-    start_idx = None
-
-    for i, row in df.iterrows():
-        if row['start_window']:
-            start_idx = i
-        if row['end_window']:
-            if start_idx is not None:
-                windows.append((start_idx, i))
-                start_idx = None
-
-    if start_idx is not None:
-        windows.append((start_idx, df.index[-1]))
-
-    df.drop(['shift', 'start_window', 'end_window'], axis=1, inplace=True)
-
-    tp_count = len(windows)
-    perfect_score = reward_tp * tp_count
-    return perfect_score, tp_count
+    tp_count = len(_label_windows(df, true_col))
+    return reward_tp * tp_count, tp_count
 
 def normalize_nab_score(score, baseline_score, perfect_score):
     """
@@ -178,7 +139,6 @@ def calculate_nab_score_with_window_based_tp_fn(df, anomaly_windows_test, nab_sc
     - penalty_fn: Float, penalty for a missed anomaly.
 
     Returns:
-    - Float, weighted NAB score.
     - Float, raw NAB score.
     - Float, normalized NAB score.
     - Integer, false positive count.
@@ -192,12 +152,9 @@ def calculate_nab_score_with_window_based_tp_fn(df, anomaly_windows_test, nab_sc
     elif nab_scoring_profile != "standard":
         raise ValueError(f"Unsupported NAB scoring profile: {nab_scoring_profile}")
 
-
     score = 0.0
     false_positive_count = 0
     false_negative_count = 0
-    tp_count = 0
-    tn_count = 0
 
     detection_counters = {
         'issue_detected': 0,
@@ -214,131 +171,97 @@ def calculate_nab_score_with_window_based_tp_fn(df, anomaly_windows_test, nab_sc
         'fp': 0,
         'fn': 0,
     }
+    source_counters = {1: ('issue_detected', 'issue_detected_ids', 'gt_issue_ids'),
+                       2: ('im_detected', 'im_detected_ids', 'gt_im_ids'),
+                       3: ('TestLog_detected', 'TestLog_detected_ids', 'gt_TestLog_ids')}
 
     # Step 1: Use the true anomaly windows
     windows = []  # This will store (start, end) from anomaly_windows_test
     anomaly_sources = {}  # Map windows to their sources
-
-    for index, (_,row) in enumerate(anomaly_windows_test.iterrows()):
-        start = pd.to_datetime(row['anomaly_window_start'])
-        end = pd.to_datetime(row['anomaly_window_end'])
-        source = row['anomaly_source']
-        if source == 1:
-            detection_counters['gt_issue_ids'].append(index)
-        elif source == 2:
-            detection_counters['gt_im_ids'].append(index)
-        elif source == 3:
-            detection_counters['gt_TestLog_ids'].append(index)
+    for index, (start, end, source) in enumerate(zip(pd.to_datetime(anomaly_windows_test['anomaly_window_start']),
+                                                     pd.to_datetime(anomaly_windows_test['anomaly_window_end']),
+                                                     anomaly_windows_test['anomaly_source'])):
+        if source in source_counters:
+            detection_counters[source_counters[source][2]].append(index)
         windows.append((start, end))
         anomaly_sources[(start, end)] = source
-
-    # print(f'issue anomaly ids: {detection_counters["gt_issue_ids"]}')
-    # print(f'im anomaly ids: {detection_counters["gt_im_ids"]}')
-    # print(f'TestLog anomaly ids: {detection_counters["gt_TestLog_ids"]}')
-
     idx_anomaly_map = {key: i for i, key in enumerate(anomaly_sources)}
-
-    # Print the identified true anomaly windows and sources
-    print("True Anomaly Windows:", windows)
-    print("Anomaly Sources:", anomaly_sources)
+    log.debug(f'True anomaly windows: {windows}')
 
     # Step 2: Calculate relative positions for predictions
     df = calculate_relative_position(df, true_col=true_col, pred_col=pred_col)
 
     # === True Positive Scoring ===
-    print("=== True Positive Scoring ===")
     for start, end in windows:
-        # print(f"Analyzing anomaly window: {start} to {end}")
-
         try:
             # Check for any predictions within the true anomaly window
-            window_detected = df.loc[start:end, pred_col].any()
+            predictions = df.loc[start:end, pred_col]
+            window_detected = predictions.any()
         except Exception as e:
-            print(f"Error accessing window {start} to {end}: {e}")
+            log.warning(f"Error accessing window {start} to {end}: {e}")
             continue
 
         if window_detected:
             try:
                 # Get the first detection time and calculate the relative position
-                first_detection = df.loc[start:end, pred_col].idxmax()
+                first_detection = predictions.idxmax()
                 relative_position = df.loc[first_detection, 'relative_position']
-                tp_score = reward_tp * scaledSigmoid(relative_position)
+                tp_score = reward_tp * scaledSigmoid(relative_position) / MAX_TP
                 score += tp_score
-                tp_count += 1
                 detection_counters['tp'] += 1
 
                 # Add source-specific counters
                 anomaly_type = anomaly_sources[(start, end)]
-                anomaly_index = idx_anomaly_map[(start, end)]
-                if anomaly_type == 1:
-                    detection_counters['issue_detected'] += 1
-                    detection_counters['issue_detected_ids'].append(anomaly_index)
-                    print("Issue Detected:", detection_counters['issue_detected'])
-                elif anomaly_type == 2:
-                    detection_counters['im_detected'] += 1
-                    detection_counters['im_detected_ids'].append(anomaly_index)
-                    print("Instant Messenger Detected:", detection_counters['im_detected'])
-                elif anomaly_type == 3:
-                    detection_counters['TestLog_detected'] += 1
-                    detection_counters['TestLog_detected_ids'].append(anomaly_index)
-                    print("TestLog Detected:", detection_counters['TestLog_detected'])
-
-                # Print TP details
-                print(f"TP Detected at: {first_detection}")
-                print(f"Relative Position: {relative_position}")
-                print(f"TP Score: {tp_score}\n")
-
+                if anomaly_type in source_counters:
+                    detection_counters[source_counters[anomaly_type][0]] += 1
+                    detection_counters[source_counters[anomaly_type][1]].append(idx_anomaly_map[(start, end)])
+                log.debug(f"TP detected at {first_detection}, relative position {relative_position}, score {tp_score}")
             except Exception as e:
-                print(f"Error in true positive calculation: {e}")
+                log.warning(f"Error in true positive calculation: {e}")
                 continue
         else:
             # False Negative (FN) case
             score -= penalty_fn
             false_negative_count += 1
             detection_counters['fn'] += 1
-            # print(f"No TP detected in window {start} to {end}, FN Penalty applied.\n")
 
     # === False Positive Scoring ===
-    print("=== False Positive Scoring ===")
-    for time, row in df.iterrows():
-        if row[pred_col] == 1 and not any(start <= time <= end for start, end in windows):
-            # FP outside any anomaly window
-            try:
-                # Find the last anomaly window before this FP
-                last_anomaly_window = None
-                for start, end in windows:
-                    if end < time:
-                        last_anomaly_window = (start, end)
-                    else:
-                        break
+    # Only the predicted timestamps can be false positives
+    predicted_times = df.index[df[pred_col].to_numpy() == 1]
+    for time in predicted_times:
+        if any(start <= time <= end for start, end in windows):
+            continue
+        # FP outside any anomaly window
+        try:
+            # Find the last anomaly window before this FP
+            last_anomaly_window = None
+            for start, end in windows:
+                if end < time:
+                    last_anomaly_window = (start, end)
+                else:
+                    break
 
-                if last_anomaly_window:
-                    last_end = last_anomaly_window[1]
-                    window_width = (last_end - last_anomaly_window[0]).total_seconds()
+            if last_anomaly_window:
+                last_end = last_anomaly_window[1]
+                window_width = (last_end - last_anomaly_window[0]).total_seconds()
 
-                    # Calculate FP relative position from the right boundary of the last window
-                    fp_offset = (time - last_end).total_seconds()
-                    relative_position_fp = fp_offset / window_width
+                # Calculate FP relative position from the right boundary of the last window
+                fp_offset = (time - last_end).total_seconds()
+                relative_position_fp = fp_offset / window_width
 
-                    if relative_position_fp > 3:
-                        fp_score = -1.0 * penalty_fp  # FP far beyond window, score -1
-                    else:
-                        fp_score = penalty_fp * scaledSigmoid(relative_position_fp)  # Scaled sigmoid score
+                if relative_position_fp > 3:
+                    fp_score = -1.0 * penalty_fp  # FP far beyond window, score -1
+                else:
+                    fp_score = penalty_fp * scaledSigmoid(relative_position_fp)  # Scaled sigmoid score
+            else:
+                fp_score = -1.0 * penalty_fp  # FP before the first window: full penalty, as in NAB
 
-                    score += fp_score
-                    false_positive_count += 1
-                    detection_counters['fp'] += 1
-
-                    # Print FP
-                    # print(f"FP Detected at: {time}")
-                    # print(f"Relative Position: {relative_position_fp}")
-                    # print(f"FP Score: {fp_score}\n")
-            except Exception as e:
-                print(f"Error calculating FP score: {e}")
-                continue
-
-        if row[true_col] == 0 and row[pred_col] == 0:
-            tn_count += 1
+            score += fp_score
+            false_positive_count += 1
+            detection_counters['fp'] += 1
+        except Exception as e:
+            log.warning(f"Error calculating FP score: {e}")
+            continue
 
     # Calculate baseline and perfect scores
     baseline_score = calculate_baseline_score(df, true_col=true_col, penalty_fn=penalty_fn)
@@ -346,11 +269,6 @@ def calculate_nab_score_with_window_based_tp_fn(df, anomaly_windows_test, nab_sc
 
     # Normalize the score
     normalized_score = normalize_nab_score(score, baseline_score, perfect_score)
-
-    # Display the results
-    print(f"Baseline Score: {baseline_score}")
-    print(f"Perfect Score: {perfect_score}")
-    print(f"Normalized NAB Score: {normalized_score}")
+    log.debug(f"Baseline score: {baseline_score}, perfect score: {perfect_score}, normalized NAB score: {normalized_score}")
 
     return score, normalized_score, false_positive_count, false_negative_count, detection_counters
-

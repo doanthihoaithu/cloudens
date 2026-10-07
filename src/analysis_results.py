@@ -12,7 +12,7 @@ from matplotlib.colors import to_rgb
 from matplotlib.patches import FancyBboxPatch
 from omegaconf import DictConfig
 
-from utils import get_project_root
+from utils import get_project_root, scoring_result_file_name, results_root_dir, score_normalizations
 
 ONE_COLUMN_FIGURE_WIDTH = 5
 TWO_COLUMN_FIGURE_WIDTH = 12
@@ -511,6 +511,7 @@ def load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and
         proposed_model_detail, results_dir, supported_sliding_windows,
         http_codes, aggregations, missing_imputation_strategies,
         use_existing_file=False,
+        score_normalization='per_node',
 ):
     model_name = proposed_model_detail['proposed_model_name']
     null_padding_feature = proposed_model_detail['null_padding_feature']
@@ -548,7 +549,7 @@ def load_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and
                         f'no_group_{http_code}_{agg}',
                         f'fill_nan_with_{imputation}',
                         model_folder,
-                        f'{model_name}_grid_search.csv'
+                        scoring_result_file_name(model_name, 'grid_search', score_normalization)
                     )
                     if not os.path.exists(grid_search_csv_path):
                         continue
@@ -605,6 +606,7 @@ def load_shorten_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_su
         proposed_model_detail, results_dir, supported_sliding_windows,
         http_codes, aggregations, missing_imputation_strategies,
         use_existing_file=False,
+        score_normalization='per_node',
 ):
     model_name = proposed_model_detail['proposed_model_name']
     null_padding_feature = proposed_model_detail['null_padding_feature']
@@ -646,7 +648,7 @@ def load_shorten_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_su
                         f'no_group_{http_code}_{agg}',
                         f'fill_nan_with_{imputation}',
                         model_folder,
-                        f'{model_name}_grid_search.csv'
+                        scoring_result_file_name(model_name, 'grid_search', score_normalization)
                     )
                     if not os.path.exists(grid_search_csv_path):
                         continue
@@ -759,13 +761,13 @@ SCORING_HYPERPARAMETER_DISPLAY_MAP = {
         'long_window': ('W', lambda v: str(int(v))),
         'short_window': ('W\'', lambda v: str(int(v))),
         'anomaly_threshold': ('L_t', lambda v: _format_trimmed(v, 5)),
-        'topk': ('K', lambda v: str(int(v))),
+        'topk': ('K', lambda v: 'mean' if pd.isna(v) else str(int(v))),
     },
     'mahalanobis': {
         'long_window': ('W', lambda v: str(int(v))),
         'short_window': ('W\'', lambda v: str(int(v))),
         'anomaly_threshold': ('\\epsilon', lambda v: _format_trimmed(v, 1)),
-        'topk': ('K', lambda v: str(int(v))),
+        # no top-k: the distance covers all sensors (topk is NaN in the grid search)
     },
 }
 
@@ -867,6 +869,7 @@ def compare_model_performance_across_sliding_windows(
         missing_imputation_strategies, null_padding_features, null_padding_targets,
         nab_profiles,
         is_one_column_figure=False,
+        score_normalization='per_node',
 ):
     scoring_strategies = ['likelihood', 'mahalanobis']
     subplot_columns = list(itertools.product(scoring_strategies, nab_profiles))
@@ -950,7 +953,7 @@ def compare_model_performance_across_sliding_windows(
                             f'no_group_{http_code}_{agg}',
                             f'fill_nan_with_{imputation}',
                             model_folder,
-                            f'{model_name}_grid_search.csv'
+                            scoring_result_file_name(model_name, 'grid_search', score_normalization)
                         )
                         if not os.path.exists(grid_search_csv_path):
                             continue
@@ -961,7 +964,7 @@ def compare_model_performance_across_sliding_windows(
                             np.isclose(model_df['long_window'], opt_row['long_window']) &
                             np.isclose(model_df['short_window'], opt_row['short_window']) &
                             np.isclose(model_df['anomaly_threshold'], opt_row['anomaly_threshold']) &
-                            np.isclose(model_df['topk'], opt_row['topk'])
+                            np.isclose(model_df['topk'], opt_row['topk'], equal_nan=True)   # NaN topk = mean over sensors
                         ]
                         if matched_rows.empty:
                             continue
@@ -2126,12 +2129,13 @@ def main(cfg: DictConfig):
     supported_sliding_windows = cfg.supported_sliding_windows
 
     graph_models = list(cfg.graph_models)
+    score_normalization = score_normalizations(cfg.evaluation)[0]
     missing_imputation_stategies = ['zero','mean','median']
     http_codes = ['5xx','4xx']
     aggregations = ['count','avg','min','max']
     null_padding_features = [True]
     null_padding_targets = [False]
-    results_dir = cfg.evaluation.model_save_path
+    results_dir = results_root_dir(cfg.evaluation.model_save_path, cfg.data_preparation_pipeline.get('log_transform', False))
     results_dir = os.path.join(get_project_root(), results_dir)
 
     use_existing_file = cfg.plotting.use_existing_file
@@ -2173,7 +2177,8 @@ def main(cfg: DictConfig):
         http_codes,
         aggregations,
         missing_imputation_stategies,
-        use_existing_file=use_existing_file
+        use_existing_file=use_existing_file,
+        score_normalization=score_normalization,
     )
 
     most_optimal_hyperparameters_df = extract_most_optimal_scoring_hyperparameter_of_the_proposed_model_on_each_subset_and_sliding_window(optimal_hyperparameters_df,
@@ -2215,7 +2220,8 @@ def main(cfg: DictConfig):
         null_padding_features,
         null_padding_targets,
         nab_profiles,
-        is_one_column_figure=True
+        is_one_column_figure=True,
+        score_normalization=score_normalization,
     )
 
     supported_models = ['GRU', 'A3TGCN']
