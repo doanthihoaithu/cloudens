@@ -1,0 +1,5 @@
+# Script-level config: used whenever results_explorer_app.py next to this folder is run,
+# whatever the working directory
+[server]
+# Rerun the app automatically when its source file is saved
+runOnSave = true
