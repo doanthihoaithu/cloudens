@@ -18,17 +18,17 @@ supported_sliding_windows: [6, 12, 18, 24, 30]
 graph_models: ['A3TGCN', 'GDN', 'GST_PRO', 'STGformer']
 
 evaluation:
-  retrain: true
+  retrain: false
   retest:  false
   re_calculate_mahalanobis: false
-  mahalanobis_reference: 'train'  # set the Mahalanobis mean/covariance are fitted on: 'train', 'valid', 'train_valid' (clean windows of both) or 'test'
-  mahalanobis_covariance: 'empirical'  # 'empirical', 'ledoit_wolf' (shrinkage) or 'pca' (Hotelling T² + SPE/Q)
-  mahalanobis_min_variance: 0.0       # drop dimensions whose reference variance is <= this before fitting
+  mahalanobis_reference: 'train_valid'  # set the Mahalanobis mean/covariance are fitted on: 'train', 'valid', 'train_valid' (clean windows of both) or 'test'
+  mahalanobis_covariance: 'ledoit_wolf'  # 'empirical', 'ledoit_wolf' (shrinkage) or 'pca' (Hotelling T² + SPE/Q)
+  mahalanobis_min_variance: 1e-6         # drop dimensions whose reference variance is <= this before fitting
   mahalanobis_pca_variance: 0.95      # 'pca' only: share of variance kept in the principal subspace
   mahalanobis_pca_quantile: 0.99      # 'pca' only: quantile of T² / Q on the reference errors used to scale them
   top_k_contribution: 5
-  use_model: 'AnomalyTransformer' # 'A3TGCN' or 'GRU', 'GDN', 'TranAD', 'OmniAnomaly', 'USAD','MTAD-GAT','GST_PRO','AnomalyTransformer'
-  null_padding_feature: false
+  use_model: 'STGformer' # 'A3TGCN' or 'GRU', 'GDN', 'TranAD', 'OmniAnomaly', 'USAD','MTAD-GAT','GST_PRO','AnomalyTransformer'
+  null_padding_feature: true
   null_padding_target: false
   train_batch_size: 16 # 16  # training batch size
   evaluation_batch_size: 32
@@ -37,8 +37,8 @@ evaluation:
   nab_scoring_profiles: [ "standard", "reward_fn" ] # Options: "standard", "reward_fn"
   model_save_path: "trained_models/"
   epochs: 30
-  post_processing_strategies: ['likelihood', 'mahalanobis', 'likelihood_mahalanobis']  # 'likelihood', 'likelihood_mahalanobis', 'mahalanobis', 'mean_reconstruction_errors'
-  topks: [1]  # number of largest sensor scores averaged per timestamp; null = mean over all sensors (e.g. [1, null])
+  post_processing_strategies: ['likelihood', 'likelihood_mahalanobis', 'mean_reconstruction_errors']  # 'likelihood', 'likelihood_mahalanobis', 'mahalanobis', 'mean_reconstruction_errors'
+  topks: [1,2,3,4,5, null]  # number of largest sensor scores averaged per timestamp; null = mean over all sensors (e.g. [1, null])
   # error normalisation before top-k: 'per_node' (median/IQR per node, as GDN does per sensor) or 'global' (one median/IQR
   # for all nodes). Training runs the scores and grid search for each; the ensemble / plotting / analysis scripts use the first
   score_normalizations: ['per_node', 'global']
@@ -47,9 +47,9 @@ evaluation:
   anomaly_thresholds: [0.998, 0.9985, 0.999, 0.9997, 0.99975, 0.9998]
   # Likelihood strategies: 'absolute' = likelihood > each anomaly_thresholds value (past scores only);
   # 'percentile' = above each distribution_anomaly_thresholds percentile of the split, like mahalanobis
-  likelihood_threshold_mode: 'absolute'  # 'absolute' or 'percentile'
-  long_windows: [30]
-  short_windows: [2]
+  likelihood_threshold_mode: 'percentile'  # 'absolute' or 'percentile'
+  long_windows: [30,40,50,60,70]
+  short_windows: [2,3,4,5,6]
   ensembles:
 #    http_codes: [ '5xx','4xx' ] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
 #    aggregations: [ 'count', 'avg', 'min', 'max' ]
@@ -78,7 +78,7 @@ data_preparation_pipeline:
   null_padding_target: ${evaluation.null_padding_target}
   null_padding_feature: ${evaluation.null_padding_feature}
   fill_nan: ${evaluation.fill_nan}
-  log_transform: true  # log1p of the counts before MinMax scaling; results go to <model_save_path>_log1p/
+  log_transform: true   # log1p of the counts before MinMax scaling; results go to <model_save_path>_log1p/
   train_valid_ratio: 0.8  # chronological share of the training period used for training; the rest is validation
   feature_subsets:
 #    http_codes: ['5xx','4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
@@ -144,7 +144,7 @@ model_configs:
     slide_win: ${evaluation.slide_win}
     null_padding_target: false
     null_padding_feature: false
-    score_mode: 'forecast'      # 'forecast' or 'association' (results go to AnomalyTransformer_<score_mode>/)
+    score_mode: 'association'      # 'forecast' or 'association' (results go to AnomalyTransformer_<score_mode>/)
     score_temperature: 1.0      # τ in Softmax(-AssocDisc * τ), used only when score_mode == 'association'
   GST_PRO:
     model_filename: 'GST_PRO_model.pt'
@@ -190,9 +190,9 @@ model_configs:
     null_padding_feature: ${evaluation.null_padding_feature}
   GRU:
     model_filename: 'GRU_autoencoder.h5'
-    hidden_units: 32
-    layer_dim: 1           # number of stacked GRU layers
-    dropout: 0.3           # applied between GRU layers only, so it has no effect when layer_dim == 1
+    hidden_units: 64
+    layer_dim: 3            # number of stacked GRU layers
+    dropout: 0.0           # applied between GRU layers only, so it has no effect when layer_dim == 1
     learning_rate: 0.001   # Adam
     loss_function: "mse"
     null_padding_target: false
