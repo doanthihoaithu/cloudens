@@ -182,6 +182,10 @@ model_configs:
   STGformer:
     model_filename: 'STGformer_model.pt'
     slide_win: ${evaluation.slide_win}
+    # Graphs averaged over sliding windows of this many steps (official kernel_size): 1 = one graph per
+    # step; slide_win = one graph shared by all steps, as the official code for large graphs (~2400 nodes
+    # here). Results go to STGformer_pool<k>/ when > 1
+    temporal_kernel_size: ${evaluation.slide_win}
     null_padding_target: ${evaluation.null_padding_target}
     null_padding_feature: ${evaluation.null_padding_feature}
   GRU:

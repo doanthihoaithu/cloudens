@@ -107,6 +107,7 @@ def load_wrapper(model_name, config, static_edge_index, static_edge_weight):
         return STGformerWrapper(num_nodes, node_features, periods,
                                 input_embedding_dim=24, adaptive_embedding_dim=hidden_units + 8,
                                 num_heads=4, num_layers=3, order=2,
+                                temporal_kernel_size=config.get('temporal_kernel_size', 1),
                                 null_padding_feature=null_padding_feature,
                                 null_padding_target=null_padding_target,
                                 batch_size=batch_size, device=device)
@@ -323,6 +324,11 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
         score_mode = model_config.get('score_mode', None)
         if score_mode is not None:
             model_dir = f'{model_dir}_{score_mode}'
+        # STGformer with its graphs pooled over time (temporal_kernel_size > 1): results kept apart,
+        # e.g. STGformer_pool6, since the trained weights differ in shape
+        temporal_kernel_size = model_config.get('temporal_kernel_size', 1)
+        if temporal_kernel_size > 1:
+            model_dir = f'{model_dir}_pool{temporal_kernel_size}'
 
         os.makedirs(model_dir, exist_ok=True)
         model_filename = os.path.join(model_dir, model_config['model_filename'])
@@ -341,6 +347,7 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                  'null_padding_target': experiment_config.null_padding_target,
                                  'score_mode': score_mode or 'forecast',
                                  'score_temperature': model_config.get('score_temperature', 1.0),
+                                 'temporal_kernel_size': temporal_kernel_size,
                                  'device': DEVICE})
             model_wrapper = load_wrapper(model_name=model, config=graph_config,
                                          static_edge_index=data_loader.get_edges_as_tensor(device=DEVICE),
@@ -371,6 +378,7 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                  'null_padding_feature': experiment_config.null_padding_feature,
                                  'score_mode': score_mode or 'forecast',
                                  'score_temperature': model_config.get('score_temperature', 1.0),
+                                 'temporal_kernel_size': temporal_kernel_size,
                                  'device': DEVICE})
             model_wrapper = load_wrapper(model_name=model, config=graph_config,
                                          static_edge_index=data_loader.get_edges_as_tensor(device=DEVICE),

@@ -35,15 +35,16 @@ class STGAttention(nn.Module):
     Spatiotemporal linear attention with shared Q/K/V:
     attention over the N nodes at each time step, and over the T steps of
     each node; both outputs are concatenated and projected back to C.
+    With a single time step (time pooled away), only the attention over nodes.
     """
 
-    def __init__(self, model_dim: int, num_heads: int):
+    def __init__(self, model_dim: int, num_heads: int, single_step: bool = False):
         super().__init__()
         assert model_dim % num_heads == 0, f'model_dim ({model_dim}) must be divisible by num_heads ({num_heads})'
         self.num_heads = num_heads
         self.head_dim = model_dim // num_heads
         self.qkv = nn.Linear(model_dim, 3 * model_dim, bias=False)
-        self.out_proj = nn.Linear(2 * model_dim, model_dim)
+        self.out_proj = nn.Linear(model_dim if single_step else 2 * model_dim, model_dim)
 
     def _attend(self, q, k, v):
         # q, k, v: [B, S, L, C] — attention runs along L, independently for each of the S rows
@@ -55,6 +56,8 @@ class STGAttention(nn.Module):
         # x: [B, T, N, C]
         q, k, v = self.qkv(x).chunk(3, dim=-1)
         out_s = self._attend(q, k, v)                                        # over nodes
+        if x.size(1) == 1:
+            return self.out_proj(out_s)
         out_t = self._attend(q.transpose(1, 2), k.transpose(1, 2),
                              v.transpose(1, 2)).transpose(1, 2)              # over time
         return self.out_proj(torch.cat([out_s, out_t], dim=-1))             # [B, T, N, C]
@@ -70,12 +73,12 @@ class STGBlock(nn.Module):
     SCALES = [1.0, 0.01, 0.001]
 
     def __init__(self, model_dim: int, num_heads: int, order: int = 2,
-                 mlp_ratio: float = 2, dropout: float = 0.1, prop_dropout: float = 0.2):
+                 mlp_ratio: float = 2, dropout: float = 0.1, prop_dropout: float = 0.2, single_step: bool = False):
         super().__init__()
         assert 1 <= order <= len(self.SCALES), f'order must be in [1, {len(self.SCALES)}]'
         self.order = order
         self.prop_dropout = nn.Dropout(prop_dropout)
-        self.attn = nn.ModuleList([STGAttention(model_dim, num_heads) for _ in range(order)])
+        self.attn = nn.ModuleList([STGAttention(model_dim, num_heads, single_step) for _ in range(order)])
         self.gates = nn.ModuleList([nn.Linear(model_dim, model_dim) for _ in range(order)])
         for gate in self.gates:
             nn.init.zeros_(gate.weight)
@@ -86,7 +89,7 @@ class STGBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, graph: torch.Tensor) -> torch.Tensor:
-        # x: [B, T, N, C], graph: [T, N, N]
+        # x: [B, T', N, C], graph: [T', N, N]
         z, c, x_glo = x, x, x
         for k in range(self.order):
             if k > 0:
@@ -112,6 +115,11 @@ class STGformerModel(nn.Module):
     Follows the official implementation (github.com/Dreamzz5/STGformer),
     without the time-of-day / day-of-week embeddings (not available here).
 
+    temporal_kernel_size k: as the official kernel_size, the T graphs are averaged over sliding
+    windows of k steps and the tokens convolved over time with the same kernel, leaving
+    T' = T - k + 1 steps. k = 1 keeps one graph per step; k = T (used officially for the large
+    graphs: SD, GBA, GLA) leaves a single graph shared by all steps, much cheaper for large N.
+
     Reference: Wang et al., "STGformer: Efficient Spatiotemporal Graph
                Transformer for Traffic Forecasting", arXiv:2410.00385, 2024.
     """
@@ -120,8 +128,10 @@ class STGformerModel(nn.Module):
                  input_embedding_dim: int = 24, adaptive_embedding_dim: int = 40,
                  num_heads: int = 4, num_layers: int = 3, order: int = 2,
                  mlp_ratio: float = 2, dropout: float = 0.1, adaptive_dropout: float = 0.3,
-                 out_features: int = None):
+                 out_features: int = None, temporal_kernel_size: int = 1):
         super().__init__()
+        assert 1 <= temporal_kernel_size <= slide_win, \
+            f'temporal_kernel_size must be in [1, slide_win={slide_win}], got {temporal_kernel_size}'
         out_features = out_features or node_features
         model_dim = input_embedding_dim + adaptive_embedding_dim
 
@@ -129,11 +139,16 @@ class STGformerModel(nn.Module):
         self.adaptive_embedding = nn.Parameter(torch.empty(slide_win, num_nodes, adaptive_embedding_dim))
         nn.init.xavier_uniform_(self.adaptive_embedding)
         self.adaptive_dropout = nn.Dropout(adaptive_dropout)
-        self.temporal_proj = nn.Linear(model_dim, model_dim)
+        self.temporal_kernel_size = temporal_kernel_size
+        steps = slide_win - temporal_kernel_size + 1
+        # Convolution over time (official temporal_proj); with k = 1 it is the per-token linear map,
+        # kept as nn.Linear so that models trained before the kernel option still load
+        self.temporal_proj = (nn.Linear(model_dim, model_dim) if temporal_kernel_size == 1 else
+                              nn.Conv2d(model_dim, model_dim, (1, temporal_kernel_size)))
 
-        self.stg_block = STGBlock(model_dim, num_heads, order, mlp_ratio, dropout)
+        self.stg_block = STGBlock(model_dim, num_heads, order, mlp_ratio, dropout, single_step=steps == 1)
 
-        self.encoder_proj = nn.Linear(slide_win * model_dim, model_dim)
+        self.encoder_proj = nn.Linear(steps * model_dim, model_dim)
         self.encoder = nn.ModuleList([_mlp(model_dim, mlp_ratio, dropout) for _ in range(num_layers)])
         self.output_proj = nn.Linear(model_dim, out_features)
 
@@ -142,16 +157,25 @@ class STGformerModel(nn.Module):
         B = x.size(0)
         adp = self.adaptive_dropout(self.adaptive_embedding).expand(B, -1, -1, -1)
         h = torch.cat([self.input_proj(x), adp], dim=-1)                    # [B, T, N, C]
-        h = self.temporal_proj(h)
+        k = self.temporal_kernel_size
+        if k == 1:
+            h = self.temporal_proj(h)
+        else:   # [B, C, N, T] convolved over T
+            h = self.temporal_proj(h.permute(0, 3, 2, 1)).permute(0, 3, 2, 1)   # [B, T', N, C]
 
         E = self.adaptive_embedding
-        graph = torch.softmax(F.relu(E @ E.transpose(1, 2)), dim=-1)        # [T, N, N]
+        graph = E @ E.transpose(1, 2)                                       # [T, N, N]
+        if k > 1:   # average of the graphs of k consecutive steps
+            graph = F.avg_pool2d(graph.permute(1, 2, 0), (1, k), stride=1).permute(2, 0, 1)   # [T', N, N]
+        graph = torch.softmax(F.relu(graph), dim=-1)
         h = self.stg_block(h, graph)
 
-        h = self.encoder_proj(h.transpose(1, 2).flatten(-2))                # [B, N, C]
+        h = self.encoder_proj(h.transpose(1, 2).flatten(-2))                # [B, N, T'·C] → [B, N, C]
         for layer in self.encoder:
             h = h + layer(h)
-        return torch.sigmoid(self.output_proj(h))                           # [B, N, F_out]
+        # Linear output, as the official code: a sigmoid saturated on these mostly-zero targets (logits
+        # pushed to -inf, vanishing gradient) and the model got stuck predicting 0
+        return self.output_proj(h)                                          # [B, N, F_out]
 
 
 class STGformerWrapper:
@@ -159,8 +183,9 @@ class STGformerWrapper:
     def __init__(self, num_nodes: int, node_features: int, slide_win: int,
                  input_embedding_dim: int = 24, adaptive_embedding_dim: int = 40,
                  num_heads: int = 4, num_layers: int = 3, order: int = 2,
-                 dropout: float = 0.1,
+                 dropout: float = 0.1, temporal_kernel_size: int = 1,
                  null_padding_feature: bool = False, null_padding_target: bool = False,
+                 lr: float = 1e-3, weight_decay: float = 1e-5, clip_grad: float = 5.0,
                  batch_size: int = 32, device='cpu'):
         self.num_nodes = num_nodes
         self.node_features = node_features
@@ -171,6 +196,10 @@ class STGformerWrapper:
         self.num_layers = num_layers
         self.order = order
         self.dropout = dropout
+        self.temporal_kernel_size = temporal_kernel_size
+        self.lr = lr
+        self.weight_decay = weight_decay
+        self.clip_grad = clip_grad   # max gradient norm; 0 / None: no clipping
         # Null padding appends an is_nan channel to the inputs and/or targets
         self.null_padding_feature = null_padding_feature
         self.null_padding_target = null_padding_target
@@ -191,13 +220,19 @@ class STGformerWrapper:
             order=self.order,
             dropout=self.dropout,
             out_features=self.node_features + int(self.null_padding_target),
+            temporal_kernel_size=self.temporal_kernel_size,
         ).to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3, weight_decay=3e-4)
+        # AdamW: decoupled weight decay. With Adam's L2 decay (the official optimizer), the decay term is
+        # normalised like the gradient, so weights whose data gradient is tiny (the input projection on
+        # these mostly-zero counts) were driven to zero in a few hundred steps and the model collapsed
+        # to a constant output
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         self.loss_fn = nn.MSELoss()
         print(f'STGformerWrapper — device: {self.device}, nodes: {self.num_nodes}, '
               f'features: {self.node_features}, '
               f'model_dim: {self.input_embedding_dim + self.adaptive_embedding_dim}, '
-              f'heads: {self.num_heads}, order: {self.order}, '
+              f'heads: {self.num_heads}, order: {self.order}, temporal kernel: {self.temporal_kernel_size}, '
+              f'lr: {self.lr}, weight decay: {self.weight_decay}, clip grad: {self.clip_grad}, '
               f'null padding feature/target: {self.null_padding_feature}/{self.null_padding_target}')
 
     def train(self, train_loader, val_loader, epochs: int):
@@ -213,15 +248,18 @@ class STGformerWrapper:
                 y_hat = self.model(inputs)
                 loss = self.loss_fn(y_hat, labels)
                 loss.backward()
+                if self.clip_grad:   # as the official clip_grad: keeps a loss spike from wrecking the weights
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 loss_list.append(loss.item())
 
             epoch_train_loss = sum(loss_list) / len(loss_list)
             train_losses.append(epoch_train_loss)
-            _, _, _, epoch_valid_loss = self.predict(val_loader, mode='valid')
+            valid_predictions, _, _, epoch_valid_loss = self.predict(val_loader, mode='valid')
             valid_losses.append(epoch_valid_loss)
             print(f'Epoch {epoch} train RMSE: {epoch_train_loss:.7f}, valid RMSE: {epoch_valid_loss:.7f}')
+        self._warn_if_collapsed(valid_predictions)
 
         training_time = time.time() - t0
         self.history = {
@@ -231,6 +269,15 @@ class STGformerWrapper:
             'training_time': training_time,
         }
         return self.history
+
+    @staticmethod
+    def _warn_if_collapsed(predictions, tolerance=1e-6):
+        """Warns when the predictions [T, N, F] barely change over time: the model ignores its inputs."""
+        spread = float(np.median(predictions.std(axis=0)))
+        if spread < tolerance:
+            print(f'WARNING: STGformer predictions are almost constant over time (median std per sensor '
+                  f'{spread:.2e} < {tolerance:.0e}): the model has collapsed and ignores its inputs; '
+                  f'its anomaly scores are meaningless')
 
     def predict(self, loader, mode: str):
         self.model.eval()
