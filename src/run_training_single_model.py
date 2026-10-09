@@ -210,25 +210,51 @@ def _compute_pr_metrics(reconstruction_error_raw: np.ndarray,
 PR_METRIC_KEYS = ('AUC_PR', 'VUS_PR', 'BEST_F1', 'F1_OPTIMAL_THRESHOLD')
 
 
-def _best_f1_threshold(scores, labels):
+def _f1_thresholds(scores, labels):
     """
-    Best F1 over every threshold of a 1-D anomaly score and the threshold reaching it, in the units
-    of the score. The threshold lies halfway between the lowest score predicted anomalous and the next
-    lower score, so that score > threshold (as label_from_scores) and score >= threshold give the same F1.
+    F1 of every threshold of a 1-D anomaly score (one per distinct score value cutting it, from the PR
+    curve) and that threshold, in the units of the score. Each threshold lies halfway between the lowest
+    score predicted anomalous and the next lower score, so that score > threshold (as label_from_scores)
+    and score >= threshold give the same F1. Returns (f1, thresholds, detected), thresholds in increasing
+    order, detected the number of timestamps above each threshold.
     """
     from sklearn.metrics import precision_recall_curve
-    precision, recall, thresholds = precision_recall_curve(labels, scores)   # score >= thresholds[i]
+    precision, recall, lowest_detected = precision_recall_curve(labels, scores)   # score >= lowest_detected[i]
     precision, recall = precision[:-1], recall[:-1]   # last point: recall 0, no threshold
     f1 = np.divide(2 * precision * recall, precision + recall,
                    out=np.zeros_like(precision), where=precision + recall > 0)
+    # Next lower score of every cut: the previous distinct score, below the first one any lower score
+    lower = scores[scores < lowest_detected[0]]
+    first_lower = lower.max() if len(lower) else np.nextafter(lowest_detected[0], -np.inf)
+    next_lower = np.concatenate([[first_lower], lowest_detected[:-1]])
+    thresholds = (lowest_detected + next_lower) / 2
+    rounded = ~((next_lower <= thresholds) & (thresholds < lowest_detected))   # midpoint on lowest_detected (adjacent floats)
+    thresholds[rounded] = next_lower[rounded]
+    detected = len(scores) - np.searchsorted(np.sort(scores), lowest_detected, side='left')
+    return f1, thresholds, detected
+
+
+def _best_f1_threshold(scores, labels):
+    """Best F1 over every threshold of a 1-D anomaly score and the threshold reaching it (see _f1_thresholds)."""
+    f1, thresholds, _ = _f1_thresholds(scores, labels)
     best = int(np.argmax(f1))
-    lowest_detected = thresholds[best]
-    lower = scores[scores < lowest_detected]
-    next_lower = lower.max() if len(lower) else np.nextafter(lowest_detected, -np.inf)
-    threshold = (lowest_detected + next_lower) / 2
-    if not next_lower <= threshold < lowest_detected:   # midpoint rounded onto lowest_detected (adjacent floats)
-        threshold = next_lower
-    return float(f1[best]), float(threshold)
+    return float(f1[best]), float(thresholds[best])
+
+
+def _top_f1_thresholds(scores, labels, k, min_gap=0.0):
+    """
+    The k thresholds of a 1-D anomaly score with the highest F1, best first (see _f1_thresholds), at least
+    min_gap apart: the numbers of timestamps they flag differ by at least min_gap (a share of the larger
+    one) from those of every threshold kept before, so that they do not all flag nearly the same timestamps.
+    """
+    f1, thresholds, detected = _f1_thresholds(scores, labels)
+    kept = []
+    for i in np.argsort(-f1, kind='stable'):
+        if all(abs(detected[i] - detected[j]) >= min_gap * max(detected[i], detected[j]) for j in kept):
+            kept.append(i)
+            if len(kept) == k:
+                break
+    return [float(thresholds[i]) for i in kept]
 
 
 def _pr_metrics_from_scores(scores, labels, sliding_window: int = 64) -> dict:
@@ -511,6 +537,13 @@ EVALUATION_SPLITS = {'train': ('train',), 'valid': ('valid',), 'train_valid': ('
 # precision-recall curve over the thresholds of a likelihood does not apply, only for the scores
 # themselves (mean reconstruction errors, Mahalanobis distance)
 SPLIT_METRICS = ('precision', 'recall', 'f1', 'accuracy', 'auc_pr', 'vus_pr', 'best_f1', 'f1_optimal_threshold')
+# Score strategies (mahalanobis, mean_reconstruction_errors) with score_threshold_mode 'absolute': their
+# thresholds are the score_absolute_num_thresholds thresholds with the highest F1 on F1_OPTIMAL_SPLIT (no test
+# label), at least score_absolute_min_gap apart (see _top_f1_thresholds), score values applied as is to every
+# split; with 'percentile', the distribution_anomaly_thresholds
+# percentiles of each split
+F1_OPTIMAL_SPLIT = 'train_valid'
+SCORE_STRATEGIES = ('mean_reconstruction_errors', 'mahalanobis')
 # Splits also scored with NAB ({split}_{profile}_raw / _normalized columns), e.g. to choose the optimal
 # setting on train / valid by the NAB score, as on the test split, without the test labels
 NAB_SPLITS = ('train_valid',)
@@ -529,7 +562,7 @@ def _split_anomaly_windows(data_loader, split_scores):
 
 
 def _split_metrics(split_scores, strategy, topk, anomaly_threshold, long_window, short_window, with_windows, pr_cache,
-                   likelihood_threshold_mode='absolute', anomaly_windows=None):
+                   likelihood_threshold_mode='absolute', anomaly_windows=None, score_threshold_mode='percentile'):
     """
     Point metrics of one post-processing setting on one split (all its windows, labels included);
     percentile thresholds use the percentiles of this split's own scores, as on the test split.
@@ -537,8 +570,8 @@ def _split_metrics(split_scores, strategy, topk, anomaly_threshold, long_window,
     With anomaly_windows (the split's ground-truth windows), the NAB scores of the same predictions too.
     """
     labels = split_scores['is_anomaly'].to_numpy().astype(int)
-    is_anomalies, score = label_from_scores(split_scores, strategy, topk, anomaly_threshold,
-                                            long_window, short_window, with_windows, likelihood_threshold_mode)
+    is_anomalies, score = label_from_scores(split_scores, strategy, topk, anomaly_threshold, long_window, short_window,
+                                            with_windows, likelihood_threshold_mode, score_threshold_mode)
     precision, recall, f1, accuracy, _, _ = evaluate_performance(labels, is_anomalies)
     key = (strategy, topk, long_window, short_window)
     if key not in pr_cache:
@@ -590,7 +623,7 @@ def grid_search_new(data_loader, test_scores, experiment_config, split_scores=No
             'null_padding_feature',
             'null_padding_target',
             'score_normalization',
-            'threshold_type',   # 'absolute' (likelihood value) or 'percentile' of the split's scores
+            'threshold_type',   # 'absolute' (likelihood / score value) or 'percentile' of the split's scores
             ] + [f'{split}_{metric}' for split in EVALUATION_SPLITS for metric in SPLIT_METRICS] \
               + [f'{split}_{metric}' for split in NAB_SPLITS for metric in NAB_SPLIT_METRICS]
 
@@ -604,6 +637,9 @@ def grid_search_new(data_loader, test_scores, experiment_config, split_scores=No
     anomaly_thresholds = experiment_config.anomaly_thresholds
     # Likelihood strategies: absolute thresholds (anomaly_thresholds) or percentiles (distribution_anomaly_thresholds)
     likelihood_threshold_mode = experiment_config.get('likelihood_threshold_mode', 'absolute')
+    # Score strategies: percentile thresholds (distribution_anomaly_thresholds) or the best-F1 threshold on F1_OPTIMAL_SPLIT
+    score_threshold_mode = experiment_config.get('score_threshold_mode', 'percentile')
+    assert score_threshold_mode in LIKELIHOOD_THRESHOLD_MODES, f'Unknown score_threshold_mode: {score_threshold_mode}'
     assert likelihood_threshold_mode in LIKELIHOOD_THRESHOLD_MODES, \
         f'Unknown likelihood_threshold_mode: {likelihood_threshold_mode}'
     distribution_anomaly_thresholds = experiment_config.distribution_anomaly_thresholds
@@ -694,6 +730,24 @@ def grid_search_new(data_loader, test_scores, experiment_config, split_scores=No
 
     likelihood_thresholds = (anomaly_thresholds if likelihood_threshold_mode == 'absolute'
                              else experiment_config.distribution_anomaly_thresholds)
+    _, with_windows = likelihood_window_pairs(experiment_config)
+    # Absolute thresholds of the score strategies: the num_absolute thresholds with the highest F1 on
+    # F1_OPTIMAL_SPLIT, best first, {strategy: [value, ...]}
+    f1_optimal_thresholds = {}
+    if score_threshold_mode == 'absolute':
+        num_absolute = experiment_config.get('score_absolute_num_thresholds', 5)
+        min_gap = experiment_config.get('score_absolute_min_gap', 0.1)
+        assert F1_OPTIMAL_SPLIT in split_scores, f'Absolute score thresholds need the {F1_OPTIMAL_SPLIT} split scores'
+        reference = split_scores[F1_OPTIMAL_SPLIT]
+        reference_labels = reference['is_anomaly'].to_numpy().astype(int)
+        for strategy in set(post_processing_strategies) & set(SCORE_STRATEGIES):
+            if reference_labels.sum() == 0:
+                log.warning(f'No anomaly in {F1_OPTIMAL_SPLIT}: no best-F1 threshold, no setting for {strategy}')
+                continue
+            _, score = label_from_scores(reference, strategy, None, 50, 0, 0, with_windows)
+            f1_optimal_thresholds[strategy] = _top_f1_thresholds(score, reference_labels, num_absolute, min_gap)
+            log.info(f'{strategy}: {len(f1_optimal_thresholds[strategy])} highest-F1 thresholds on {F1_OPTIMAL_SPLIT}: '
+                     f'{[f"{t:.6g}" for t in f1_optimal_thresholds[strategy]]}')
     params_combinations = []
     for post_processing_strategy in post_processing_strategies:
         if post_processing_strategy == 'likelihood':
@@ -711,25 +765,25 @@ def grid_search_new(data_loader, test_scores, experiment_config, split_scores=No
                                                         long_window_values,
                                                         short_window_values)
             params_combinations.extend(list(params_combinations_new))
-        elif post_processing_strategy in ('mean_reconstruction_errors', 'mahalanobis'):
-            # Scores over all sensors (mean error, Mahalanobis distance), percentile thresholds:
-            # no top-k, no windows
-            params_combinations_new = itertools.product([post_processing_strategy],
-                                                        [None],
-                                                        distribution_anomaly_thresholds,
-                                                        [0],
-                                                        [0])
-            params_combinations.extend(list(params_combinations_new))
+        elif post_processing_strategy in SCORE_STRATEGIES:
+            # Scores over all sensors (mean error, Mahalanobis distance): no top-k, no windows. Percentile
+            # thresholds from the config, or the highest-F1 thresholds on F1_OPTIMAL_SPLIT as absolute values
+            if score_threshold_mode == 'percentile':
+                params_combinations.extend((post_processing_strategy, None, threshold, 0, 0)
+                                           for threshold in distribution_anomaly_thresholds)
+            else:
+                params_combinations.extend((post_processing_strategy, None, threshold, 0, 0)
+                                           for threshold in f1_optimal_thresholds.get(post_processing_strategy, []))
         else:
             raise ValueError(f'Unsupported post-processing strategy: {post_processing_strategy}')
     num_combinations = len(params_combinations)
     is_anomalies_columns = {}   # joined at the end: inserting columns one by one fragments a DataFrame
-    _, with_windows = likelihood_window_pairs(experiment_config)
     for index, (post_processing_strategy, topk, anomaly_threshold, long_window, short_window) in tqdm(enumerate(params_combinations), desc='running grid search', total=num_combinations):
         print(f'post_processing_strategy: {post_processing_strategy}')
         print(f'topk: {topk} and anomaly_threshold: {anomaly_threshold} long window: {long_window} short window: {short_window}')
         is_anomalies, scores = label_from_scores(test_scores, post_processing_strategy, topk, anomaly_threshold,
-                                                 long_window, short_window, with_windows, likelihood_threshold_mode)
+                                                 long_window, short_window, with_windows, likelihood_threshold_mode,
+                                                 score_threshold_mode)
         is_anomalies = pd.Series(is_anomalies, index=data_loader.test_index)
         visualization_df = pd.DataFrame({
             '5XX_count': data_loader.count_5xx,  # Adjust as needed for your data
@@ -798,13 +852,13 @@ def grid_search_new(data_loader, test_scores, experiment_config, split_scores=No
             'null_padding_feature': null_padding_feature,
             'null_padding_target': null_padding_target,
             'score_normalization': score_normalization,
-            'threshold_type': threshold_type(post_processing_strategy, likelihood_threshold_mode),
+            'threshold_type': threshold_type(post_processing_strategy, likelihood_threshold_mode, score_threshold_mode),
             # conf_matrix, mcc, is_anomalies, likelihoods, results_df, raw_nab_score,
         }
         for split, scores_of_split in split_scores.items():
             metrics = _split_metrics(scores_of_split, post_processing_strategy, topk, anomaly_threshold,
                                      long_window, short_window, with_windows, pr_caches[split],
-                                     likelihood_threshold_mode, split_anomaly_windows.get(split))
+                                     likelihood_threshold_mode, split_anomaly_windows.get(split), score_threshold_mode)
             new_row.update({f'{split}_{metric}': value for metric, value in metrics.items()})
         result_rows.append(new_row)
 

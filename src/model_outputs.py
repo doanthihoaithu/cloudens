@@ -398,25 +398,26 @@ LIKELIHOOD_THRESHOLD_MODES = ('absolute', 'percentile')
 LIKELIHOOD_STRATEGIES = ('likelihood', 'likelihood_mahalanobis')
 
 
-def threshold_type(strategy, likelihood_threshold_mode):
+def threshold_type(strategy, likelihood_threshold_mode, score_threshold_mode='percentile'):
     """'absolute' or 'percentile': how anomaly_threshold is applied for this strategy."""
-    return likelihood_threshold_mode if strategy in LIKELIHOOD_STRATEGIES else 'percentile'
+    return likelihood_threshold_mode if strategy in LIKELIHOOD_STRATEGIES else score_threshold_mode
 
 
 def label_from_scores(test_scores, strategy, topk, anomaly_threshold, long_window, short_window, with_windows,
-                      likelihood_threshold_mode='absolute'):
+                      likelihood_threshold_mode='absolute', score_threshold_mode='percentile'):
     """
     Binary predictions on the test split from the saved scores:
       • likelihood            : likelihood > anomaly_threshold, or above its anomaly_threshold-th
                                 percentile on the split with likelihood_threshold_mode='percentile'
       • likelihood_mahalanobis: same, on the likelihood of the scaled Mahalanobis distance
-      • mahalanobis           : distance above its anomaly_threshold-th percentile on the test split
-      • mean_reconstruction_errors: mean error over all sensors above its anomaly_threshold-th
-                                    percentile on the test split
+      • mahalanobis           : distance above its anomaly_threshold-th percentile on the test split,
+                                or distance > anomaly_threshold with score_threshold_mode='absolute'
+      • mean_reconstruction_errors: mean error over all sensors, thresholded as mahalanobis
     Returns (is_anomalies, score series).
     """
     assert likelihood_threshold_mode in LIKELIHOOD_THRESHOLD_MODES, \
         f'Unknown likelihood_threshold_mode: {likelihood_threshold_mode}'
+    assert score_threshold_mode in LIKELIHOOD_THRESHOLD_MODES, f'Unknown score_threshold_mode: {score_threshold_mode}'
     if strategy in LIKELIHOOD_STRATEGIES:
         if strategy == 'likelihood':
             score = test_scores[likelihood_column(topk, long_window, short_window, with_windows)].values
@@ -425,10 +426,9 @@ def label_from_scores(test_scores, strategy, topk, anomaly_threshold, long_windo
         if likelihood_threshold_mode == 'percentile':
             return (score > np.percentile(score, anomaly_threshold)).astype(int), score
         return (score > anomaly_threshold).astype(int), score
-    if strategy == 'mahalanobis':
-        score = test_scores[MAHALANOBIS_COLUMN].values
-        return (score > np.percentile(score, anomaly_threshold)).astype(int), score
-    if strategy == 'mean_reconstruction_errors':
-        score = test_scores[MEAN_ERROR_COLUMN].values
+    if strategy in ('mahalanobis', 'mean_reconstruction_errors'):
+        score = test_scores[MAHALANOBIS_COLUMN if strategy == 'mahalanobis' else MEAN_ERROR_COLUMN].values
+        if score_threshold_mode == 'absolute':
+            return (score > anomaly_threshold).astype(int), score
         return (score > np.percentile(score, anomaly_threshold)).astype(int), score
     raise ValueError(f'Unsupported post-processing strategy: {strategy}')

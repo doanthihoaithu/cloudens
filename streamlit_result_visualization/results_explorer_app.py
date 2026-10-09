@@ -54,6 +54,10 @@ AUTO_REFRESH_INTERVALS = ['10s', '30s', '1m', '5m']
 PARAMETER_COLUMNS = ['post_processing_strategy', 'threshold_type', 'topk', 'long_window', 'short_window', 'anomaly_threshold']
 # A configuration: everything about a setting but the model, so that it can be applied to every model
 CONFIG_COLUMNS = ['window', 'subset', 'fill_nan', 'score_normalization', *PARAMETER_COLUMNS]
+# Strategies thresholded on the score itself: their absolute thresholds are each model's own highest-F1
+# thresholds on train_valid, so they differ from one model to another for the same configuration; they are
+# matched across models by their F1 rank (#1 = best F1 on train_valid)
+SCORE_STRATEGIES = ('mahalanobis', 'mean_reconstruction_errors')
 # Parts of the configuration the target reference can be fixed on, in the 'Target model' tab
 TARGET_FIXED_COLUMNS = ['subset', 'window', 'score_normalization', 'fill_nan', 'post_processing_strategy', 'topk']
 ANY = 'Any'
@@ -256,6 +260,13 @@ def load_results(files):
     is_likelihood = results['post_processing_strategy'].str.startswith('likelihood')
     results['threshold_type'] = results['threshold_type'].fillna(
         is_likelihood.map({True: 'absolute', False: 'percentile'}))
+    # Rank of the absolute thresholds of the score strategies by their F1 on train_valid, within each
+    # file and strategy (#1 = best F1): the thresholds are the model's own, the rank is comparable
+    own = results['post_processing_strategy'].isin(SCORE_STRATEGIES) & (results['threshold_type'] == 'absolute')
+    results['f1_rank'] = float('nan')
+    if own.any() and 'train_valid_f1' in results:
+        results.loc[own, 'f1_rank'] = (results[own].groupby(['file', 'post_processing_strategy'])['train_valid_f1']
+                                       .rank(ascending=False, method='first'))
     counters = results['detection_counters'].map(_parse_counters)
     for key in ('tp', 'fp', 'fn'):
         results[f'nab_{key}'] = counters.map(lambda c, k=key: c.get(k))
@@ -513,6 +524,10 @@ with tab_target:
         target_index = target_rows[select_by].idxmax()
         # Compared as text: NaN windows (strategies without them) match each other
         keys = ranked[match_on].astype(str)
+        if 'anomaly_threshold' in match_on:
+            own_threshold = ranked['f1_rank'].notna()
+            keys.loc[own_threshold, 'anomaly_threshold'] = [f'own best-F1 threshold #{int(r)} (train_valid)'
+                                                            for r in ranked.loc[own_threshold, 'f1_rank']]
         same = (keys == keys.loc[target_index]).all(axis=1)
         matched = ranked[same]
         best_matched = matched.loc[matched.groupby('model_folder')[select_by].idxmax()].copy()

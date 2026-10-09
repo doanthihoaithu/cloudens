@@ -634,6 +634,8 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                                 short_window = params.get('short_window', None)
                                 normalization = params.get('score_normalization', score_normalization)
                                 likelihood_threshold_mode = params.get('threshold_type', 'absolute')
+                                # Mahalanobis / mean error: percentile thresholds unless the setting says absolute
+                                score_threshold_mode = params.get('threshold_type', 'percentile')
                             else:
                                 strat_df = grid_df[grid_df['post_processing_strategy'] == strategy]
                                 if strat_df.empty:
@@ -653,11 +655,15 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                                 likelihood_threshold_mode = best_row.get('threshold_type', 'absolute')
                                 if pd.isna(likelihood_threshold_mode):
                                     likelihood_threshold_mode = 'absolute'
+                                # Mahalanobis / mean error: percentile thresholds unless the setting says absolute
+                                score_threshold_mode = best_row.get('threshold_type', 'percentile')
+                                if pd.isna(score_threshold_mode):
+                                    score_threshold_mode = 'percentile'
 
                             with_windows = likelihood_column(topk, long_window, short_window) not in test_scores.columns
                             is_anom, likelihoods = label_from_scores(test_scores, strategy, topk, anomaly_threshold,
                                                                      long_window, short_window, with_windows,
-                                                                     likelihood_threshold_mode)
+                                                                     likelihood_threshold_mode, score_threshold_mode)
                             is_anom = pd.Series(is_anom)
 
                             all_panels.append({
@@ -1151,6 +1157,8 @@ def plot_detected_anomalies_for_specific_periods(
                                 short_window = params.get('short_window', None)
                                 normalization = params.get('score_normalization', score_normalization)
                                 likelihood_threshold_mode = params.get('threshold_type', 'absolute')
+                                # Mahalanobis / mean error: percentile thresholds unless the setting says absolute
+                                score_threshold_mode = params.get('threshold_type', 'percentile')
                             else:
                                 strat_df = grid_df[grid_df['post_processing_strategy'] == strategy]
                                 if strat_df.empty:
@@ -1170,11 +1178,15 @@ def plot_detected_anomalies_for_specific_periods(
                                 likelihood_threshold_mode = best_row.get('threshold_type', 'absolute')
                                 if pd.isna(likelihood_threshold_mode):
                                     likelihood_threshold_mode = 'absolute'
+                                # Mahalanobis / mean error: percentile thresholds unless the setting says absolute
+                                score_threshold_mode = best_row.get('threshold_type', 'percentile')
+                                if pd.isna(score_threshold_mode):
+                                    score_threshold_mode = 'percentile'
 
                             with_windows = likelihood_column(topk, long_window, short_window) not in test_scores.columns
                             is_anom, likelihoods = label_from_scores(test_scores, strategy, topk, anomaly_threshold,
                                                                      long_window, short_window, with_windows,
-                                                                     likelihood_threshold_mode)
+                                                                     likelihood_threshold_mode, score_threshold_mode)
                             is_anom = pd.Series(is_anom)
                             all_panels.append({
                                 'type': 'score', 'model': model_folder, 'strategy': strategy,

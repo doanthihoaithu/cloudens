@@ -130,19 +130,23 @@ def plot_training_history(model_name, training_history, model_save_dir):
     train_losses = training_history['train_losses']
     valid_losses = training_history['valid_losses']
 
-    plt.plot(range(epochs), train_losses, color='blue', label='train loss')
-    plt.plot(range(epochs), valid_losses, color='red', label='val loss')
-    plt.legend(loc='best')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.title(f'{model_name} training history')
+    # A figure of its own, closed once saved: drawn on the current figure, the curves of every model
+    # trained before in the same process (run_training_multiple_models) would pile up on it
+    fig, ax = plt.subplots()
+    ax.plot(range(epochs), train_losses, color='blue', label='train loss')
+    ax.plot(range(epochs), valid_losses, color='red', label='val loss')
+    ax.legend(loc='best')
+    ax.set_xlabel('Epochs')
+    ax.set_ylabel('Loss')
+    ax.set_title(f'{model_name} training history')
 
     os.makedirs(model_save_dir, exist_ok=True)
     png_filepath = os.path.join(model_save_dir, f'{model_name}_train_val_losses.png')
     if os.path.exists(png_filepath):
         os.remove(png_filepath)  # Remove the file if it already exists
 
-    plt.savefig(png_filepath, dpi=300)
+    fig.savefig(png_filepath, dpi=300)
+    plt.close(fig)
 
     training_time_file_path = os.path.join(model_save_dir, f'{model_name}_training_time.csv')
     training_history_file_path = os.path.join(model_save_dir, f'{model_name}_training_history.csv')
