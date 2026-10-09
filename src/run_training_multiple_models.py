@@ -7,6 +7,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
 import itertools
+from datetime import datetime
 from tqdm import tqdm
 
 import numpy as np
@@ -26,11 +27,23 @@ from anomaly_likelihood import compute_anomaly_likelihood
 from nab_scoring import calculate_nab_score_with_window_based_tp_fn
 from run_training_single_model import analyze_reconstruction_errors
 from utils import clear_folder, get_project_root, get_full_err_scores, set_random_seed, calculate_mahalanobis_distance, \
-    calculate_mahalanobis_distance_with_is_nan_mask, refine_reconstruction_error_with_is_nan_mask
+    calculate_mahalanobis_distance_with_is_nan_mask, refine_reconstruction_error_with_is_nan_mask, results_root_dir
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+# One row per combination and run, appended to <results root>/RUN_STATUS_FILE: which model / configuration
+# succeeded or failed. Columns of a combination, in the order of the combination tuples
+RUN_STATUS_FILE = 'multiple_training_runs.csv'
+COMBINATION_COLUMNS = ['model', 'slide_win', 'http_code', 'aggregation', 'fill_nan',
+                       'null_padding_feature', 'null_padding_target']
+MAX_ERROR_MESSAGE_LENGTH = 500
+
+
+def append_run_status(status_file, row):
+    """Append one combination's row to the status CSV right away, so it survives a crash / killed job."""
+    pd.DataFrame([row]).to_csv(status_file, mode='a', header=not os.path.exists(status_file), index=False)
 
 @hydra.main(config_path="../conf", config_name="config.yaml")
 def main(cfg: DictConfig):
@@ -81,40 +94,43 @@ def main(cfg: DictConfig):
                                             ))
             combination_list.extend(graph_combinations)
 
+    status_dir = os.path.join(get_project_root(), results_root_dir(cfg.evaluation.model_save_path,
+                                                                    cfg.data_preparation_pipeline.get('log_transform', False)))
+    os.makedirs(status_dir, exist_ok=True)
+    status_file = os.path.join(status_dir, RUN_STATUS_FILE)
+    run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log.info(f'Run {run_id}: {len(combination_list)} combinations, status of each appended to {status_file}')
+
+    failed = []
     for config in tqdm(combination_list, total=len(combination_list), desc='Training multiple models....'):
-        model, slide_win, http_code, aggregation, fill_nan, null_padding_feature, null_padding_target = config
         print(config)
-        OmegaConf.update(cfg, 'evaluation.use_model', model)
-        OmegaConf.update(cfg, 'evaluation.slide_win', slide_win)
-        OmegaConf.update(cfg, 'evaluation.fill_nan', fill_nan)
-        OmegaConf.update(cfg, 'evaluation.null_padding_feature', null_padding_feature)
-        OmegaConf.update(cfg, 'evaluation.null_padding_target', null_padding_target)
+        started_at = datetime.now()
+        # A failing combination (e.g. CUDA out of memory) is logged and skipped: the next ones still run
+        try:
+            run_combination(cfg, config, random_seed)
+            status, error_type, error_message = 'success', '', ''
+        except Exception as e:
+            log.exception(f'Combination {config} failed')
+            status, error_type = 'failed', type(e).__name__
+            error_message = ' '.join(str(e).split())[:MAX_ERROR_MESSAGE_LENGTH]
+            failed.append(config)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()   # release the memory of the failed model before the next one
+        finished_at = datetime.now()
+        append_run_status(status_file, {
+            'run_id': run_id,
+            'started_at': started_at.isoformat(timespec='seconds'),
+            'finished_at': finished_at.isoformat(timespec='seconds'),
+            'duration_s': round((finished_at - started_at).total_seconds(), 1),
+            'status': status,
+            **dict(zip(COMBINATION_COLUMNS, config)),
+            'error_type': error_type,
+            'error_message': error_message,
+        })
 
-        OmegaConf.update(cfg, 'data_preparation_pipeline.features_prep.filter.http_codes', [http_code])
-        OmegaConf.update(cfg, 'data_preparation_pipeline.features_prep.filter.aggregations', [aggregation])
-
-        data_preparation_config = cfg.data_preparation_pipeline
-        experiment_config = cfg.evaluation
-        model_configs = cfg.model_configs
-
-        if experiment_config.use_model not in cfg.graph_models:
-            data_preparation_config.null_padding_feature = False
-            data_preparation_config.null_padding_target = False
-
-            experiment_config.null_padding_feature = False
-            experiment_config.null_padding_target = False
-
-        # task_id = sys.argv[0]
-        # print(f"Task ID: {task_id}")
-        # model = experiment_config.use_models[task_id]
-        # print(f'Using model: {model}')
-
-        ibm_dataset_loader = IBMDatasetLoader(data_preparation_config)
-
-        selected_group_mode = ibm_dataset_loader.selected_group_mode
-
-        analyze_reconstruction_errors(ibm_dataset_loader, selected_group_mode, model_configs=model_configs,
-                                      experiment_config=experiment_config, random_seed=random_seed)
+    log.info(f'Run {run_id}: {len(combination_list) - len(failed)} / {len(combination_list)} combinations succeeded')
+    for config in failed:
+        log.error(f'Failed combination: {dict(zip(COMBINATION_COLUMNS, config))}')
 
     # Extract experiment parameters
     # start_date = pd.Timestamp(cfg.train_test_config.experiment_parameters.start_date)
@@ -153,6 +169,38 @@ def main(cfg: DictConfig):
     # selected_group_mode = ibm_dataset_loader.selected_group_mode
     #
     # analyze_reconstruction_errors(ibm_dataset_loader, selected_group_mode, model_configs=model_configs, experiment_config=experiment_config)
+
+
+def run_combination(cfg, config, random_seed):
+    """Train / score one combination (model, slide_win, http_code, aggregation, fill_nan,
+    null_padding_feature, null_padding_target) with the shared cfg updated accordingly."""
+    model, slide_win, http_code, aggregation, fill_nan, null_padding_feature, null_padding_target = config
+    OmegaConf.update(cfg, 'evaluation.use_model', model)
+    OmegaConf.update(cfg, 'evaluation.slide_win', slide_win)
+    OmegaConf.update(cfg, 'evaluation.fill_nan', fill_nan)
+    OmegaConf.update(cfg, 'evaluation.null_padding_feature', null_padding_feature)
+    OmegaConf.update(cfg, 'evaluation.null_padding_target', null_padding_target)
+
+    OmegaConf.update(cfg, 'data_preparation_pipeline.features_prep.filter.http_codes', [http_code])
+    OmegaConf.update(cfg, 'data_preparation_pipeline.features_prep.filter.aggregations', [aggregation])
+
+    data_preparation_config = cfg.data_preparation_pipeline
+    experiment_config = cfg.evaluation
+    model_configs = cfg.model_configs
+
+    if experiment_config.use_model not in cfg.graph_models:
+        data_preparation_config.null_padding_feature = False
+        data_preparation_config.null_padding_target = False
+
+        experiment_config.null_padding_feature = False
+        experiment_config.null_padding_target = False
+
+    ibm_dataset_loader = IBMDatasetLoader(data_preparation_config)
+
+    selected_group_mode = ibm_dataset_loader.selected_group_mode
+
+    analyze_reconstruction_errors(ibm_dataset_loader, selected_group_mode, model_configs=model_configs,
+                                  experiment_config=experiment_config, random_seed=random_seed)
 
 
 if __name__ == "__main__":

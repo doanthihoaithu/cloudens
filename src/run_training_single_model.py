@@ -332,6 +332,9 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
 
         os.makedirs(model_dir, exist_ok=True)
         model_filename = os.path.join(model_dir, model_config['model_filename'])
+        # Predictions are recomputed when asked or when this model is (re)trained; kept local so that
+        # training one model does not force the re-prediction of the next ones (shared experiment_config)
+        retest = experiment_config.retest
         # Check if the model file exists
         if os.path.exists(model_filename) and experiment_config.retrain == False:
             print(f"Loading trained model: {model_filename}")
@@ -388,10 +391,10 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
             plot_training_history(model_name=model, training_history=history,
                                   model_save_dir=os.path.dirname(model_filename))
 
-            experiment_config.retest = True
+            retest = True
 
         # Predict every window of the three splits (train windows with anomalies included)
-        predictions_recomputed = not predictions_exist(model_dir) or experiment_config.retest
+        predictions_recomputed = not predictions_exist(model_dir) or retest
         if predictions_recomputed:
             outputs = predict_all_splits(model_wrapper, data_loader, batch_size, DEVICE)
             save_predictions(outputs, data_loader, model_dir)
