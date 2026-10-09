@@ -36,6 +36,7 @@ MEASURES = {
 # Metrics a setting can be selected by: NAB on test, or metrics on train / valid (no test labels)
 SELECTION_METRICS = [
     'reward_fn_normalized', 'standard_normalized', 'f1',
+    'train_valid_reward_fn_normalized', 'train_valid_standard_normalized',
     'train_valid_vus_pr', 'train_valid_auc_pr', 'train_valid_f1',
     'valid_vus_pr', 'valid_auc_pr', 'valid_f1',
     'test_vus_pr', 'test_auc_pr',

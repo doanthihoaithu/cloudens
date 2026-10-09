@@ -474,14 +474,29 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
 EVALUATION_SPLITS = {'train': ('train',), 'valid': ('valid',), 'train_valid': ('train', 'valid'),
                      'test': ('test',)}   # name: splits concatenated
 SPLIT_METRICS = ('precision', 'recall', 'f1', 'accuracy', 'auc_pr', 'vus_pr')
+# Splits also scored with NAB ({split}_{profile}_raw / _normalized columns), e.g. to choose the optimal
+# setting on train / valid by the NAB score, as on the test split, without the test labels
+NAB_SPLITS = ('train_valid',)
+NAB_PROFILES = ('standard', 'reward_fn')
+NAB_SPLIT_METRICS = tuple(f'{profile}_{kind}' for profile in NAB_PROFILES for kind in ('raw', 'normalized'))
+
+
+def _split_anomaly_windows(data_loader, split_scores):
+    """Ground-truth anomaly windows lying within the timestamps of a split, as anomaly_windows_test
+    for the test split."""
+    windows = data_loader.anomaly_windows
+    timestamps = split_scores['timestamp']
+    return windows[(windows['anomaly_window_start'] >= timestamps.min()) &
+                   (windows['anomaly_window_end'] <= timestamps.max())]
 
 
 def _split_metrics(split_scores, strategy, topk, anomaly_threshold, long_window, short_window, with_windows, pr_cache,
-                   likelihood_threshold_mode='absolute'):
+                   likelihood_threshold_mode='absolute', anomaly_windows=None):
     """
     Point metrics of one post-processing setting on one split (all its windows, labels included);
     percentile thresholds use the percentiles of this split's own scores, as on the test split.
     AUC-PR / VUS-PR depend on the score only, not on the threshold: cached in pr_cache.
+    With anomaly_windows (the split's ground-truth windows), the NAB scores of the same predictions too.
     """
     labels = split_scores['is_anomaly'].to_numpy().astype(int)
     is_anomalies, score = label_from_scores(split_scores, strategy, topk, anomaly_threshold,
@@ -490,18 +505,29 @@ def _split_metrics(split_scores, strategy, topk, anomaly_threshold, long_window,
     key = (strategy, topk, long_window, short_window)
     if key not in pr_cache:
         pr_cache[key] = _pr_metrics_from_scores(score, labels)
-    return {'precision': precision, 'recall': recall, 'f1': f1, 'accuracy': accuracy,
-            'auc_pr': pr_cache[key]['AUC_PR'], 'vus_pr': pr_cache[key]['VUS_PR']}
+    metrics = {'precision': precision, 'recall': recall, 'f1': f1, 'accuracy': accuracy,
+               'auc_pr': pr_cache[key]['AUC_PR'], 'vus_pr': pr_cache[key]['VUS_PR']}
+    if anomaly_windows is not None:
+        nab_df = pd.DataFrame({'true_anomaly': labels, 'predicted_anomaly': is_anomalies},
+                              index=pd.DatetimeIndex(split_scores['timestamp']))
+        for profile in NAB_PROFILES:
+            raw, normalized, _, _, _ = calculate_nab_score_with_window_based_tp_fn(
+                nab_df, anomaly_windows, profile, true_col='true_anomaly', pred_col='predicted_anomaly')
+            metrics.update({f'{profile}_raw': raw, f'{profile}_normalized': normalized})
+    return metrics
 
 
 def grid_search_new(data_loader, test_scores, experiment_config, split_scores=None, score_normalization=None):
     """
     NAB / point metrics of every post-processing setting, thresholding the precomputed test scores.
     With split_scores ({split: score DataFrame} of EVALUATION_SPLITS), the point metrics and
-    AUC-PR / VUS-PR on those splits are added as {split}_{metric} columns.
+    AUC-PR / VUS-PR on those splits are added as {split}_{metric} columns, and the NAB scores
+    on the NAB_SPLITS among them as {split}_{profile}_raw / _normalized columns.
     """
     split_scores = split_scores or {}
     pr_caches = {split: {} for split in split_scores}
+    split_anomaly_windows = {split: _split_anomaly_windows(data_loader, split_scores[split])
+                             for split in NAB_SPLITS if split in split_scores}
     # best_params_unweighted, best_unweighted_score, best_results_unweighted, result_csv_filepath
     columns = [
             'standard_normalized',
@@ -525,7 +551,8 @@ def grid_search_new(data_loader, test_scores, experiment_config, split_scores=No
             'null_padding_target',
             'score_normalization',
             'threshold_type',   # 'absolute' (likelihood value) or 'percentile' of the split's scores
-            ] + [f'{split}_{metric}' for split in EVALUATION_SPLITS for metric in SPLIT_METRICS]
+            ] + [f'{split}_{metric}' for split in EVALUATION_SPLITS for metric in SPLIT_METRICS] \
+              + [f'{split}_{metric}' for split in NAB_SPLITS for metric in NAB_SPLIT_METRICS]
 
     model = experiment_config.use_model
     null_padding_feature = experiment_config.null_padding_feature
@@ -737,7 +764,7 @@ def grid_search_new(data_loader, test_scores, experiment_config, split_scores=No
         for split, scores_of_split in split_scores.items():
             metrics = _split_metrics(scores_of_split, post_processing_strategy, topk, anomaly_threshold,
                                      long_window, short_window, with_windows, pr_caches[split],
-                                     likelihood_threshold_mode)
+                                     likelihood_threshold_mode, split_anomaly_windows.get(split))
             new_row.update({f'{split}_{metric}': value for metric, value in metrics.items()})
         result_rows.append(new_row)
 
