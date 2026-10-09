@@ -36,6 +36,9 @@ from utils import (get_full_err_scores, has_is_nan_mask, apply_is_nan_mask, Maha
 log = logging.getLogger(__name__)
 
 SPLITS = ('train', 'valid', 'test')
+# Splits on which the anomaly likelihood runs as one series: valid directly follows train in time,
+# so its likelihood continues the train history; test is a separate period with its own history
+LIKELIHOOD_SEGMENTS = (('train', 'valid'), ('test',))
 PREDICTION_FILES = {
     'actual': 'scaled_actual_data.parquet',
     'predicted': 'predicted_data.parquet',
@@ -264,11 +267,18 @@ def _likelihood_series(scores, long_window, short_window, chunk_size=8192):
     return likelihood
 
 
-def _likelihood_scores(z, topk, window_pairs):
-    """Top-k / mean aggregation of the normalised errors z [T, D] of one split, then the anomaly
-    likelihood on this split alone. Returns {(lw, sw): likelihood}."""
-    aggregated = aggregate_sensor_scores(z, topk)
-    return {(lw, sw): _likelihood_series(aggregated, lw, sw) for lw, sw in window_pairs}
+def _segment_likelihoods(series, window_pairs):
+    """Anomaly likelihood of the scores {split: [T_split]} of every split, computed on each segment
+    of LIKELIHOOD_SEGMENTS as one series (valid continues the history of train).
+    Returns {split: {(lw, sw): likelihood}}."""
+    likelihoods = {s: {} for s in SPLITS}
+    for segment in LIKELIHOOD_SEGMENTS:
+        joined = np.concatenate([series[s] for s in segment])
+        bounds = np.cumsum([len(series[s]) for s in segment])[:-1]
+        for lw, sw in window_pairs:
+            for s, part in zip(segment, np.split(_likelihood_series(joined, lw, sw), bounds)):
+                likelihoods[s][(lw, sw)] = part
+    return likelihoods
 
 
 def compute_mahalanobis_scores(outputs, data_loader, experiment_config, scorer_args):
@@ -308,7 +318,7 @@ def compute_anomaly_scores(outputs, data_loader, experiment_config, scorer_args,
     score_columns = {}
     likelihood_contributions = {}
     for topk in topks:
-        per_split = {s: _likelihood_scores(z[s], topk, window_pairs) for s in SPLITS}
+        per_split = _segment_likelihoods({s: aggregate_sensor_scores(z[s], topk) for s in SPLITS}, window_pairs)
         for lw, sw in window_pairs:
             score_columns[likelihood_column(topk, lw, sw, with_windows)] = np.concatenate([per_split[s][(lw, sw)] for s in SPLITS])
         if topk is not None:   # contributing nodes, on the test split only
@@ -325,10 +335,11 @@ def compute_anomaly_scores(outputs, data_loader, experiment_config, scorer_args,
     scaled = {s: (distances[s] - d_min) / max(d_max - d_min, 1e-12) for s in SPLITS}
     score_columns[MAHALANOBIS_COLUMN] = np.concatenate([scaled[s] for s in SPLITS])
 
-    # Likelihood of the scaled distances, computed on each split alone
+    # Likelihood of the scaled distances, computed on each segment of LIKELIHOOD_SEGMENTS
+    scaled_likelihoods = _segment_likelihoods(scaled, window_pairs)
     for lw, sw in window_pairs:
         score_columns[mahalanobis_likelihood_column(lw, sw, with_windows)] = np.concatenate(
-            [_likelihood_series(scaled[s], lw, sw) for s in SPLITS])
+            [scaled_likelihoods[s][(lw, sw)] for s in SPLITS])
     scores = pd.concat([scores, pd.DataFrame(score_columns, index=scores.index)], axis=1)
     return scores, {'likelihood': likelihood_contributions, 'mahalanobis': mahalanobis_contributions}
 
