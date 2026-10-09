@@ -175,6 +175,10 @@ def run_combination(cfg, config, random_seed):
     """Train / score one combination (model, slide_win, http_code, aggregation, fill_nan,
     null_padding_feature, null_padding_target) with the shared cfg updated accordingly."""
     model, slide_win, http_code, aggregation, fill_nan, null_padding_feature, null_padding_target = config
+    # Null padding only applies to graph-based models. Set on evaluation only: data_preparation_pipeline
+    # interpolates it, and assigning there would break the interpolation for the next combinations
+    if model not in cfg.graph_models:
+        null_padding_feature = null_padding_target = False
     OmegaConf.update(cfg, 'evaluation.use_model', model)
     OmegaConf.update(cfg, 'evaluation.slide_win', slide_win)
     OmegaConf.update(cfg, 'evaluation.fill_nan', fill_nan)
@@ -187,13 +191,6 @@ def run_combination(cfg, config, random_seed):
     data_preparation_config = cfg.data_preparation_pipeline
     experiment_config = cfg.evaluation
     model_configs = cfg.model_configs
-
-    if experiment_config.use_model not in cfg.graph_models:
-        data_preparation_config.null_padding_feature = False
-        data_preparation_config.null_padding_target = False
-
-        experiment_config.null_padding_feature = False
-        experiment_config.null_padding_target = False
 
     ibm_dataset_loader = IBMDatasetLoader(data_preparation_config)
 
