@@ -123,6 +123,22 @@ def normalize_nab_score(score, baseline_score, perfect_score):
         return 0
     return 100 * (score - baseline_score) / (perfect_score - baseline_score)
 
+def merge_overlapping_windows(anomaly_windows):
+    """
+    Ground-truth windows with the overlapping ones merged into one (earliest start, latest end; the
+    other columns, e.g. anomaly_source, of the earliest window), sorted by start. Overlapping windows
+    form a single run of labels: merged, every window is one TP / FN, as the baseline / perfect scores
+    count them (from the label runs).
+    """
+    windows = anomaly_windows.sort_values('anomaly_window_start').reset_index(drop=True)
+    starts = windows['anomaly_window_start']
+    # A window starts a new group unless it begins before the latest end of the windows before it
+    group = (starts > windows['anomaly_window_end'].cummax().shift()).cumsum()
+    merged = windows.groupby(group).first()
+    merged['anomaly_window_end'] = windows.groupby(group)['anomaly_window_end'].max()
+    return merged.reset_index(drop=True)
+
+
 def calculate_nab_score_with_window_based_tp_fn(df, anomaly_windows_test, nab_scoring_profile, true_col='true_anomaly', pred_col='predicted_anomaly',
                                                 reward_tp=1.0, penalty_fp=0.11, penalty_fn=1.0):
     """

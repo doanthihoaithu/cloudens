@@ -38,8 +38,8 @@ from anomaly_likelihood import compute_anomaly_likelihood
 from model_outputs import (predict_all_splits, save_predictions, predictions_exist, load_predictions,
                            compute_anomaly_scores, compute_mahalanobis_scores, save_anomaly_scores, label_from_scores,
                            likelihood_window_pairs, parse_topk, MAHALANOBIS_COLUMN, MAHALANOBIS_REFERENCES,
-                           LIKELIHOOD_THRESHOLD_MODES, threshold_type)
-from nab_scoring import calculate_nab_score_with_window_based_tp_fn
+                           LIKELIHOOD_THRESHOLD_MODES, LIKELIHOOD_STRATEGIES, threshold_type)
+from nab_scoring import calculate_nab_score_with_window_based_tp_fn, merge_overlapping_windows
 from utils import clear_folder, get_project_root, get_full_err_scores, set_random_seed, calculate_mahalanobis_distance, has_is_nan_mask, MahalanobisScorer, scoring_result_file_name, results_root_dir, score_normalizations, \
     calculate_mahalanobis_distance_with_is_nan_mask, refine_reconstruction_error_with_is_nan_mask
 
@@ -206,9 +206,35 @@ def _compute_pr_metrics(reconstruction_error_raw: np.ndarray,
     return _pr_metrics_from_scores(scores, test_labels, sliding_window)
 
 
+# Keys of _pr_metrics_from_scores
+PR_METRIC_KEYS = ('AUC_PR', 'VUS_PR', 'BEST_F1', 'F1_OPTIMAL_THRESHOLD')
+
+
+def _best_f1_threshold(scores, labels):
+    """
+    Best F1 over every threshold of a 1-D anomaly score and the threshold reaching it, in the units
+    of the score. The threshold lies halfway between the lowest score predicted anomalous and the next
+    lower score, so that score > threshold (as label_from_scores) and score >= threshold give the same F1.
+    """
+    from sklearn.metrics import precision_recall_curve
+    precision, recall, thresholds = precision_recall_curve(labels, scores)   # score >= thresholds[i]
+    precision, recall = precision[:-1], recall[:-1]   # last point: recall 0, no threshold
+    f1 = np.divide(2 * precision * recall, precision + recall,
+                   out=np.zeros_like(precision), where=precision + recall > 0)
+    best = int(np.argmax(f1))
+    lowest_detected = thresholds[best]
+    lower = scores[scores < lowest_detected]
+    next_lower = lower.max() if len(lower) else np.nextafter(lowest_detected, -np.inf)
+    threshold = (lowest_detected + next_lower) / 2
+    if not next_lower <= threshold < lowest_detected:   # midpoint rounded onto lowest_detected (adjacent floats)
+        threshold = next_lower
+    return float(f1[best]), float(threshold)
+
+
 def _pr_metrics_from_scores(scores, labels, sliding_window: int = 64) -> dict:
-    """AUC-PR and VUS-PR (FFVUS, slope = sliding_window) of a 1-D anomaly score [total];
-    {'AUC_PR', 'VUS_PR'}, NaN when undefined (no positive label) or on failure."""
+    """AUC-PR and VUS-PR (FFVUS, slope = sliding_window) of a 1-D anomaly score [total], and its
+    best F1 over all thresholds with the threshold reaching it (in the units of the score);
+    {'AUC_PR', 'VUS_PR', 'BEST_F1', 'F1_OPTIMAL_THRESHOLD'}, NaN when undefined (no positive label) or on failure."""
     from sklearn.metrics import average_precision_score
     scores = np.asarray(scores, dtype=np.float64)
 
@@ -222,11 +248,17 @@ def _pr_metrics_from_scores(scores, labels, sliding_window: int = 64) -> dict:
     labels = labels[valid].astype(int)
     scores_norm = scores_norm[valid]
 
-    results = {'AUC_PR': float('nan'), 'VUS_PR': float('nan')}
+    results = dict.fromkeys(PR_METRIC_KEYS, float('nan'))
 
     if labels.sum() == 0:
-        log.warning('No positive labels found — AUC_PR and VUS_PR are undefined.')
+        log.warning('No positive labels found — AUC_PR, VUS_PR and the best F1 are undefined.')
         return results
+
+    # Best F1 and its threshold, on the score itself (not min-max normalised)
+    try:
+        results['BEST_F1'], results['F1_OPTIMAL_THRESHOLD'] = _best_f1_threshold(scores[valid], labels)
+    except Exception as e:
+        log.warning(f'Best F1 computation failed: {e}')
 
     # AUC-PR
     try:
@@ -473,7 +505,12 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
 # (test_precision ... test_accuracy repeat the precision ... accuracy columns, also on the test split)
 EVALUATION_SPLITS = {'train': ('train',), 'valid': ('valid',), 'train_valid': ('train', 'valid'),
                      'test': ('test',)}   # name: splits concatenated
-SPLIT_METRICS = ('precision', 'recall', 'f1', 'accuracy', 'auc_pr', 'vus_pr')
+# best_f1 / f1_optimal_threshold: best F1 of the setting's score over all thresholds on the split and the
+# threshold reaching it (in the units of the score; depends on the score only, not on anomaly_threshold).
+# auc_pr / vus_pr / best_f1 / f1_optimal_threshold are empty (NaN) for the likelihood strategies: a
+# precision-recall curve over the thresholds of a likelihood does not apply, only for the scores
+# themselves (mean reconstruction errors, Mahalanobis distance)
+SPLIT_METRICS = ('precision', 'recall', 'f1', 'accuracy', 'auc_pr', 'vus_pr', 'best_f1', 'f1_optimal_threshold')
 # Splits also scored with NAB ({split}_{profile}_raw / _normalized columns), e.g. to choose the optimal
 # setting on train / valid by the NAB score, as on the test split, without the test labels
 NAB_SPLITS = ('train_valid',)
@@ -483,11 +520,12 @@ NAB_SPLIT_METRICS = tuple(f'{profile}_{kind}' for profile in NAB_PROFILES for ki
 
 def _split_anomaly_windows(data_loader, split_scores):
     """Ground-truth anomaly windows lying within the timestamps of a split, as anomaly_windows_test
-    for the test split."""
+    for the test split, the overlapping ones merged (e.g. three overlapping windows on 2024-02-12 in
+    train_valid): otherwise each would be a TP / FN of its own while the normalisation counts one."""
     windows = data_loader.anomaly_windows
     timestamps = split_scores['timestamp']
-    return windows[(windows['anomaly_window_start'] >= timestamps.min()) &
-                   (windows['anomaly_window_end'] <= timestamps.max())]
+    return merge_overlapping_windows(windows[(windows['anomaly_window_start'] >= timestamps.min()) &
+                                             (windows['anomaly_window_end'] <= timestamps.max())])
 
 
 def _split_metrics(split_scores, strategy, topk, anomaly_threshold, long_window, short_window, with_windows, pr_cache,
@@ -504,9 +542,11 @@ def _split_metrics(split_scores, strategy, topk, anomaly_threshold, long_window,
     precision, recall, f1, accuracy, _, _ = evaluate_performance(labels, is_anomalies)
     key = (strategy, topk, long_window, short_window)
     if key not in pr_cache:
-        pr_cache[key] = _pr_metrics_from_scores(score, labels)
+        pr_cache[key] = (dict.fromkeys(PR_METRIC_KEYS, float('nan')) if strategy in LIKELIHOOD_STRATEGIES
+                         else _pr_metrics_from_scores(score, labels))
     metrics = {'precision': precision, 'recall': recall, 'f1': f1, 'accuracy': accuracy,
-               'auc_pr': pr_cache[key]['AUC_PR'], 'vus_pr': pr_cache[key]['VUS_PR']}
+               'auc_pr': pr_cache[key]['AUC_PR'], 'vus_pr': pr_cache[key]['VUS_PR'],
+               'best_f1': pr_cache[key]['BEST_F1'], 'f1_optimal_threshold': pr_cache[key]['F1_OPTIMAL_THRESHOLD']}
     if anomaly_windows is not None:
         nab_df = pd.DataFrame({'true_anomaly': labels, 'predicted_anomaly': is_anomalies},
                               index=pd.DatetimeIndex(split_scores['timestamp']))
