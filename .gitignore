@@ -4,6 +4,7 @@ data
 .hydra
 trained_models
 trained_models_log1p
+merged_results
 **/__pycache__/
 conf/config.yaml
 *.out

@@ -1,8 +1,11 @@
 """
-Streamlit explorer of the grid-search results under a results folder (default: trained_models_log1p).
-
-Layout scanned:
-    <root>/window_<w>/<subset>/fill_nan_with_<fill>/<model folder>/<model>_grid_search_<normalization>.csv
+Streamlit explorer of grid-search results, two pages showing the same views:
+  • Results folder: the grid-search CSVs scanned under a results folder (default: trained_models_log1p),
+    which can be saved as one merged file;
+  • Merged file: a merged file (from merged_results/ or uploaded), e.g. merged on the HPC server with
+        python streamlit_result_visualization/grid_results.py trained_models_log1p
+    and copied to a PC: no results folder needed.
+See grid_results.py for the folder layout and the merged files.
 
 Run from the project root:
     streamlit run streamlit_result_visualization/results_explorer_app.py
@@ -10,17 +13,17 @@ The app reruns when this file is saved (.streamlit/config.toml next to it: runOn
 'Auto-refresh' on, when grid-search files change on disk.
 """
 import ast
+import io
 import os
-import re
 from datetime import datetime
-from pathlib import Path
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent   # streamlit_result_visualization/ is at the project root
-GRID_FILE_PATTERN = re.compile(r'^(?P<model>.+)_grid_search_(?P<normalization>global|per_node)\.csv$')
+from grid_results import (PROJECT_ROOT, TAG_COLUMNS, MERGED_DIR, MERGED_SUFFIXES, find_grid_files, grid_signature,
+                          read_grid_files, read_merged, write_merged, merged_bytes, find_merged_files,
+                          default_merged_path)
 
 NAB_COLUMNS = {'reward_fn': 'reward_fn_normalized', 'standard': 'standard_normalized'}
 # Test measures the charts can show: label -> (column, axis title, number format)
@@ -171,30 +174,6 @@ def mean_dots(stats, x, fmt='.2f'):
 
 # ── Loading ───────────────────────────────────────────────────────────────────
 
-def parse_grid_path(path):
-    """Experiment of a grid-search CSV, from its location; None when the name does not match."""
-    path = Path(path)
-    match = GRID_FILE_PATTERN.match(path.name)
-    if not match:
-        return None
-    model_dir = path.parent
-    return {
-        'path': str(path),
-        'window': int(model_dir.parents[2].name.removeprefix('window_')),
-        'subset': model_dir.parents[1].name,
-        'fill_nan': model_dir.parent.name.removeprefix('fill_nan_with_'),
-        'model_folder': model_dir.name,
-        'score_normalization': match['normalization'],
-        'modified': pd.Timestamp(os.path.getmtime(path), unit='s'),
-    }
-
-
-def find_grid_files(root):
-    """Experiment info of every grid-search CSV under root."""
-    found = (parse_grid_path(p) for p in sorted(Path(root).glob('window_*/*/fill_nan_with_*/*/*_grid_search_*.csv')))
-    return [info for info in found if info is not None]
-
-
 def _topk_label(topk, strategy):
     """Top-k as text: the number of sensors, 'mean' (likelihood over all sensors) or '-' (not used)."""
     if pd.notna(topk) and str(topk) not in ('', 'None'):
@@ -236,24 +215,10 @@ def _detection_summary(counters):
     return summary
 
 
-def grid_signature(files):
-    """(path, modification time) of every grid-search file: changes when a file is added, removed or rewritten."""
-    return tuple((f['path'], f['modified'].value) for f in files)
-
-
-@st.cache_data(show_spinner='Loading grid-search results…', max_entries=8)
-def load_results(files):
-    """All grid-search rows, tagged with where they come from. `files`: (path, mtime) pairs, so that the
-    cache is refreshed when a file changes."""
-    frames = []
-    for path, _ in files:
-        info = parse_grid_path(path)
-        frame = pd.read_csv(path)
-        for key in ('window', 'subset', 'fill_nan', 'model_folder', 'score_normalization'):
-            frame[key] = info[key]
-        frame['file'] = os.path.relpath(path, PROJECT_ROOT)
-        frames.append(frame)
-    results = pd.concat(frames, ignore_index=True)
+def prepare_results(results):
+    """Explorer columns of a merged table (read_grid_files / read_merged): defaults for older grid searches,
+    the F1 rank of the own absolute thresholds, the NAB detections, the top-k labels and model families."""
+    results = results.copy()
     # Older grid searches have no threshold_type: their likelihood thresholds were absolute values
     if 'threshold_type' not in results:
         results['threshold_type'] = None
@@ -277,315 +242,399 @@ def load_results(files):
     return results
 
 
-# ── Page ──────────────────────────────────────────────────────────────────────
-
-st.set_page_config(page_title='Grid-search explorer', page_icon=':material/monitoring:', layout='wide')
-st.title('Grid-search results explorer')
-
-with st.sidebar:
-    st.header('Data')
-    candidate_roots = sorted(p.name for p in PROJECT_ROOT.glob('trained_models*') if p.is_dir())
-    default_root = 'trained_models_log1p' if 'trained_models_log1p' in candidate_roots else (candidate_roots or [''])[0]
-    root_name = st.selectbox('Results folder', candidate_roots or [default_root],
-                             index=(candidate_roots or [default_root]).index(default_root))
-    if st.button('Rescan folder', icon=':material/refresh:', width='stretch'):
-        load_results.clear()
-    auto_refresh = st.toggle('Auto-refresh', value=True,
-                             help='Reload the app when a grid-search file is added, removed or rewritten.')
-    refresh_interval = st.segmented_control('Check every', AUTO_REFRESH_INTERVALS, default='30s', required=True,
-                                            disabled=not auto_refresh)
-
-grid_files = find_grid_files(PROJECT_ROOT / root_name)
-# Files this run shows; the watcher reruns the app when the folder no longer matches
-st.session_state['grid_signature'] = grid_signature(grid_files)
+@st.cache_data(show_spinner='Reading grid-search files…', max_entries=8)
+def merge_folder(files):
+    """Merged table of the grid-search files of a folder (what a merged file holds). `files`: (path, mtime)
+    pairs, so that the cache is refreshed when a file changes."""
+    return read_grid_files([path for path, _ in files])
 
 
-def watch_results_folder():
-    """Fragment rerun on a timer: cheap check of the folder, full rerun only when it changed."""
-    if grid_signature(find_grid_files(PROJECT_ROOT / root_name)) != st.session_state.get('grid_signature'):
-        st.rerun()   # whole app: reloads the changed files (the cache is keyed by their modification time)
-    st.caption(f':material/schedule: Last checked {datetime.now():%H:%M:%S}')
+@st.cache_data(show_spinner='Loading grid-search results…', max_entries=8)
+def load_folder(files):
+    """Rows of the grid-search files of a folder (see merge_folder)."""
+    return prepare_results(merge_folder(files))
 
 
-with st.sidebar:
-    st.fragment(watch_results_folder, run_every=refresh_interval if auto_refresh else None)()
+@st.cache_data(show_spinner='Loading merged file…', max_entries=8)
+def load_merged_path(path, mtime):
+    """Rows of a merged file on disk; mtime refreshes the cache when it is rewritten."""
+    return prepare_results(read_merged(path))
 
-if not grid_files:
-    st.warning(f'No `*_grid_search_*.csv` found under `{root_name}`.')
-    st.stop()
-results = load_results(grid_signature(grid_files))
-family_scale = family_color_scale(results['model_family'].unique())
 
-# ── Filters ──
-with st.sidebar:
-    st.header('Filters')
-    selected = {}
-    for column, label in DIMENSIONS.items():
-        options = sorted(results[column].dropna().unique().tolist(), key=str)
-        selected[column] = st.multiselect(label, options, default=options)
+@st.cache_data(show_spinner='Loading merged file…', max_entries=4)
+def load_merged_upload(data, name):
+    """Rows of an uploaded merged file (its bytes)."""
+    return prepare_results(read_merged(io.BytesIO(data), name))
 
-    st.header('Comparison')
-    available_measures = [m for m, (c, _, _) in MEASURES.items() if c in results and results[c].notna().any()]
-    measures = st.multiselect(
-        'Measures (test)', available_measures,
-        default=[m for m in ('NAB reward_fn', 'AUC-PR', 'VUS-PR') if m in available_measures],
-        help='Test measures shown by the charts (one chart each) and the tables. The first one sorts the tables.')
-    if not measures:
-        measures = available_measures[:1]
-        st.caption(f'No measure chosen: showing {measures[0]}.')
-    measure_columns = [MEASURES[m][0] for m in measures]
-    charts_per_row = st.slider('Charts per row', 1, 6, 3,
-                               help='Charts of the measures wrap onto new rows past this number.')
-    measure = measures[0]   # sorts the tables and sets the default selection metric
-    measure_column, measure_title, _ = MEASURES[measure]
-    available_metrics = [m for m in SELECTION_METRICS if m in results.columns]
-    default_select_by = measure_column if measure_column in available_metrics else NAB_COLUMNS['reward_fn']
-    select_by = st.selectbox(
-        'Pick the best setting of each group by', available_metrics,
-        index=available_metrics.index(default_select_by), key=f'select_by_{measure}',
-        help='NAB / F1 select on the test split itself; train_valid_* / valid_* select without the test labels.')
-    group_by = st.multiselect('Compare groups of', list(DIMENSIONS), default=['model_folder', 'post_processing_strategy'],
-                              format_func=DIMENSIONS.get)
 
-mask = pd.Series(True, index=results.index)
-for column, values in selected.items():
-    mask &= results[column].isin(values)
-filtered = results[mask]
+# ── Views ─────────────────────────────────────────────────────────────────────
 
-if filtered.empty:
-    st.info('No grid-search row matches the filters.')
-    st.stop()
+def render_explorer(results):
+    """Filters (sidebar) and tabs of the explorer over the rows of a merged table, whatever its source."""
+    family_scale = family_color_scale(results['model_family'].unique())
 
-tab_overview, tab_compare, tab_target, tab_rows = st.tabs(['Overview', 'Compare', 'Target model', 'All settings'])
+    # ── Filters ──
+    with st.sidebar:
+        st.header('Filters')
+        selected = {}
+        for column, label in DIMENSIONS.items():
+            options = sorted(results[column].dropna().unique().tolist(), key=str)
+            selected[column] = st.multiselect(label, options, default=options)
 
-# ── Overview: what has been run ──
-with tab_overview:
-    cols = st.columns(5)
-    for col, key in zip(cols, ('window', 'subset', 'fill_nan', 'model_folder', 'score_normalization')):
-        values = sorted(results[key].unique().tolist(), key=str)
-        col.metric(DIMENSIONS[key], len(values))
-        col.caption(', '.join(map(str, values)))
+        st.header('Comparison')
+        available_measures = [m for m, (c, _, _) in MEASURES.items() if c in results and results[c].notna().any()]
+        measures = st.multiselect(
+            'Measures (test)', available_measures,
+            default=[m for m in ('NAB reward_fn', 'AUC-PR', 'VUS-PR') if m in available_measures],
+            help='Test measures shown by the charts (one chart each) and the tables. The first one sorts the tables.')
+        if not measures:
+            measures = available_measures[:1]
+            st.caption(f'No measure chosen: showing {measures[0]}.')
+        measure_columns = [MEASURES[m][0] for m in measures]
+        charts_per_row = st.slider('Charts per row', 1, 6, 3,
+                                   help='Charts of the measures wrap onto new rows past this number.')
+        measure = measures[0]   # sorts the tables and sets the default selection metric
+        measure_column, measure_title, _ = MEASURES[measure]
+        available_metrics = [m for m in SELECTION_METRICS if m in results.columns]
+        default_select_by = measure_column if measure_column in available_metrics else NAB_COLUMNS['reward_fn']
+        select_by = st.selectbox(
+            'Pick the best setting of each group by', available_metrics,
+            index=available_metrics.index(default_select_by), key=f'select_by_{measure}',
+            help='NAB / F1 select on the test split itself; train_valid_* / valid_* select without the test labels.')
+        group_by = st.multiselect('Compare groups of', list(DIMENSIONS), default=['model_folder', 'post_processing_strategy'],
+                                  format_func=DIMENSIONS.get)
 
-    st.subheader('Grid-search files')
-    inventory = pd.DataFrame(grid_files)
-    rows = results.groupby('file').agg(
-        settings=('post_processing_strategy', 'size'),
-        strategies=('post_processing_strategy', lambda s: ', '.join(sorted(s.unique()))),
-        **{f'best_{c}': (c, 'max') for c in measure_columns})
-    inventory['file'] = inventory['path'].map(lambda p: os.path.relpath(p, PROJECT_ROOT))
-    inventory = inventory.merge(rows, left_on='file', right_index=True)
-    inventory['has_split_metrics'] = inventory['file'].map(
-        lambda f: bool(results.loc[results['file'] == f].filter(like='train_valid_').notna().any().any()))
-    st.dataframe(
-        inventory[['window', 'subset', 'fill_nan', 'model_folder', 'score_normalization', 'settings', 'strategies',
-                   *[f'best_{c}' for c in measure_columns], 'has_split_metrics', 'modified', 'file']],
-        hide_index=True,
-        column_config={
-            **{f'best_{MEASURES[m][0]}': st.column_config.NumberColumn(f'Best {m}', format=f'%{MEASURES[m][2]}')
-               for m in measures},
-            'has_split_metrics': st.column_config.CheckboxColumn('Train/valid metrics'),
-            'modified': st.column_config.DatetimeColumn('Modified', format='YYYY-MM-DD HH:mm'),
-        })
+    mask = pd.Series(True, index=results.index)
+    for column, values in selected.items():
+        mask &= results[column].isin(values)
+    filtered = results[mask]
 
-# ── Compare: best setting of every group ──
-with tab_compare:
-    if not group_by:
-        st.info('Choose at least one dimension to compare in the sidebar.')
-    else:
-        ranked = filtered.dropna(subset=[select_by])
-        if ranked.empty:
-            st.info(f'No row has `{select_by}` (older grid searches lack the train/valid metrics).')
+    if filtered.empty:
+        st.info('No grid-search row matches the filters.')
+        return
+
+    tab_overview, tab_compare, tab_target, tab_rows = st.tabs(['Overview', 'Compare', 'Target model', 'All settings'])
+
+    # ── Overview: what has been run ──
+    with tab_overview:
+        cols = st.columns(5)
+        for col, key in zip(cols, ('window', 'subset', 'fill_nan', 'model_folder', 'score_normalization')):
+            values = sorted(results[key].unique().tolist(), key=str)
+            col.metric(DIMENSIONS[key], len(values))
+            col.caption(', '.join(map(str, values)))
+
+        st.subheader('Grid-search files')
+        inventory = results.groupby('file').agg(
+            **{key: (key, 'first') for key in TAG_COLUMNS if key != 'file'},
+            settings=('post_processing_strategy', 'size'),
+            strategies=('post_processing_strategy', lambda s: ', '.join(sorted(s.unique()))),
+            **{f'best_{c}': (c, 'max') for c in measure_columns}).reset_index()
+        split_columns = results.filter(like='train_valid_').notna().any(axis=1)
+        inventory['has_split_metrics'] = inventory['file'].map(split_columns.groupby(results['file']).any())
+        st.dataframe(
+            inventory[['window', 'subset', 'fill_nan', 'model_folder', 'score_normalization', 'settings', 'strategies',
+                       *[f'best_{c}' for c in measure_columns], 'has_split_metrics', 'modified', 'file']],
+            hide_index=True,
+            column_config={
+                **{f'best_{MEASURES[m][0]}': st.column_config.NumberColumn(f'Best {m}', format=f'%{MEASURES[m][2]}')
+                   for m in measures},
+                'has_split_metrics': st.column_config.CheckboxColumn('Train/valid metrics'),
+                'modified': st.column_config.DatetimeColumn('Modified', format='YYYY-MM-DD HH:mm'),
+            })
+
+    # ── Compare: best setting of every group ──
+    with tab_compare:
+        if not group_by:
+            st.info('Choose at least one dimension to compare in the sidebar.')
         else:
-            best = ranked.loc[ranked.groupby(group_by)[select_by].idxmax()].copy()
-            best['group'] = best[group_by].astype(str).agg(' · '.join, axis=1)
-            best = best.sort_values(measure_column, ascending=False)
+            ranked = filtered.dropna(subset=[select_by])
+            if ranked.empty:
+                st.info(f'No row has `{select_by}` (older grid searches lack the train/valid metrics).')
+            else:
+                best = ranked.loc[ranked.groupby(group_by)[select_by].idxmax()].copy()
+                best['group'] = best[group_by].astype(str).agg(' · '.join, axis=1)
+                best = best.sort_values(measure_column, ascending=False)
 
-            st.caption(f'Best setting of each group by **{select_by}**; one chart per test measure, '
-                       'groups by decreasing value.')
-            best_data = best.astype({d: str for d in group_by})
-            style, shade_legend, unstyled, _ = group_style(best_data, group_by, family_scale)
-            charts = []
-            for m in measures:
-                column, title, fmt = MEASURES[m]
-                x = group_x(best.sort_values(column, ascending=False)['group'].tolist())
-                chart = alt.Chart(best_data).mark_bar(stroke='black', strokeWidth=1).encode(
-                    x=x, y=alt.Y(f'{column}:Q', title=title), **style,
-                    tooltip=['group', alt.Tooltip(f'{column}:Q', format=fmt), alt.Tooltip(f'{select_by}:Q', format='.4f'),
-                             *PARAMETER_COLUMNS, 'nab_tp', 'nab_fp', 'nab_fn', 'detected',
-                             *ANOMALY_SOURCES.values()],
-                )
-                if shade_legend:
-                    chart = chart + shade_legend(best_data, x, f'{column}:Q')
-                charts.append(chart.properties(title=m))
-            st.altair_chart(side_by_side(charts, len(best), charts_per_row))
-            if unstyled:
-                st.caption(f'{", ".join(DIMENSIONS[d] for d in unstyled)}: shown in the labels only '
-                           '(color, shade and border already encode other dimensions).')
+                st.caption(f'Best setting of each group by **{select_by}**; one chart per test measure, '
+                           'groups by decreasing value.')
+                best_data = best.astype({d: str for d in group_by})
+                style, shade_legend, unstyled, _ = group_style(best_data, group_by, family_scale)
+                charts = []
+                for m in measures:
+                    column, title, fmt = MEASURES[m]
+                    x = group_x(best.sort_values(column, ascending=False)['group'].tolist())
+                    chart = alt.Chart(best_data).mark_bar(stroke='black', strokeWidth=1).encode(
+                        x=x, y=alt.Y(f'{column}:Q', title=title), **style,
+                        tooltip=['group', alt.Tooltip(f'{column}:Q', format=fmt), alt.Tooltip(f'{select_by}:Q', format='.4f'),
+                                 *PARAMETER_COLUMNS, 'nab_tp', 'nab_fp', 'nab_fn', 'detected',
+                                 *ANOMALY_SOURCES.values()],
+                    )
+                    if shade_legend:
+                        chart = chart + shade_legend(best_data, x, f'{column}:Q')
+                    charts.append(chart.properties(title=m))
+                st.altair_chart(side_by_side(charts, len(best), charts_per_row))
+                if unstyled:
+                    st.caption(f'{", ".join(DIMENSIONS[d] for d in unstyled)}: shown in the labels only '
+                               '(color, shade and border already encode other dimensions).')
 
-            shown = group_by + [c for c in PARAMETER_COLUMNS if c not in group_by] + \
-                [select_by] * (select_by not in NAB_COLUMNS.values()) + measure_columns + \
-                ['reward_fn_normalized', 'standard_normalized', *DETECTION_COLUMNS, 'nab_tp', 'nab_fp', 'nab_fn',
-                 'f1', 'test_auc_pr', 'test_vus_pr']
-            shown = [c for c in dict.fromkeys(shown) if c in best.columns]
-            st.dataframe(best[shown], hide_index=True,
-                         column_config={**{c: st.column_config.NumberColumn(format='%.4f')
-                                           for c in shown if c.endswith(('_pr', 'f1'))},
-                                        **DETECTION_COLUMN_CONFIG})
+                shown = group_by + [c for c in PARAMETER_COLUMNS if c not in group_by] + \
+                    [select_by] * (select_by not in NAB_COLUMNS.values()) + measure_columns + \
+                    ['reward_fn_normalized', 'standard_normalized', *DETECTION_COLUMNS, 'nab_tp', 'nab_fp', 'nab_fn',
+                     'f1', 'test_auc_pr', 'test_vus_pr']
+                shown = [c for c in dict.fromkeys(shown) if c in best.columns]
+                st.dataframe(best[shown], hide_index=True,
+                             column_config={**{c: st.column_config.NumberColumn(format='%.4f')
+                                               for c in shown if c.endswith(('_pr', 'f1'))},
+                                            **DETECTION_COLUMN_CONFIG})
 
-        st.subheader('Over all settings: median and mean')
-        spread = filtered.copy()
-        spread['group'] = spread[group_by].astype(str).agg(' · '.join, axis=1)
-        # Family of each group; '' when a group mixes several families (not grouped by model)
-        group_family = spread.groupby('group')['model_family'].agg(lambda f: f.iloc[0] if f.nunique() == 1 else '')
+            st.subheader('Over all settings: median and mean')
+            spread = filtered.copy()
+            spread['group'] = spread[group_by].astype(str).agg(' · '.join, axis=1)
+            # Family of each group; '' when a group mixes several families (not grouped by model)
+            group_family = spread.groupby('group')['model_family'].agg(lambda f: f.iloc[0] if f.nunique() == 1 else '')
 
-        def group_stats(column):
-            """Spread of a measure over the settings of every group, by decreasing median."""
-            stats = (spread.groupby(group_by + ['group'])[column]
-                     .agg(median='median', mean='mean', min='min', max='max', settings='size',
-                          q1=lambda v: v.quantile(0.25), q3=lambda v: v.quantile(0.75))
-                     .sort_values('median', ascending=False).reset_index())
-            stats['model_family'] = stats['group'].map(group_family)
-            return stats
+            def group_stats(column):
+                """Spread of a measure over the settings of every group, by decreasing median."""
+                stats = (spread.groupby(group_by + ['group'])[column]
+                         .agg(median='median', mean='mean', min='min', max='max', settings='size',
+                              q1=lambda v: v.quantile(0.25), q3=lambda v: v.quantile(0.75))
+                         .sort_values('median', ascending=False).reset_index())
+                stats['model_family'] = stats['group'].map(group_family)
+                return stats
 
-        all_stats = {m: group_stats(MEASURES[m][0]) for m in measures}
-        st.caption('Bar: median of the test measure over every setting of each group; dot: mean. '
-                   'Groups by decreasing median.')
-        style, shade_legend, unstyled, _ = group_style(all_stats[measure].astype({d: str for d in group_by}),
-                                                       group_by, family_scale)
-        charts = []
-        for m, stats in all_stats.items():
-            _, title, fmt = MEASURES[m]
-            stats_data = stats.astype({d: str for d in group_by})
-            x = group_x(stats['group'].tolist())
-            stats_tooltip = ['group', *(alt.Tooltip(f'{c}:Q', format=fmt) for c in ('median', 'mean', 'min', 'max')),
-                             'settings']
-            layers = [alt.Chart(stats_data).mark_bar(stroke='black', strokeWidth=1).encode(
-                          x=x, y=alt.Y('median:Q', title=title), tooltip=stats_tooltip, **style),
-                      mean_dots(stats, x, fmt)]
-            if shade_legend:
-                layers.append(shade_legend(stats_data, x, 'median:Q'))
-            charts.append(alt.layer(*layers).properties(title=m))
-        st.altair_chart(side_by_side(charts, len(group_family), charts_per_row))
-
-        with st.expander('Distribution in each group', icon=':material/candlestick_chart:'):
-            st.caption('Line: min to max; box: quartiles; black bar in the box: median; dot: mean. '
-                       'Color: model family; shade and border: the other group dimensions.')
+            all_stats = {m: group_stats(MEASURES[m][0]) for m in measures}
+            st.caption('Bar: median of the test measure over every setting of each group; dot: mean. '
+                       'Groups by decreasing median.')
+            style, shade_legend, unstyled, _ = group_style(all_stats[measure].astype({d: str for d in group_by}),
+                                                           group_by, family_scale)
             charts = []
             for m, stats in all_stats.items():
                 _, title, fmt = MEASURES[m]
-                box_data = stats.astype({d: str for d in group_by})
+                stats_data = stats.astype({d: str for d in group_by})
                 x = group_x(stats['group'].tolist())
-                tooltip = ['group', *(alt.Tooltip(f'{c}:Q', format=fmt)
-                                      for c in ('median', 'mean', 'q1', 'q3', 'min', 'max')), 'settings']
-                base = alt.Chart(box_data)
-                whiskers = base.mark_rule(color='#666').encode(
-                    x=x, y=alt.Y('min:Q', title=title), y2='max:Q', tooltip=tooltip)
-                # Boxes narrower than the band leave a gap between groups
-                boxes = base.mark_bar(width={'band': 0.6}, stroke='black', strokeWidth=1.2).encode(
-                    x=x, y='q1:Q', y2='q3:Q', tooltip=tooltip, **style)
-                medians = base.mark_tick(color='black', thickness=2.5, width={'band': 0.6}).encode(
-                    x=x, y='median:Q', tooltip=tooltip)
-                layers = [whiskers, boxes, medians, mean_dots(stats, x, fmt)]
+                stats_tooltip = ['group', *(alt.Tooltip(f'{c}:Q', format=fmt) for c in ('median', 'mean', 'min', 'max')),
+                                 'settings']
+                layers = [alt.Chart(stats_data).mark_bar(stroke='black', strokeWidth=1).encode(
+                              x=x, y=alt.Y('median:Q', title=title), tooltip=stats_tooltip, **style),
+                          mean_dots(stats, x, fmt)]
                 if shade_legend:
-                    layers.append(shade_legend(box_data, x, 'median:Q'))
+                    layers.append(shade_legend(stats_data, x, 'median:Q'))
                 charts.append(alt.layer(*layers).properties(title=m))
             st.altair_chart(side_by_side(charts, len(group_family), charts_per_row))
-            if unstyled:
-                st.caption(f'{", ".join(DIMENSIONS[d] for d in unstyled)}: shown in the labels only.')
-            table = pd.concat([stats.assign(measure=m) for m, stats in all_stats.items()])
-            st.dataframe(table[['measure', 'group', 'median', 'mean', 'q1', 'q3', 'min', 'max', 'settings']],
-                         hide_index=True,
-                         column_config={c: st.column_config.NumberColumn(format='%.4f')
-                                        for c in ('median', 'mean', 'q1', 'q3', 'min', 'max')})
 
-# ── Target model: its best configuration, applied to the other models ──
-with tab_target:
-    models = sorted(filtered['model_folder'].unique())
-    config_columns = [c for c in CONFIG_COLUMNS if c in filtered]
-    col_target, col_match = st.columns([1, 3])
-    target = col_target.selectbox('Target model', models,
-                                  index=next((i for i, m in enumerate(models) if model_family(m) == 'A3TGCN'), 0))
-    match_on = col_match.multiselect(
-        'Other models use the same', config_columns, default=config_columns, format_func=lambda c: DIMENSIONS.get(c, c),
-        help='Values taken from the best configuration of the target model. Dimensions left out are free: '
-             f'every model takes its best value of them by {select_by}.')
-    ranked = filtered.dropna(subset=[select_by])
-    target_rows = ranked[ranked['model_folder'] == target]
-    # Fixed parts of the target reference: its best configuration is searched among the other parts only
-    for col, column in zip(st.columns(len(TARGET_FIXED_COLUMNS)), TARGET_FIXED_COLUMNS):
-        options = sorted(target_rows[column].dropna().unique().tolist(), key=str)
-        value = col.selectbox(DIMENSIONS.get(column, 'Top-k'), [ANY] + options, key=f'target_{column}',
-                              help=f'"{ANY}": the best value for the target.')
-        if value != ANY:
-            target_rows = target_rows[target_rows[column] == value]
-    if target_rows.empty:
-        st.info(f'No {target} setting has `{select_by}` with these values.')
-    else:
-        target_index = target_rows[select_by].idxmax()
-        # Compared as text: NaN windows (strategies without them) match each other
-        keys = ranked[match_on].astype(str)
-        if 'anomaly_threshold' in match_on:
-            own_threshold = ranked['f1_rank'].notna()
-            keys.loc[own_threshold, 'anomaly_threshold'] = [f'own best-F1 threshold #{int(r)} (train_valid)'
-                                                            for r in ranked.loc[own_threshold, 'f1_rank']]
-        same = (keys == keys.loc[target_index]).all(axis=1)
-        matched = ranked[same]
-        best_matched = matched.loc[matched.groupby('model_folder')[select_by].idxmax()].copy()
-        best_matched['role'] = ['target' if i == target_index else 'same configuration' for i in best_matched.index]
-        # Target first, so that every other row can be checked against it
-        best_matched = pd.concat([best_matched.loc[[target_index]],
-                                  best_matched.drop(index=target_index).sort_values(select_by, ascending=False)])
+            with st.expander('Distribution in each group', icon=':material/candlestick_chart:'):
+                st.caption('Line: min to max; box: quartiles; black bar in the box: median; dot: mean. '
+                           'Color: model family; shade and border: the other group dimensions.')
+                charts = []
+                for m, stats in all_stats.items():
+                    _, title, fmt = MEASURES[m]
+                    box_data = stats.astype({d: str for d in group_by})
+                    x = group_x(stats['group'].tolist())
+                    tooltip = ['group', *(alt.Tooltip(f'{c}:Q', format=fmt)
+                                          for c in ('median', 'mean', 'q1', 'q3', 'min', 'max')), 'settings']
+                    base = alt.Chart(box_data)
+                    whiskers = base.mark_rule(color='#666').encode(
+                        x=x, y=alt.Y('min:Q', title=title), y2='max:Q', tooltip=tooltip)
+                    # Boxes narrower than the band leave a gap between groups
+                    boxes = base.mark_bar(width={'band': 0.6}, stroke='black', strokeWidth=1.2).encode(
+                        x=x, y='q1:Q', y2='q3:Q', tooltip=tooltip, **style)
+                    medians = base.mark_tick(color='black', thickness=2.5, width={'band': 0.6}).encode(
+                        x=x, y='median:Q', tooltip=tooltip)
+                    layers = [whiskers, boxes, medians, mean_dots(stats, x, fmt)]
+                    if shade_legend:
+                        layers.append(shade_legend(box_data, x, 'median:Q'))
+                    charts.append(alt.layer(*layers).properties(title=m))
+                st.altair_chart(side_by_side(charts, len(group_family), charts_per_row))
+                if unstyled:
+                    st.caption(f'{", ".join(DIMENSIONS[d] for d in unstyled)}: shown in the labels only.')
+                table = pd.concat([stats.assign(measure=m) for m, stats in all_stats.items()])
+                st.dataframe(table[['measure', 'group', 'median', 'mean', 'q1', 'q3', 'min', 'max', 'settings']],
+                             hide_index=True,
+                             column_config={c: st.column_config.NumberColumn(format='%.4f')
+                                            for c in ('median', 'mean', 'q1', 'q3', 'min', 'max')})
 
-        st.caption(f'Best `{target}` configuration by **{select_by}** (first row), and the setting each other '
-                   'model is compared with:')
-        table_columns = ['model_family', 'model_folder', 'role', *config_columns, select_by, *measure_columns,
-                         *DETECTION_COLUMNS, 'nab_tp', 'nab_fp', 'nab_fn', 'file']
-        st.dataframe(best_matched[list(dict.fromkeys(table_columns))], hide_index=True,
-                     column_config={**{MEASURES[m][0]: st.column_config.NumberColumn(m, format=f'%{MEASURES[m][2]}')
-                                       for m in measures},
-                                    **DETECTION_COLUMN_CONFIG})
-        missing = sorted(set(ranked['model_folder']) - set(best_matched['model_folder']))
-        if missing:
-            st.warning(f'No setting with this configuration for: {", ".join(missing)}.')
+    # ── Target model: its best configuration, applied to the other models ──
+    with tab_target:
+        models = sorted(filtered['model_folder'].unique())
+        config_columns = [c for c in CONFIG_COLUMNS if c in filtered]
+        col_target, col_match = st.columns([1, 3])
+        target = col_target.selectbox('Target model', models,
+                                      index=next((i for i, m in enumerate(models) if model_family(m) == 'A3TGCN'), 0))
+        match_on = col_match.multiselect(
+            'Other models use the same', config_columns, default=config_columns, format_func=lambda c: DIMENSIONS.get(c, c),
+            help='Values taken from the best configuration of the target model. Dimensions left out are free: '
+                 f'every model takes its best value of them by {select_by}.')
+        ranked = filtered.dropna(subset=[select_by])
+        target_rows = ranked[ranked['model_folder'] == target]
+        # Fixed parts of the target reference: its best configuration is searched among the other parts only
+        for col, column in zip(st.columns(len(TARGET_FIXED_COLUMNS)), TARGET_FIXED_COLUMNS):
+            options = sorted(target_rows[column].dropna().unique().tolist(), key=str)
+            value = col.selectbox(DIMENSIONS.get(column, 'Top-k'), [ANY] + options, key=f'target_{column}',
+                                  help=f'"{ANY}": the best value for the target.')
+            if value != ANY:
+                target_rows = target_rows[target_rows[column] == value]
+        if target_rows.empty:
+            st.info(f'No {target} setting has `{select_by}` with these values.')
+        else:
+            target_index = target_rows[select_by].idxmax()
+            # Compared as text: NaN windows (strategies without them) match each other
+            keys = ranked[match_on].astype(str)
+            if 'anomaly_threshold' in match_on:
+                own_threshold = ranked['f1_rank'].notna()
+                keys.loc[own_threshold, 'anomaly_threshold'] = [f'own best-F1 threshold #{int(r)} (train_valid)'
+                                                                for r in ranked.loc[own_threshold, 'f1_rank']]
+            same = (keys == keys.loc[target_index]).all(axis=1)
+            matched = ranked[same]
+            best_matched = matched.loc[matched.groupby('model_folder')[select_by].idxmax()].copy()
+            best_matched['role'] = ['target' if i == target_index else 'same configuration' for i in best_matched.index]
+            # Target first, so that every other row can be checked against it
+            best_matched = pd.concat([best_matched.loc[[target_index]],
+                                      best_matched.drop(index=target_index).sort_values(select_by, ascending=False)])
 
-        st.caption('Bar: each measure of every model with this configuration (target outlined in black); '
-                   'tick: the best value of the measure for the model over all its settings.')
-        # One row per (model, measure), with the best value of the measure for the model over all its settings
-        own_best = filtered.groupby('model_folder')[measure_columns].max()
-        long = best_matched.melt(id_vars=['model_folder', 'model_family', 'role'], value_vars=measure_columns,
-                                 var_name='column', value_name='value')
-        long['own_best'] = [own_best.at[f, c] for f, c in zip(long['model_folder'], long['column'])]
-        long['gap_to_own_best'] = long['value'] - long['own_best']
-        long['measure'] = long['column'].map({MEASURES[m][0]: m for m in measures})
-        family_tooltip = ['model_folder', 'role', 'measure', alt.Tooltip('value:Q', format='.4f'),
-                          alt.Tooltip('own_best:Q', format='.4f'), alt.Tooltip('gap_to_own_best:Q', format='.4f')]
-        charts = []
-        for m in measures:   # one chart per measure, side by side, models by decreasing value
-            data = long[long['measure'] == m].sort_values('value', ascending=False)
-            x = alt.X('model_folder:N', sort=data['model_folder'].tolist(), title=None,
-                      # Long model names overlap once rotated: Vega would hide every other one
-                      axis=alt.Axis(labelAngle=-45, labelLimit=0, labelOverlap=False))
-            bars = alt.Chart(data).mark_bar(width=28).encode(
-                x=x, y=alt.Y('value:Q', title=None),
-                color=alt.Color('model_family:N', title='Model family', scale=family_scale,
-                                legend=alt.Legend(orient='top', direction='horizontal')),
-                stroke=alt.condition(alt.datum.role == 'target', alt.value('black'), alt.value(None)),
-                strokeWidth=alt.value(2), tooltip=family_tooltip)
-            ticks = alt.Chart(data).mark_tick(color='black', thickness=2.5, size=34).encode(
-                x=x, y='own_best:Q', tooltip=family_tooltip)
-            charts.append((bars + ticks).properties(title=m))
-        chart = side_by_side(charts, len(best_matched), charts_per_row, px_per_group=80)
-        st.altair_chart(chart)
+            st.caption(f'Best `{target}` configuration by **{select_by}** (first row), and the setting each other '
+                       'model is compared with:')
+            table_columns = ['model_family', 'model_folder', 'role', *config_columns, select_by, *measure_columns,
+                             *DETECTION_COLUMNS, 'nab_tp', 'nab_fp', 'nab_fn', 'file']
+            st.dataframe(best_matched[list(dict.fromkeys(table_columns))], hide_index=True,
+                         column_config={**{MEASURES[m][0]: st.column_config.NumberColumn(m, format=f'%{MEASURES[m][2]}')
+                                           for m in measures},
+                                        **DETECTION_COLUMN_CONFIG})
+            missing = sorted(set(ranked['model_folder']) - set(best_matched['model_folder']))
+            if missing:
+                st.warning(f'No setting with this configuration for: {", ".join(missing)}.')
 
-# ── All settings ──
-with tab_rows:
-    st.caption(f'{len(filtered):,} settings match the filters (sorted by {measure_title}).')
-    leading = list(DIMENSIONS) + ['topk', 'long_window', 'short_window', 'anomaly_threshold',
-                                  'reward_fn_normalized', 'standard_normalized', *DETECTION_COLUMNS,
-                                  'nab_tp', 'nab_fp', 'nab_fn', 'precision', 'recall', 'f1']
-    leading = [c for c in leading if c in filtered.columns]
-    others = [c for c in filtered.columns if c not in leading and c not in ('detection_counters',)]
-    table = filtered[leading + others].sort_values(measure_column, ascending=False)
-    st.dataframe(table, hide_index=True, height=600, column_config=DETECTION_COLUMN_CONFIG)
-    st.download_button('Download as CSV', table.to_csv(index=False).encode(), file_name='grid_search_filtered.csv',
-                       mime='text/csv')
+            st.caption('Bar: each measure of every model with this configuration (target outlined in black); '
+                       'tick: the best value of the measure for the model over all its settings.')
+            # One row per (model, measure), with the best value of the measure for the model over all its settings
+            own_best = filtered.groupby('model_folder')[measure_columns].max()
+            long = best_matched.melt(id_vars=['model_folder', 'model_family', 'role'], value_vars=measure_columns,
+                                     var_name='column', value_name='value')
+            long['own_best'] = [own_best.at[f, c] for f, c in zip(long['model_folder'], long['column'])]
+            long['gap_to_own_best'] = long['value'] - long['own_best']
+            long['measure'] = long['column'].map({MEASURES[m][0]: m for m in measures})
+            family_tooltip = ['model_folder', 'role', 'measure', alt.Tooltip('value:Q', format='.4f'),
+                              alt.Tooltip('own_best:Q', format='.4f'), alt.Tooltip('gap_to_own_best:Q', format='.4f')]
+            charts = []
+            for m in measures:   # one chart per measure, side by side, models by decreasing value
+                data = long[long['measure'] == m].sort_values('value', ascending=False)
+                x = alt.X('model_folder:N', sort=data['model_folder'].tolist(), title=None,
+                          # Long model names overlap once rotated: Vega would hide every other one
+                          axis=alt.Axis(labelAngle=-45, labelLimit=0, labelOverlap=False))
+                bars = alt.Chart(data).mark_bar(width=28).encode(
+                    x=x, y=alt.Y('value:Q', title=None),
+                    color=alt.Color('model_family:N', title='Model family', scale=family_scale,
+                                    legend=alt.Legend(orient='top', direction='horizontal')),
+                    stroke=alt.condition(alt.datum.role == 'target', alt.value('black'), alt.value(None)),
+                    strokeWidth=alt.value(2), tooltip=family_tooltip)
+                ticks = alt.Chart(data).mark_tick(color='black', thickness=2.5, size=34).encode(
+                    x=x, y='own_best:Q', tooltip=family_tooltip)
+                charts.append((bars + ticks).properties(title=m))
+            chart = side_by_side(charts, len(best_matched), charts_per_row, px_per_group=80)
+            st.altair_chart(chart)
+
+    # ── All settings ──
+    with tab_rows:
+        st.caption(f'{len(filtered):,} settings match the filters (sorted by {measure_title}).')
+        leading = list(DIMENSIONS) + ['topk', 'long_window', 'short_window', 'anomaly_threshold',
+                                      'reward_fn_normalized', 'standard_normalized', *DETECTION_COLUMNS,
+                                      'nab_tp', 'nab_fp', 'nab_fn', 'precision', 'recall', 'f1']
+        leading = [c for c in leading if c in filtered.columns]
+        others = [c for c in filtered.columns if c not in leading and c not in ('detection_counters',)]
+        table = filtered[leading + others].sort_values(measure_column, ascending=False)
+        st.dataframe(table, hide_index=True, height=600, column_config=DETECTION_COLUMN_CONFIG)
+        st.download_button('Download as CSV', table.to_csv(index=False).encode(), file_name='grid_search_filtered.csv',
+                           mime='text/csv')
+
+
+# ── Pages ─────────────────────────────────────────────────────────────────────
+
+def folder_page():
+    """Grid-search files scanned under a results folder, refreshed when they change; can be merged."""
+    with st.sidebar:
+        st.header('Data')
+        candidate_roots = sorted(p.name for p in PROJECT_ROOT.glob('trained_models*') if p.is_dir())
+        default_root = 'trained_models_log1p' if 'trained_models_log1p' in candidate_roots else (candidate_roots or [''])[0]
+        root_name = st.selectbox('Results folder', candidate_roots or [default_root],
+                                 index=(candidate_roots or [default_root]).index(default_root))
+        if st.button('Rescan folder', icon=':material/refresh:', width='stretch'):
+            merge_folder.clear()
+            load_folder.clear()
+        auto_refresh = st.toggle('Auto-refresh', value=True,
+                                 help='Reload the app when a grid-search file is added, removed or rewritten.')
+        refresh_interval = st.segmented_control('Check every', AUTO_REFRESH_INTERVALS, default='30s', required=True,
+                                                disabled=not auto_refresh)
+
+    grid_files = find_grid_files(PROJECT_ROOT / root_name)
+    # Files this run shows; the watcher reruns the app when the folder no longer matches
+    st.session_state['grid_signature'] = grid_signature(grid_files)
+
+    def watch_results_folder():
+        """Fragment rerun on a timer: cheap check of the folder, full rerun only when it changed."""
+        if grid_signature(find_grid_files(PROJECT_ROOT / root_name)) != st.session_state.get('grid_signature'):
+            st.rerun()   # whole app: reloads the changed files (the cache is keyed by their modification time)
+        st.caption(f':material/schedule: Last checked {datetime.now():%H:%M:%S}')
+
+    with st.sidebar:
+        st.fragment(watch_results_folder, run_every=refresh_interval if auto_refresh else None)()
+
+    if not grid_files:
+        st.warning(f'No `*_grid_search_*.csv` found under `{root_name}`.')
+        return
+    signature = grid_signature(grid_files)
+    results = load_folder(signature)
+
+    with st.sidebar:
+        st.header('Merge')
+        st.caption(f'{len(grid_files)} grid-search files, {len(results):,} rows: one merged file, '
+                   "to open in the 'Merged file' page (also on another machine).")
+        merged = merge_folder(signature)
+        if st.button('Save to merged_results/', icon=':material/save:', width='stretch'):
+            path = write_merged(merged, default_merged_path(PROJECT_ROOT / root_name))
+            st.success(f'Saved `{os.path.relpath(path, PROJECT_ROOT)}`')
+        st.download_button('Download merged file', lambda: merged_bytes(merged), icon=':material/download:',
+                           file_name=default_merged_path(PROJECT_ROOT / root_name).name,
+                           mime='application/gzip', width='stretch')
+    render_explorer(results)
+
+
+def merged_page():
+    """A merged file: one of merged_results/ or an uploaded one, e.g. merged on another machine."""
+    with st.sidebar:
+        st.header('Data')
+        source = st.segmented_control('Merged file from', ['merged_results/', 'Upload'], default='merged_results/',
+                                      required=True)
+        if source == 'Upload':
+            uploaded = st.file_uploader('Merged file', type=['gz', 'csv', 'parquet'],
+                                        help=f'A file merged by grid_results.py ({", ".join(MERGED_SUFFIXES)}).')
+            if uploaded is None:
+                st.info('Upload a merged file in the sidebar, e.g. one merged on the HPC server with '
+                        '`python streamlit_result_visualization/grid_results.py trained_models_log1p`.')
+                return
+            load, args, label = load_merged_upload, (uploaded.getvalue(), uploaded.name), uploaded.name
+        else:
+            files = find_merged_files()
+            if not files:
+                st.info(f'No merged file in `{os.path.relpath(MERGED_DIR, PROJECT_ROOT)}/`: save one from the '
+                        "'Results folder' page, run `grid_results.py`, or upload one.")
+                return
+            path = st.selectbox('Merged file', files, format_func=lambda p: p.name,
+                                help='Most recent first.')
+            if st.button('Reload file', icon=':material/refresh:', width='stretch'):
+                load_merged_path.clear()
+            load, args, label = load_merged_path, (str(path), os.path.getmtime(path)), path.name
+    try:
+        results = load(*args)
+    except ValueError as e:
+        st.error(f'`{label}`: {e}')
+        return
+    st.caption(f':material/description: `{label}`: {results["file"].nunique()} grid-search files, '
+               f'{len(results):,} rows, last modified {results["modified"].max():%Y-%m-%d %H:%M}')
+    render_explorer(results)
+
+
+st.set_page_config(page_title='Grid-search explorer', page_icon=':material/monitoring:', layout='wide')
+st.title('Grid-search results explorer')
+st.navigation([
+    st.Page(folder_page, title='Results folder', icon=':material/folder_open:', url_path='folder', default=True),
+    st.Page(merged_page, title='Merged file', icon=':material/merge:', url_path='merged'),
+], position='top').run()
