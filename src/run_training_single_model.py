@@ -546,10 +546,24 @@ F1_OPTIMAL_SPLIT = 'train_valid'
 SCORE_STRATEGIES = ('mean_reconstruction_errors', 'mahalanobis')
 
 
+_DEFAULTED_KEYS = set()   # evaluation keys missing from the config, already reported
+
+
+def _config_value(experiment_config, key, default):
+    """experiment_config[key], or default with a warning (once per key) when the config lacks it, e.g. a
+    conf/config.yaml (not versioned) older than the key: the run must not silently use another setting."""
+    if key in experiment_config:
+        return experiment_config[key]
+    if key not in _DEFAULTED_KEYS:
+        _DEFAULTED_KEYS.add(key)
+        log.warning(f'evaluation.{key} not set in the config: using {default!r} (see conf/config.yaml.example)')
+    return default
+
+
 def _threshold_modes(experiment_config, key, default):
     """Threshold modes of a config key: one mode ('absolute' / 'percentile') or a list of them, every
     setting of the strategies concerned being run with each."""
-    value = experiment_config.get(key, default)
+    value = _config_value(experiment_config, key, default)
     modes = [value] if isinstance(value, str) else list(dict.fromkeys(value))
     assert modes and all(m in LIKELIHOOD_THRESHOLD_MODES for m in modes), \
         f'{key} must be one of {LIKELIHOOD_THRESHOLD_MODES} or a list of them, got {value}'
@@ -742,8 +756,8 @@ def grid_search_new(data_loader, test_scores, experiment_config, split_scores=No
     # F1_OPTIMAL_SPLIT, best first, {strategy: [value, ...]}
     f1_optimal_thresholds = {}
     if 'absolute' in score_threshold_modes:
-        num_absolute = experiment_config.get('score_absolute_num_thresholds', 5)
-        min_gap = experiment_config.get('score_absolute_min_gap', 0.1)
+        num_absolute = _config_value(experiment_config, 'score_absolute_num_thresholds', 5)
+        min_gap = _config_value(experiment_config, 'score_absolute_min_gap', 0.1)
         assert F1_OPTIMAL_SPLIT in split_scores, f'Absolute score thresholds need the {F1_OPTIMAL_SPLIT} split scores'
         reference = split_scores[F1_OPTIMAL_SPLIT]
         reference_labels = reference['is_anomaly'].to_numpy().astype(int)
