@@ -13,8 +13,11 @@ The app reruns when this file is saved (.streamlit/config.toml next to it: runOn
 'Auto-refresh' on, when grid-search files change on disk.
 """
 import ast
+import hashlib
+import inspect
 import io
 import os
+import re
 from datetime import datetime
 
 import altair as alt
@@ -81,6 +84,20 @@ def family_color_scale(families):
 # dimensions are told apart by the fill shade and by the border style of the bars / boxes
 FILL_SHADES = [1.0, 0.55, 0.25, 0.8, 0.4]
 BORDER_DASHES = [[1, 0], [6, 3], [2, 2], [8, 3, 2, 3]]
+
+
+# STGformer pooled over the whole window (temporal_kernel_size = slide_win) is saved as <model>_pool<window>,
+# a different folder name for every window: shown as one model, <model>_poolwin; other pool sizes keep theirs
+POOL_SUFFIX = re.compile(r'^(?P<model>.+)_pool(?P<size>\d+)$')
+WHOLE_WINDOW_POOL = '_poolwin'
+
+
+def model_variant(model_folder, window):
+    """'STGformer_pool12' at window 12 -> 'STGformer_poolwin': the same variant at every window."""
+    match = POOL_SUFFIX.match(str(model_folder))
+    if match and int(match['size']) == int(window):
+        return match['model'] + WHOLE_WINDOW_POOL
+    return model_folder
 
 
 def model_family(model_folder):
@@ -238,31 +255,40 @@ def prepare_results(results):
     detections = pd.DataFrame(counters.map(_detection_summary).tolist(), index=results.index)
     results = pd.concat([results, detections[DETECTION_COLUMNS]], axis=1)
     results['topk'] = [_topk_label(k, s) for k, s in zip(results['topk'], results['post_processing_strategy'])]
+    results['model_folder'] = [model_variant(m, w) for m, w in zip(results['model_folder'], results['window'])]
     results['model_family'] = results['model_folder'].map(model_family)
     return results
 
 
+# Source of the code reading and shaping the rows, passed to every cached loader (its cache key holds the
+# arguments given, not the defaults): st.cache_data only hashes the source of the cached function itself, so without it a change to prepare_results (picked up by
+# runOnSave) would keep serving the rows prepared by the previous version until the cache is cleared
+LOADING_CODE = hashlib.md5(''.join(inspect.getsource(f) for f in (
+    prepare_results, model_variant, model_family, _topk_label, _parse_counters, _detection_summary,
+    read_grid_files, read_merged)).encode()).hexdigest()
+
+
 @st.cache_data(show_spinner='Reading grid-search files…', max_entries=8)
-def merge_folder(files):
+def merge_folder(files, loading_code):
     """Merged table of the grid-search files of a folder (what a merged file holds). `files`: (path, mtime)
     pairs, so that the cache is refreshed when a file changes."""
     return read_grid_files([path for path, _ in files])
 
 
 @st.cache_data(show_spinner='Loading grid-search results…', max_entries=8)
-def load_folder(files):
+def load_folder(files, loading_code):
     """Rows of the grid-search files of a folder (see merge_folder)."""
-    return prepare_results(merge_folder(files))
+    return prepare_results(merge_folder(files, loading_code))
 
 
 @st.cache_data(show_spinner='Loading merged file…', max_entries=8)
-def load_merged_path(path, mtime):
+def load_merged_path(path, mtime, loading_code):
     """Rows of a merged file on disk; mtime refreshes the cache when it is rewritten."""
     return prepare_results(read_merged(path))
 
 
 @st.cache_data(show_spinner='Loading merged file…', max_entries=4)
-def load_merged_upload(data, name):
+def load_merged_upload(data, name, loading_code):
     """Rows of an uploaded merged file (its bytes)."""
     return prepare_results(read_merged(io.BytesIO(data), name))
 
@@ -581,13 +607,13 @@ def folder_page():
         st.warning(f'No `*_grid_search_*.csv` found under `{root_name}`.')
         return
     signature = grid_signature(grid_files)
-    results = load_folder(signature)
+    results = load_folder(signature, LOADING_CODE)
 
     with st.sidebar:
         st.header('Merge')
         st.caption(f'{len(grid_files)} grid-search files, {len(results):,} rows: one merged file, '
                    "to open in the 'Merged file' page (also on another machine).")
-        merged = merge_folder(signature)
+        merged = merge_folder(signature, LOADING_CODE)
         if st.button('Save to merged_results/', icon=':material/save:', width='stretch'):
             path = write_merged(merged, default_merged_path(PROJECT_ROOT / root_name))
             st.success(f'Saved `{os.path.relpath(path, PROJECT_ROOT)}`')
@@ -610,7 +636,7 @@ def merged_page():
                 st.info('Upload a merged file in the sidebar, e.g. one merged on the HPC server with '
                         '`python streamlit_result_visualization/grid_results.py trained_models_log1p`.')
                 return
-            load, args, label = load_merged_upload, (uploaded.getvalue(), uploaded.name), uploaded.name
+            load, args, label = load_merged_upload, (uploaded.getvalue(), uploaded.name, LOADING_CODE), uploaded.name
         else:
             files = find_merged_files()
             if not files:
@@ -621,7 +647,7 @@ def merged_page():
                                 help='Most recent first.')
             if st.button('Reload file', icon=':material/refresh:', width='stretch'):
                 load_merged_path.clear()
-            load, args, label = load_merged_path, (str(path), os.path.getmtime(path)), path.name
+            load, args, label = load_merged_path, (str(path), os.path.getmtime(path), LOADING_CODE), path.name
     try:
         results = load(*args)
     except ValueError as e:

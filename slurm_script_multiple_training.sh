@@ -12,6 +12,7 @@
 
 module load python
 source torch210_new/bin/activate
+export PYTHONUNBUFFERED=1
 python src/run_training_multiple_models.py
 deactivate
 

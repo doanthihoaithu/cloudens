@@ -38,7 +38,7 @@ from anomaly_likelihood import compute_anomaly_likelihood
 from model_outputs import (predict_all_splits, save_predictions, predictions_exist, load_predictions,
                            compute_anomaly_scores, compute_mahalanobis_scores, save_anomaly_scores, label_from_scores,
                            likelihood_window_pairs, parse_topk, MAHALANOBIS_COLUMN, MAHALANOBIS_REFERENCES,
-                           LIKELIHOOD_THRESHOLD_MODES, LIKELIHOOD_STRATEGIES, threshold_type)
+                           LIKELIHOOD_THRESHOLD_MODES, LIKELIHOOD_STRATEGIES)
 from nab_scoring import calculate_nab_score_with_window_based_tp_fn, merge_overlapping_windows
 from utils import clear_folder, get_project_root, get_full_err_scores, set_random_seed, calculate_mahalanobis_distance, has_is_nan_mask, MahalanobisScorer, scoring_result_file_name, results_root_dir, score_normalizations, \
     calculate_mahalanobis_distance_with_is_nan_mask, refine_reconstruction_error_with_is_nan_mask
@@ -537,13 +537,23 @@ EVALUATION_SPLITS = {'train': ('train',), 'valid': ('valid',), 'train_valid': ('
 # precision-recall curve over the thresholds of a likelihood does not apply, only for the scores
 # themselves (mean reconstruction errors, Mahalanobis distance)
 SPLIT_METRICS = ('precision', 'recall', 'f1', 'accuracy', 'auc_pr', 'vus_pr', 'best_f1', 'f1_optimal_threshold')
-# Score strategies (mahalanobis, mean_reconstruction_errors) with score_threshold_mode 'absolute': their
+# Score strategies (mahalanobis, mean_reconstruction_errors) with score_threshold_mode 'absolute' (or a list with it): their
 # thresholds are the score_absolute_num_thresholds thresholds with the highest F1 on F1_OPTIMAL_SPLIT (no test
 # label), at least score_absolute_min_gap apart (see _top_f1_thresholds), score values applied as is to every
 # split; with 'percentile', the distribution_anomaly_thresholds
 # percentiles of each split
 F1_OPTIMAL_SPLIT = 'train_valid'
 SCORE_STRATEGIES = ('mean_reconstruction_errors', 'mahalanobis')
+
+
+def _threshold_modes(experiment_config, key, default):
+    """Threshold modes of a config key: one mode ('absolute' / 'percentile') or a list of them, every
+    setting of the strategies concerned being run with each."""
+    value = experiment_config.get(key, default)
+    modes = [value] if isinstance(value, str) else list(dict.fromkeys(value))
+    assert modes and all(m in LIKELIHOOD_THRESHOLD_MODES for m in modes), \
+        f'{key} must be one of {LIKELIHOOD_THRESHOLD_MODES} or a list of them, got {value}'
+    return modes
 # Splits also scored with NAB ({split}_{profile}_raw / _normalized columns), e.g. to choose the optimal
 # setting on train / valid by the NAB score, as on the test split, without the test labels
 NAB_SPLITS = ('train_valid',)
@@ -635,13 +645,11 @@ def grid_search_new(data_loader, test_scores, experiment_config, split_scores=No
     post_processing_strategies = experiment_config.post_processing_strategies
     topks = [parse_topk(topk) for topk in experiment_config.topks]   # None = mean over all sensors
     anomaly_thresholds = experiment_config.anomaly_thresholds
-    # Likelihood strategies: absolute thresholds (anomaly_thresholds) or percentiles (distribution_anomaly_thresholds)
-    likelihood_threshold_mode = experiment_config.get('likelihood_threshold_mode', 'absolute')
-    # Score strategies: percentile thresholds (distribution_anomaly_thresholds) or the best-F1 threshold on F1_OPTIMAL_SPLIT
-    score_threshold_mode = experiment_config.get('score_threshold_mode', 'percentile')
-    assert score_threshold_mode in LIKELIHOOD_THRESHOLD_MODES, f'Unknown score_threshold_mode: {score_threshold_mode}'
-    assert likelihood_threshold_mode in LIKELIHOOD_THRESHOLD_MODES, \
-        f'Unknown likelihood_threshold_mode: {likelihood_threshold_mode}'
+    # Likelihood strategies: absolute thresholds (anomaly_thresholds) and / or percentiles (distribution_anomaly_thresholds)
+    likelihood_threshold_modes = _threshold_modes(experiment_config, 'likelihood_threshold_mode', 'absolute')
+    # Score strategies: percentile thresholds (distribution_anomaly_thresholds) and / or the highest-F1 thresholds
+    # on F1_OPTIMAL_SPLIT
+    score_threshold_modes = _threshold_modes(experiment_config, 'score_threshold_mode', 'percentile')
     distribution_anomaly_thresholds = experiment_config.distribution_anomaly_thresholds
     long_window_values = experiment_config.long_windows
     short_window_values = experiment_config.short_windows
@@ -728,13 +736,12 @@ def grid_search_new(data_loader, test_scores, experiment_config, split_scores=No
     #
     #     return result_df, is_anomalies_df
 
-    likelihood_thresholds = (anomaly_thresholds if likelihood_threshold_mode == 'absolute'
-                             else experiment_config.distribution_anomaly_thresholds)
+    likelihood_thresholds = {'absolute': anomaly_thresholds, 'percentile': distribution_anomaly_thresholds}
     _, with_windows = likelihood_window_pairs(experiment_config)
     # Absolute thresholds of the score strategies: the num_absolute thresholds with the highest F1 on
     # F1_OPTIMAL_SPLIT, best first, {strategy: [value, ...]}
     f1_optimal_thresholds = {}
-    if score_threshold_mode == 'absolute':
+    if 'absolute' in score_threshold_modes:
         num_absolute = experiment_config.get('score_absolute_num_thresholds', 5)
         min_gap = experiment_config.get('score_absolute_min_gap', 0.1)
         assert F1_OPTIMAL_SPLIT in split_scores, f'Absolute score thresholds need the {F1_OPTIMAL_SPLIT} split scores'
@@ -748,42 +755,46 @@ def grid_search_new(data_loader, test_scores, experiment_config, split_scores=No
             f1_optimal_thresholds[strategy] = _top_f1_thresholds(score, reference_labels, num_absolute, min_gap)
             log.info(f'{strategy}: {len(f1_optimal_thresholds[strategy])} highest-F1 thresholds on {F1_OPTIMAL_SPLIT}: '
                      f'{[f"{t:.6g}" for t in f1_optimal_thresholds[strategy]]}')
+    # Settings: (strategy, topk, anomaly_threshold, long_window, short_window, threshold mode), the mode
+    # ('absolute' / 'percentile', the threshold_type column) of the strategy's thresholds
     params_combinations = []
     for post_processing_strategy in post_processing_strategies:
         if post_processing_strategy == 'likelihood':
-            params_combinations_new = itertools.product([post_processing_strategy],
-                                                    topks,
-                                                    likelihood_thresholds,
-                                                    long_window_values,
-                                                    short_window_values)
-            params_combinations.extend(list(params_combinations_new))
+            for mode in likelihood_threshold_modes:
+                params_combinations.extend(itertools.product([post_processing_strategy],
+                                                             topks,
+                                                             likelihood_thresholds[mode],
+                                                             long_window_values,
+                                                             short_window_values,
+                                                             [mode]))
         elif post_processing_strategy == 'likelihood_mahalanobis':
             # The Mahalanobis distance covers all sensors: no top-k
-            params_combinations_new = itertools.product([post_processing_strategy],
-                                                        [None],
-                                                        likelihood_thresholds,
-                                                        long_window_values,
-                                                        short_window_values)
-            params_combinations.extend(list(params_combinations_new))
+            for mode in likelihood_threshold_modes:
+                params_combinations.extend(itertools.product([post_processing_strategy],
+                                                             [None],
+                                                             likelihood_thresholds[mode],
+                                                             long_window_values,
+                                                             short_window_values,
+                                                             [mode]))
         elif post_processing_strategy in SCORE_STRATEGIES:
             # Scores over all sensors (mean error, Mahalanobis distance): no top-k, no windows. Percentile
-            # thresholds from the config, or the highest-F1 thresholds on F1_OPTIMAL_SPLIT as absolute values
-            if score_threshold_mode == 'percentile':
-                params_combinations.extend((post_processing_strategy, None, threshold, 0, 0)
-                                           for threshold in distribution_anomaly_thresholds)
-            else:
-                params_combinations.extend((post_processing_strategy, None, threshold, 0, 0)
-                                           for threshold in f1_optimal_thresholds.get(post_processing_strategy, []))
+            # thresholds from the config, and / or the highest-F1 thresholds on F1_OPTIMAL_SPLIT as absolute values
+            for mode in score_threshold_modes:
+                thresholds = (distribution_anomaly_thresholds if mode == 'percentile'
+                              else f1_optimal_thresholds.get(post_processing_strategy, []))
+                params_combinations.extend((post_processing_strategy, None, threshold, 0, 0, mode)
+                                           for threshold in thresholds)
         else:
             raise ValueError(f'Unsupported post-processing strategy: {post_processing_strategy}')
     num_combinations = len(params_combinations)
     is_anomalies_columns = {}   # joined at the end: inserting columns one by one fragments a DataFrame
-    for index, (post_processing_strategy, topk, anomaly_threshold, long_window, short_window) in tqdm(enumerate(params_combinations), desc='running grid search', total=num_combinations):
+    for index, (post_processing_strategy, topk, anomaly_threshold, long_window, short_window, threshold_mode) in tqdm(enumerate(params_combinations), desc='running grid search', total=num_combinations):
         print(f'post_processing_strategy: {post_processing_strategy}')
         print(f'topk: {topk} and anomaly_threshold: {anomaly_threshold} long window: {long_window} short window: {short_window}')
+        # The mode applies to the strategy's own kind of thresholds (likelihood or score)
         is_anomalies, scores = label_from_scores(test_scores, post_processing_strategy, topk, anomaly_threshold,
-                                                 long_window, short_window, with_windows, likelihood_threshold_mode,
-                                                 score_threshold_mode)
+                                                 long_window, short_window, with_windows, threshold_mode,
+                                                 threshold_mode)
         is_anomalies = pd.Series(is_anomalies, index=data_loader.test_index)
         visualization_df = pd.DataFrame({
             '5XX_count': data_loader.count_5xx,  # Adjust as needed for your data
@@ -852,13 +863,13 @@ def grid_search_new(data_loader, test_scores, experiment_config, split_scores=No
             'null_padding_feature': null_padding_feature,
             'null_padding_target': null_padding_target,
             'score_normalization': score_normalization,
-            'threshold_type': threshold_type(post_processing_strategy, likelihood_threshold_mode, score_threshold_mode),
+            'threshold_type': threshold_mode,
             # conf_matrix, mcc, is_anomalies, likelihoods, results_df, raw_nab_score,
         }
         for split, scores_of_split in split_scores.items():
             metrics = _split_metrics(scores_of_split, post_processing_strategy, topk, anomaly_threshold,
                                      long_window, short_window, with_windows, pr_caches[split],
-                                     likelihood_threshold_mode, split_anomaly_windows.get(split), score_threshold_mode)
+                                     threshold_mode, split_anomaly_windows.get(split), threshold_mode)
             new_row.update({f'{split}_{metric}': value for metric, value in metrics.items()})
         result_rows.append(new_row)
 
