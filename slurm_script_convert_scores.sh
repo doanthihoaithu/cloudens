@@ -14,7 +14,7 @@
 ROOT=$(realpath "${1:-trained_models_log1p}")
 
 module load python
-source torch210/bin/activate
+source torch210_new/bin/activate
 export PYTHONUNBUFFERED=1
 cd src
 python convert_anomaly_scores.py "$ROOT"
