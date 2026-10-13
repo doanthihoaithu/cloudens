@@ -84,6 +84,9 @@ def family_color_scale(families):
 # dimensions are told apart by the fill shade and by the border style of the bars / boxes
 FILL_SHADES = [1.0, 0.55, 0.25, 0.8, 0.4]
 BORDER_DASHES = [[1, 0], [6, 3], [2, 2], [8, 3, 2, 3]]
+# Lines (Strategies by window tab): strategies by their point shape and dash, models of a family by their shade
+STRATEGY_SHAPES = ['circle', 'square', 'triangle-up', 'diamond', 'cross', 'triangle-down']
+LINE_SHADES = [1.0, 0.55, 0.3]
 
 
 # STGformer pooled over the whole window (temporal_kernel_size = slide_win) is saved as <model>_pool<window>,
@@ -187,6 +190,18 @@ def mean_dots(stats, x, fmt='.2f'):
         tooltip=['group', alt.Tooltip('mean:Q', format=fmt), alt.Tooltip('median:Q', format=fmt),
                  alt.Tooltip('min:Q', format=fmt), alt.Tooltip('max:Q', format=fmt), 'settings'],
     )
+
+
+def configuration_keys(rows, columns):
+    """Configuration columns of the rows as text, for matching settings across models: NaN windows (strategies
+    without them) match each other; the own absolute thresholds of the score strategies (different values for
+    every model) match by their F1 rank on train_valid."""
+    keys = rows[columns].astype(str)
+    if 'anomaly_threshold' in columns:
+        own_threshold = rows['f1_rank'].notna()
+        keys.loc[own_threshold, 'anomaly_threshold'] = [f'own best-F1 threshold #{int(r)} (train_valid)'
+                                                        for r in rows.loc[own_threshold, 'f1_rank']]
+    return keys
 
 
 # ── Loading ───────────────────────────────────────────────────────────────────
@@ -342,7 +357,8 @@ def render_explorer(results):
         st.info('No grid-search row matches the filters.')
         return
 
-    tab_overview, tab_compare, tab_target, tab_rows = st.tabs(['Overview', 'Compare', 'Target model', 'All settings'])
+    tab_overview, tab_compare, tab_target, tab_windows, tab_rows = st.tabs(
+        ['Overview', 'Compare', 'Target model', 'Strategies by window', 'All settings'])
 
     # ── Overview: what has been run ──
     with tab_overview:
@@ -506,12 +522,7 @@ def render_explorer(results):
             st.info(f'No {target} setting has `{select_by}` with these values.')
         else:
             target_index = target_rows[select_by].idxmax()
-            # Compared as text: NaN windows (strategies without them) match each other
-            keys = ranked[match_on].astype(str)
-            if 'anomaly_threshold' in match_on:
-                own_threshold = ranked['f1_rank'].notna()
-                keys.loc[own_threshold, 'anomaly_threshold'] = [f'own best-F1 threshold #{int(r)} (train_valid)'
-                                                                for r in ranked.loc[own_threshold, 'f1_rank']]
+            keys = configuration_keys(ranked, match_on)
             same = (keys == keys.loc[target_index]).all(axis=1)
             matched = ranked[same]
             best_matched = matched.loc[matched.groupby('model_folder')[select_by].idxmax()].copy()
@@ -560,6 +571,180 @@ def render_explorer(results):
                 charts.append((bars + ticks).properties(title=m))
             chart = side_by_side(charts, len(best_matched), charts_per_row, px_per_group=80)
             st.altair_chart(chart)
+
+    # ── Strategies by window: the post-processing strategies of the chosen models along the window size ──
+    with tab_windows:
+        models = sorted(filtered['model_folder'].unique())
+        col_model, col_split, col_value, col_layout = st.columns([3, 2, 2, 2])
+        chosen = col_model.multiselect('Models', models, key='windows_models',
+                                       default=[m for m in models if model_family(m) == 'A3TGCN'][:1] or models[:1])
+        split_by = col_split.multiselect(
+            'Strategies split by', ['threshold_type', 'score_normalization', 'fill_nan'], default=['threshold_type'],
+            format_func=DIMENSIONS.get, key='windows_split',
+            help='Each combination of the strategy and these dimensions is one line.')
+        statistic = col_value.segmented_control(
+            'Value at each window', ['Target configuration', 'Best of each model', 'Median over settings'],
+            default='Target configuration', required=True, key='windows_statistic',
+            help=f'Target configuration: at each window and strategy, the best configuration of the target model by '
+                 f'`{select_by}` (sidebar), and for every other model its best setting with the same configuration; '
+                 f'best of each model: every model its own setting with the best `{select_by}` among its settings of '
+                 'the strategy at the window (any subset, fill NaN, threshold…); median: median of each test measure '
+                 'over these settings, band from the first to the third quartile.')
+        layout = col_layout.segmented_control(
+            'Layout', ['One row per model', 'Models together'], default='One row per model', required=True,
+            key='windows_layout',
+            help='One row per model: a row of charts (one per measure) for every model, same value scale for a '
+                 'measure in every row; models together: one chart per measure, line color = strategy, '
+                 'line dash = model.')
+        strategy_keys = ['post_processing_strategy', *split_by]
+        by_target = statistic == 'Target configuration'
+        if by_target:
+            col_target, col_match = st.columns([1, 3])
+            target = col_target.selectbox(
+                'Target model', models, key='windows_target',
+                index=next((i for i, m in enumerate(models) if model_family(m) == 'A3TGCN'), 0),
+                help='Shown with the chosen models, even when not among them.')
+            # The window and the strategy are those of each point of a line already
+            match_options = [c for c in CONFIG_COLUMNS if c in filtered and c not in ('window', *strategy_keys)]
+            window_match_on = col_match.multiselect(
+                'Other models use the same', match_options, default=match_options, key='windows_match_on',
+                format_func=lambda c: DIMENSIONS.get(c, c),
+                help='Values taken from the best configuration of the target model at the window and strategy. '
+                     f'Dimensions left out are free: every model takes its best value of them by {select_by}.')
+            chosen = [target] + [m for m in chosen if m != target]
+        rows = filtered[filtered['model_folder'].isin(chosen)]
+        if statistic != 'Median over settings':
+            rows = rows.dropna(subset=[select_by])
+        rows = rows.assign(strategy=rows[strategy_keys].astype(str).agg(' · '.join, axis=1) if len(rows) else '')
+        if not chosen:
+            st.info('Choose at least one model.')
+        elif rows.empty:
+            st.info('No setting of these models matches the filters' +
+                    (f' with `{select_by}`.' if statistic != 'Median over settings' else '.'))
+        else:
+            keys = ['model_folder', 'model_family', 'window', 'strategy', *strategy_keys]
+            unmatched = []
+            if by_target:
+                config = configuration_keys(rows, window_match_on)
+                target_best = rows[rows['model_folder'] == target].groupby(['window', 'strategy'])[select_by].idxmax()
+                picked = []
+                for (window, strategy), target_index in target_best.items():
+                    candidates = rows[(rows['window'] == window) & (rows['strategy'] == strategy)]
+                    same = (config.loc[candidates.index] == config.loc[target_index]).all(axis=1)
+                    matched = candidates[same]
+                    picked.append(matched.loc[matched.groupby('model_folder')[select_by].idxmax()])
+                    unmatched += [(m, window, strategy) for m in chosen if m not in set(matched['model_folder'])]
+                per_window = (pd.concat(picked) if picked else rows.iloc[:0]).copy()
+                per_window['role'] = ['target' if m == target else 'same configuration'
+                                      for m in per_window['model_folder']]
+                long = per_window.melt(id_vars=keys, value_vars=measure_columns, var_name='column', value_name='value')
+            elif statistic == 'Best of each model':
+                per_window = rows.loc[rows.groupby(keys)[select_by].idxmax()]
+                long = per_window.melt(id_vars=keys, value_vars=measure_columns, var_name='column', value_name='value')
+            else:
+                long = rows.melt(id_vars=keys, value_vars=measure_columns, var_name='column', value_name='value')
+                long = (long.groupby([*keys, 'column'])['value']
+                        .agg(value='median', q1=lambda v: v.quantile(0.25), q3=lambda v: v.quantile(0.75),
+                             settings='size').reset_index())
+                per_window = long
+            long['measure'] = long['column'].map({MEASURES[m][0]: m for m in measures})
+            windows = sorted(rows['window'].unique(), key=float)
+            long['window'] = long['window'].astype(str)
+            x = alt.X('window:O', sort=[str(w) for w in windows], title='Window size', axis=alt.Axis(labelAngle=0))
+            strategies = sorted(long['strategy'].unique())
+            shown_models = [m for m in chosen if m in set(long['model_folder'])]
+            together = layout == 'Models together'
+            legend = dict(orient='top', direction='vertical', labelLimit=0)
+            # As in the other tabs: color = model family; the strategies by their line dash and point shape
+            color = alt.Color('model_family:N', title='Model family', scale=family_scale, legend=alt.Legend(**legend))
+            strategy_channels = {
+                'strokeDash': alt.StrokeDash('strategy:N', title='Strategy', scale=alt.Scale(
+                    domain=strategies, range=_cycled(BORDER_DASHES, len(strategies))),
+                    legend=alt.Legend(**legend, symbolStrokeColor='black', symbolType='stroke', symbolSize=400)),
+                'shape': alt.Shape('strategy:N', title='Strategy', scale=alt.Scale(
+                    domain=strategies, range=_cycled(STRATEGY_SHAPES, len(strategies))),
+                    legend=alt.Legend(**legend, symbolFillColor='black')),
+            }
+            # Models of the same family (shown together) by their shade, as the bars of the other tabs
+            shade, shade_legend = {}, None
+            shown_families = pd.Series([model_family(m) for m in shown_models])
+            if together and shown_families.duplicated().any():
+                # Shade by the rank of the model within its family: the first model of every family is plain
+                rank = shown_families.groupby(shown_families).cumcount()
+                shade_scale = alt.Scale(domain=shown_models, range=[LINE_SHADES[r % len(LINE_SHADES)] for r in rank])
+                shade['opacity'] = alt.Opacity('model_folder:N', scale=shade_scale, legend=None)
+                family_colors = dict(zip(family_scale.domain, family_scale.range))
+                shade_legend = dict(
+                    opacity=alt.Opacity('model_folder:N', title='Model', scale=shade_scale, legend=alt.Legend(
+                        **legend, symbolType='square', symbolSize=150, symbolStrokeColor='black', symbolStrokeWidth=1)),
+                    fill=alt.Fill('model_folder:N', title='Model', scale=alt.Scale(
+                        domain=shown_models,
+                        range=[family_colors.get(model_family(m), NO_FAMILY_COLOR) for m in shown_models])))
+
+            def window_chart(data, m, title):
+                """Lines of the strategies (of one model, or of every model when together) for measure m."""
+                _, axis_title, fmt = MEASURES[m]
+                # Same value scale for a measure in every row of models
+                values = long.loc[long['measure'] == m, ['value', *(['q1', 'q3'] if 'q1' in long else [])]]
+                y = alt.Y('value:Q', title=axis_title,
+                          scale=alt.Scale(domain=[values.min().min(), values.max().max()], zero=False))
+                tooltip = ['model_folder', 'strategy', 'window', alt.Tooltip('value:Q', title=m, format=fmt)]
+                if statistic == 'Median over settings':
+                    tooltip += [alt.Tooltip('q1:Q', format=fmt), alt.Tooltip('q3:Q', format=fmt), 'settings']
+                base = alt.Chart(data)
+                detail = alt.Detail(['model_folder:N', 'strategy:N'])
+                layers = [
+                    base.mark_line(strokeWidth=2).encode(x=x, y=y, color=color, detail=detail, tooltip=tooltip,
+                                                         strokeDash=strategy_channels['strokeDash'], **shade),
+                    base.mark_point(filled=True, size=70).encode(x=x, y=y, color=color, tooltip=tooltip,
+                                                                 shape=strategy_channels['shape'], **shade)]
+                if statistic == 'Median over settings':
+                    layers.insert(0, base.mark_area(opacity=0.12).encode(x=x, y='q1:Q', y2='q3:Q', color=color,
+                                                                         detail=detail))
+                if shade_legend:   # Vega-Lite draws the shade legend in grey: invisible points in the family colors
+                    layers.append(base.mark_point(size=0, filled=True).encode(x=x, y=y, **shade_legend))
+                return alt.layer(*layers).properties(title=title, width=max(260, 70 * len(windows)), height=280)
+
+            st.caption('One line per strategy' + (' and model' if together else '') + ': ' + {
+                'Target configuration': f'at each window, the best configuration of **{target if by_target else ""}** '
+                                        f'by `{select_by}`, and each other model\'s best setting with the same '
+                                        'configuration.',
+                'Best of each model': f'the setting with the best `{select_by}` at each window.',
+                'Median over settings': 'median over the settings at each window (band: quartiles).'}[statistic])
+            if together:
+                charts = [window_chart(long[long['measure'] == m], m, m) for m in measures]
+                st.altair_chart(alt.concat(*charts, columns=charts_per_row).resolve_scale(y='independent'))
+            else:
+                for model in shown_models:
+                    name = f'{model} (target)' if by_target and model == target else model
+                    charts = [window_chart(long[(long['measure'] == m) & (long['model_folder'] == model)], m,
+                                           f'{name} · {m}') for m in measures]
+                    st.altair_chart(alt.concat(*charts, columns=charts_per_row).resolve_scale(y='independent'))
+            missing_models = sorted(set(chosen) - set(shown_models))
+            if missing_models:
+                st.warning(f'No setting matches the filters' + (' and the target configurations' if by_target else '')
+                           + f' for: {", ".join(missing_models)}.')
+            unmatched = [u for u in unmatched if u[0] not in missing_models]
+            if unmatched:
+                with st.expander(f'{len(unmatched)} points without the target configuration (gaps in the lines)',
+                                 icon=':material/warning:'):
+                    st.dataframe(pd.DataFrame(unmatched, columns=['model_folder', 'window', 'strategy']), hide_index=True)
+            # Windows a strategy has no setting at: a gap in its line
+            counts = rows.groupby(['model_folder', 'strategy', 'window']).size().unstack('window').reindex(columns=windows)
+            counts.columns = [str(w) for w in counts.columns]
+            st.caption('Settings of each model and strategy at each window (empty: not run, or filtered out):')
+            st.dataframe(counts, column_config={str(w): st.column_config.NumberColumn(format='%d') for w in windows})
+            if statistic != 'Median over settings':
+                shown = ['model_folder', *(['role'] if by_target else []), 'window', 'strategy',
+                         *[c for c in CONFIG_COLUMNS if c not in ('window', *strategy_keys)],
+                         select_by, *measure_columns, 'nab_tp', 'nab_fp', 'nab_fn', 'detected', 'file']
+                shown = [c for c in dict.fromkeys(shown) if c in per_window.columns]
+                # Each point of the target first, followed by the other models
+                order = per_window.assign(not_target=per_window['model_folder'] != (target if by_target else None))
+                st.dataframe(order.sort_values(['strategy', 'window', 'not_target', 'model_folder'])[shown],
+                             hide_index=True,
+                             column_config={**{MEASURES[m][0]: st.column_config.NumberColumn(m, format=f'%{MEASURES[m][2]}')
+                                               for m in measures}, **DETECTION_COLUMN_CONFIG})
 
     # ── All settings ──
     with tab_rows:

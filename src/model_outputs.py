@@ -5,13 +5,14 @@ Per-model outputs on all data splits (train / valid / test):
     three splits, one column per node / feature):
         scaled_actual_data.parquet, predicted_data.parquet, reconstruction_error.parquet
     plus predicted_is_nan.parquet / actual_is_nan.parquet [T, N] when the target is null-padded;
-  • anomaly scores saved as a CSV with one row per timestamp:
+  • anomaly scores saved as a parquet file with one row per timestamp, scores rounded to SCORE_DECIMALS
+    (CSVs written by earlier versions are still read, and replaced by the parquet file when rewritten):
         timestamp, split, is_anomaly, is_clean_window,
         anomaly_score_postprocessed_by_mean_reconstruction_errors,
         anomaly_score_postprocessed_by_likelihood_with_top_{k},
         anomaly_score_postprocessed_by_likelihood_with_mahalanobis,
         anomaly_score_postprocessed_by_mahalanobis
-    The CSV is updated in place: re-running with other scoring settings adds / overwrites
+    The file is updated in place: re-running with other scoring settings adds / overwrites
     columns while keeping the others (unless the predictions themselves were recomputed).
 
 Scoring statistics are fitted on windows without anomalies and applied to every split: the
@@ -50,6 +51,12 @@ IS_NAN_FILES = {'predicted': 'predicted_is_nan.parquet', 'actual': 'actual_is_na
 # default dictionary encoding + zstd is ~2.5x smaller than raw float32
 PREDICTION_DECIMALS = 4
 PARQUET_OPTIONS = dict(compression='zstd')
+# Anomaly scores rounded to 5 decimals (the absolute likelihood thresholds, e.g. 0.99975, have 5): the grid
+# search runs on the rounded scores, so that the saved file reproduces it. Kept as float64, where these
+# decimals are exact enough for the comparisons with the thresholds; repeated values compress well
+SCORE_DECIMALS = 5
+# Columns of the score files that are not scores, never rounded
+SCORE_INFO_COLUMNS = ('timestamp', 'split', 'is_anomaly', 'is_clean_window')
 
 MEAN_ERROR_COLUMN = 'anomaly_score_postprocessed_by_mean_reconstruction_errors'
 # Columns of score CSVs written by earlier versions: {old name: current name, or None if dropped}
@@ -341,19 +348,62 @@ def compute_anomaly_scores(outputs, data_loader, experiment_config, scorer_args,
         score_columns[mahalanobis_likelihood_column(lw, sw, with_windows)] = np.concatenate(
             [scaled_likelihoods[s][(lw, sw)] for s in SPLITS])
     scores = pd.concat([scores, pd.DataFrame(score_columns, index=scores.index)], axis=1)
-    return scores, {'likelihood': likelihood_contributions, 'mahalanobis': mahalanobis_contributions}
+    return round_scores(scores), {'likelihood': likelihood_contributions, 'mahalanobis': mahalanobis_contributions}
+
+
+def round_scores(scores):
+    """Score columns rounded to SCORE_DECIMALS (the other columns as they are)."""
+    columns = [c for c in scores.columns if c not in SCORE_INFO_COLUMNS]
+    return scores.assign(**{c: scores[c].astype(float).round(SCORE_DECIMALS) for c in columns})
+
+
+def anomaly_scores_path(model_dir, model, normalization):
+    """Parquet file of the anomaly scores of a model and score normalisation."""
+    return os.path.join(model_dir, scoring_result_file_name(model, 'anomaly_scores', normalization)
+                        .removesuffix('.csv') + '.parquet')
+
+
+def legacy_anomaly_scores_path(model_dir, model, normalization):
+    """CSV of the anomaly scores written by earlier versions."""
+    return os.path.join(model_dir, scoring_result_file_name(model, 'anomaly_scores', normalization))
+
+
+def existing_anomaly_scores_path(model_dir, model, normalization):
+    """The parquet score file, else an earlier CSV one; None when there is neither."""
+    for path in (anomaly_scores_path(model_dir, model, normalization),
+                 legacy_anomaly_scores_path(model_dir, model, normalization)):
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def read_anomaly_scores_file(path):
+    """Scores of a parquet or (earlier) CSV score file, legacy columns renamed."""
+    if path.endswith('.parquet'):
+        scores = pd.read_parquet(path)
+    else:
+        scores = pd.read_csv(path, parse_dates=['timestamp'])
+    renamed = {old: new for old, new in LEGACY_SCORE_COLUMNS.items() if new and old in scores and new not in scores}
+    return scores.rename(columns=renamed)
+
+
+def write_anomaly_scores_file(scores, path):
+    """Scores rounded to SCORE_DECIMALS, as parquet."""
+    round_scores(scores).to_parquet(path, index=False, **PARQUET_OPTIONS)
 
 
 def save_anomaly_scores(scores, model_dir, model, experiment_config, scorer_args, predictions_recomputed,
                         normalization=None):
     """
-    Write the score CSV of one score normalisation, updating an existing one: columns computed now
-    replace theirs, other columns are kept. A fresh file is written when the predictions were recomputed.
+    Write the score file (parquet) of one score normalisation, updating an existing one (or an earlier CSV,
+    then removed): columns computed now replace theirs, other columns are kept. A fresh file is written when
+    the predictions were recomputed.
     """
     normalization = normalization or score_normalizations(experiment_config)[0]
-    path = os.path.join(model_dir, scoring_result_file_name(model, 'anomaly_scores', normalization))
-    if os.path.exists(path) and not predictions_recomputed:
-        existing = pd.read_csv(path, parse_dates=['timestamp'])
+    path = anomaly_scores_path(model_dir, model, normalization)
+    existing_path = existing_anomaly_scores_path(model_dir, model, normalization)
+    if existing_path and not predictions_recomputed:
+        existing = read_anomaly_scores_file(existing_path)
         same_rows = (len(existing) == len(scores)
                      and existing['timestamp'].equals(scores['timestamp'])
                      and existing['split'].equals(scores['split']))
@@ -361,12 +411,15 @@ def save_anomaly_scores(scores, model_dir, model, experiment_config, scorer_args
             kept = existing.columns.difference(scores.columns).drop(list(LEGACY_SCORE_COLUMNS), errors='ignore')
             scores = pd.concat([scores, existing[kept].set_axis(scores.index)], axis=1)
         else:
-            log.warning(f'{path} does not match the current splits and is rewritten')
+            log.warning(f'{existing_path} does not match the current splits and is rewritten')
     # Fixed column order: base columns, mean error, likelihood columns, Mahalanobis
     likelihood_columns = sorted(c for c in scores.columns if c.startswith('anomaly_score_postprocessed_by_likelihood'))
     other_columns = [c for c in scores.columns if c not in likelihood_columns and c != MAHALANOBIS_COLUMN]
     scores = scores[other_columns + likelihood_columns + [MAHALANOBIS_COLUMN]]
-    scores.to_csv(path, index=False)
+    write_anomaly_scores_file(scores, path)
+    legacy_path = legacy_anomaly_scores_path(model_dir, model, normalization)
+    if os.path.exists(legacy_path):   # replaced by the parquet file
+        os.remove(legacy_path)
 
     settings = {
         'score_normalization': normalization,
@@ -376,19 +429,16 @@ def save_anomaly_scores(scores, model_dir, model, experiment_config, scorer_args
         'mahalanobis_reference': experiment_config.get('mahalanobis_reference', 'train'),
         'mahalanobis_scorer': MahalanobisScorer(**scorer_args).settings(),
     }
-    with open(path.replace('.csv', '_settings.json'), 'w') as f:
+    with open(legacy_path.replace('.csv', '_settings.json'), 'w') as f:
         json.dump(settings, f, indent=2)
     log.info(f'Anomaly scores saved to {path}')
     return path
 
 
 def load_anomaly_scores(model_dir, model, score_normalization):
-    path = os.path.join(model_dir, scoring_result_file_name(model, 'anomaly_scores', score_normalization))
-    if not os.path.exists(path):
-        return None
-    scores = pd.read_csv(path, parse_dates=['timestamp'])
-    renamed = {old: new for old, new in LEGACY_SCORE_COLUMNS.items() if new and old in scores and new not in scores}
-    return scores.rename(columns=renamed)
+    """Scores of the parquet score file, or of an earlier CSV one; None when there is neither."""
+    path = existing_anomaly_scores_path(model_dir, model, score_normalization)
+    return None if path is None else read_anomaly_scores_file(path)
 
 
 # How the likelihood strategies are thresholded: 'absolute' = likelihood > anomaly_threshold (a value

@@ -13,7 +13,7 @@ from analysis_results import text_subset_wrapper_latex, text_subset_wrapper, SCO
     MODEL_DISPLAY_NAME_MAP
 from ibm_dataset_loader import IBMDatasetLoader
 from model_outputs import (PREDICTION_FILES, MEAN_ERROR_COLUMN, parse_topk, likelihood_column,
-                           label_from_scores, load_anomaly_scores)
+                           label_from_scores, load_anomaly_scores, existing_anomaly_scores_path)
 from utils import get_project_root, scoring_result_file_name, results_root_dir, score_normalizations
 
 FONT_SIZE = 12
@@ -592,9 +592,9 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
                             f'fill_nan_with_{fill_nan}',
                             model_folder,
                         )
-                        scores_path = os.path.join(model_dir, scoring_result_file_name(model, 'anomaly_scores', score_normalization))
+                        scores_path = existing_anomaly_scores_path(model_dir, model, score_normalization)
 
-                        required_exists = os.path.exists(scores_path)
+                        required_exists = scores_path is not None
                         if fix_scoring_parameters is None:
                             csv_path = os.path.join(model_dir, scoring_result_file_name(model, 'grid_search', score_normalization))
                             required_exists = required_exists and os.path.exists(csv_path)
@@ -1123,8 +1123,8 @@ def plot_detected_anomalies_for_specific_periods(
                             f'fill_nan_with_{fill_nan}',
                             model_folder,
                         )
-                        scores_path = os.path.join(model_dir, scoring_result_file_name(model, 'anomaly_scores', score_normalization))
-                        required_exists = os.path.exists(scores_path)
+                        scores_path = existing_anomaly_scores_path(model_dir, model, score_normalization)
+                        required_exists = scores_path is not None
                         if fix_scoring_parameters is None:
                             csv_path = os.path.join(model_dir, scoring_result_file_name(model, 'grid_search', score_normalization))
                             required_exists = required_exists and os.path.exists(csv_path)
