@@ -50,11 +50,6 @@ def _label_windows(df, true_col='true_anomaly'):
     return list(zip(df.index[starts], end_labels))
 
 
-# Score of a detection at the very start of its window: TP scores are divided by it so that the
-# earliest detection earns exactly reward_tp, as in NAB (Sweeper.calcSweepScore)
-MAX_TP = scaledSigmoid(-1.0)
-
-
 def calculate_relative_position(df, true_col='true_anomaly', pred_col='predicted_anomaly'):
     """
     Calculate relative positions of detected anomalies within true anomaly windows.
@@ -222,7 +217,7 @@ def calculate_nab_score_with_window_based_tp_fn(df, anomaly_windows_test, nab_sc
                 # Get the first detection time and calculate the relative position
                 first_detection = predictions.idxmax()
                 relative_position = df.loc[first_detection, 'relative_position']
-                tp_score = reward_tp * scaledSigmoid(relative_position) / MAX_TP
+                tp_score = reward_tp * scaledSigmoid(relative_position)
                 score += tp_score
                 detection_counters['tp'] += 1
 
@@ -269,12 +264,11 @@ def calculate_nab_score_with_window_based_tp_fn(df, anomaly_windows_test, nab_sc
                     fp_score = -1.0 * penalty_fp  # FP far beyond window, score -1
                 else:
                     fp_score = penalty_fp * scaledSigmoid(relative_position_fp)  # Scaled sigmoid score
-            else:
-                fp_score = -1.0 * penalty_fp  # FP before the first window: full penalty, as in NAB
 
-            score += fp_score
-            false_positive_count += 1
-            detection_counters['fp'] += 1
+                score += fp_score
+                false_positive_count += 1
+                detection_counters['fp'] += 1
+            # FP before the first window: neither penalized nor counted
         except Exception as e:
             log.warning(f"Error calculating FP score: {e}")
             continue

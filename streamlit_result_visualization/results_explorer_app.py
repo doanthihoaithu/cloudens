@@ -249,11 +249,14 @@ def prepare_results(results):
     if own.any() and 'train_valid_f1' in results:
         results.loc[own, 'f1_rank'] = (results[own].groupby(['file', 'post_processing_strategy'])['train_valid_f1']
                                        .rank(ascending=False, method='first'))
-    counters = results['detection_counters'].map(_parse_counters)
+    # Few distinct detection counters (~3% of the rows of a large merged file): each is parsed once
+    codes, distinct = pd.factorize(results['detection_counters'])
+    counters = [_parse_counters(c) for c in distinct] + [{}]   # code -1 (missing counters) -> {}
+    per_counters = pd.DataFrame([_detection_summary(c) for c in counters])
     for key in ('tp', 'fp', 'fn'):
-        results[f'nab_{key}'] = counters.map(lambda c, k=key: c.get(k))
-    detections = pd.DataFrame(counters.map(_detection_summary).tolist(), index=results.index)
-    results = pd.concat([results, detections[DETECTION_COLUMNS]], axis=1)
+        per_counters[f'nab_{key}'] = [c.get(key) for c in counters]
+    detections = per_counters.iloc[codes].set_axis(results.index)
+    results = pd.concat([results, detections[['nab_tp', 'nab_fp', 'nab_fn', *DETECTION_COLUMNS]]], axis=1)
     results['topk'] = [_topk_label(k, s) for k, s in zip(results['topk'], results['post_processing_strategy'])]
     results['model_folder'] = [model_variant(m, w) for m, w in zip(results['model_folder'], results['window'])]
     results['model_family'] = results['model_folder'].map(model_family)
