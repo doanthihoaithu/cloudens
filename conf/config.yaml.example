@@ -46,15 +46,11 @@ evaluation:
 #  mahalanobis_anomaly_thresholds: [99.6, 99.7, 99.8]
   anomaly_thresholds: [0.998, 0.9985, 0.999, 0.9997, 0.99975, 0.9998]
   # Likelihood strategies: 'absolute' = likelihood > each anomaly_thresholds value (past scores only);
-  # 'percentile' = above each distribution_anomaly_thresholds percentile of the split, like mahalanobis (data leak
-  # on the test split: the percentile uses its whole score distribution)
-  likelihood_threshold_mode: 'percentile'  # 'absolute' or 'percentile', or both: ['absolute', 'percentile']
-  # mahalanobis / mean_reconstruction_errors: 'percentile' = above each distribution_anomaly_thresholds percentile
-  # of the split (data leak on test); 'absolute' = score > each of the score_absolute_num_thresholds highest-F1
-  # thresholds on train_valid (no test label)
-  score_threshold_mode: 'absolute'  # 'absolute' or 'percentile', or both: ['absolute', 'percentile']
-  score_absolute_num_thresholds: 5   # score_threshold_mode 'absolute': the thresholds with the highest F1 on train_valid
-  score_absolute_min_gap: 0.1   # ... at least this share apart in the number of timestamps they flag (0 = the k highest)
+  # 'percentile' = above each distribution_anomaly_thresholds percentile of the split, like mahalanobis
+  likelihood_threshold_mode: ['absolute', 'percentile']  # 'absolute' or 'percentile'
+  score_threshold_mode: ['absolute', 'percentile']  # 'absolute' or 'percentile'
+  score_absolute_num_thresholds: 5
+  score_absolute_min_gap: 0.1
   long_windows: [30,40,50,60,70]
   short_windows: [2,3,4,5,6]
   ensembles:
@@ -90,11 +86,11 @@ data_preparation_pipeline:
   feature_subsets:
 #    http_codes: ['5xx','4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
 #    aggregations: ['count','avg','min','max']
-    http_codes: [ '5xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
+    http_codes: [ '4xx'] # http codes can be 1xx, 2xx, 3xx, 4xx, 5xx
     aggregations: ['count']
   features_prep:
     filter:
-      http_codes: ['5xx'] # http codes can minbe 1xx, 2xx, 3xx, 4xx, 5xx
+      http_codes: ['4xx'] # http codes can minbe 1xx, 2xx, 3xx, 4xx, 5xx
       aggregations: ['count'] # aggregations can be ['count', 'avg', 'min', 'max',' median', 'std', 'kurtosis', 'skewness']
 
   ground_truth_labels:
@@ -131,18 +127,18 @@ plotting:
   nab_profiles: ['standard', 'low_fn']
 
 multiple_evaluation:
-  models: ['AnomalyTransformer'] # 'A3TGCN','GDN',
+  models: ['MAGE', 'BigST']  # also: 'AnomalyTransformer','GRU','A3TGCN','STGformer','GDN'
 #  models: ['GRU']
   slide_wins: ${supported_sliding_windows}
-#  slide_wins: [6]
+#  slide_wins: [30]
   subsets:
-    http_codes: [ '5xx']
+    http_codes: [ '5xx','4xx']
 #    http_codes: ['4xx']
-    aggregations: [ 'count']
+    aggregations: ['count', 'avg', 'min', 'max']
 #    aggregations: ['count']
   fill_nan_values: ['zero','mean','median']
 #  fill_nan_values: ['zero']
-  null_padding_feature: [true]
+  null_padding_feature: [true, false]
   null_padding_target: [false]
 
 model_configs:
@@ -151,7 +147,7 @@ model_configs:
     slide_win: ${evaluation.slide_win}
     null_padding_target: false
     null_padding_feature: false
-    score_mode: 'association'      # 'forecast' or 'association' (results go to AnomalyTransformer_<score_mode>/)
+    mode: 'association'      # 'forecast' or 'association' (results go to AnomalyTransformer_<score_mode>/)
     score_temperature: 1.0      # τ in Softmax(-AssocDisc * τ), used only when score_mode == 'association'
   GST_PRO:
     model_filename: 'GST_PRO_model.pt'
@@ -215,7 +211,7 @@ model_configs:
     tau: 0.25
     random_feature_dim: 64
     # Spatial regulariser on the operational-context graph (official --use_spatial, off in its default run);
-    # true: results go to BigST_..._spatial/
+    # true: results go to BigST_..._spatial/. Run both: override model_configs.BigST.use_spatial=true
     use_spatial: false
     null_padding_target: ${evaluation.null_padding_target}
     null_padding_feature: ${evaluation.null_padding_feature}
