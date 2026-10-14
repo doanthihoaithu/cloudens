@@ -33,6 +33,8 @@ from model_wrappers.GSTPROWrapper import GSTPROWrapper
 from model_wrappers.AnomalyTransformerWrapper import AnomalyTransformerWrapper
 from model_wrappers.STformerWrapper import STformerWrapper
 from model_wrappers.STGformerWrapper import STGformerWrapper
+from model_wrappers.MAGEWrapper import MAGEWrapper
+from model_wrappers.BigSTWrapper import BigSTWrapper
 from plotting_module import plot_training_history, plot_reconstruction_and_mahalanobis
 from anomaly_likelihood import compute_anomaly_likelihood
 from model_outputs import (predict_all_splits, save_predictions, predictions_exist, load_predictions,
@@ -46,6 +48,12 @@ from utils import clear_folder, get_project_root, get_full_err_scores, set_rando
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+# Model-specific options passed from model_configs to load_wrapper: MAGE (its mixture of graph experts) and
+# BigST (its linearised convolution and the optional spatial regulariser on the context graph)
+MODEL_CONFIG_KEYS = ('model_dim', 'num_experts', 'graph_dim', 'topk',
+                     'hid_dim', 'node_dim', 'num_layers', 'tau', 'random_feature_dim', 'use_spatial')
+
 
 def load_wrapper(model_name, config, static_edge_index, static_edge_weight):
     node_features = config['node_features']
@@ -111,6 +119,23 @@ def load_wrapper(model_name, config, static_edge_index, static_edge_weight):
                                 null_padding_feature=null_padding_feature,
                                 null_padding_target=null_padding_target,
                                 batch_size=batch_size, device=device)
+    elif model_name == 'MAGE':
+        return MAGEWrapper(num_nodes, node_features, periods,
+                           model_dim=config.get('model_dim', 128), num_experts=config.get('num_experts', 16),
+                           graph_dim=config.get('graph_dim', 32), topk=config.get('topk', 4),
+                           null_padding_feature=null_padding_feature,
+                           null_padding_target=null_padding_target,
+                           batch_size=batch_size, device=device)
+    elif model_name == 'BigST':
+        return BigSTWrapper(num_nodes, node_features, periods,
+                            hid_dim=config.get('hid_dim', 32), node_dim=config.get('node_dim', 32),
+                            num_layers=config.get('num_layers', 3), tau=config.get('tau', 0.25),
+                            random_feature_dim=config.get('random_feature_dim', 64),
+                            use_spatial=config.get('use_spatial', False),
+                            edge_index=static_edge_index, edge_weight=static_edge_weight,
+                            null_padding_feature=null_padding_feature,
+                            null_padding_target=null_padding_target,
+                            batch_size=batch_size, device=device)
     # if model_name == 'ASTGCN':
     #     return ASTGCNWrapper(num_nodes, node_features, periods, static_edge_index, batch_size=batch_size, device=device)
     # if model_name == 'MTGNN':
@@ -388,6 +413,10 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
         if temporal_kernel_size > 1:
             model_dir = f'{model_dir}_pool{temporal_kernel_size}'
 
+        # BigST regularised by the context graph: results kept apart, e.g. BigST_null_padding_feature_spatial
+        if model_config.get('use_spatial', False):
+            model_dir = f'{model_dir}_spatial'
+
         os.makedirs(model_dir, exist_ok=True)
         model_filename = os.path.join(model_dir, model_config['model_filename'])
         # Predictions are recomputed when asked or when this model is (re)trained; kept local so that
@@ -409,6 +438,7 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                  'score_mode': score_mode or 'forecast',
                                  'score_temperature': model_config.get('score_temperature', 1.0),
                                  'temporal_kernel_size': temporal_kernel_size,
+                                 **{key: model_config[key] for key in MODEL_CONFIG_KEYS if key in model_config},
                                  'device': DEVICE})
             model_wrapper = load_wrapper(model_name=model, config=graph_config,
                                          static_edge_index=data_loader.get_edges_as_tensor(device=DEVICE),
@@ -440,6 +470,7 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                  'score_mode': score_mode or 'forecast',
                                  'score_temperature': model_config.get('score_temperature', 1.0),
                                  'temporal_kernel_size': temporal_kernel_size,
+                                 **{key: model_config[key] for key in MODEL_CONFIG_KEYS if key in model_config},
                                  'device': DEVICE})
             model_wrapper = load_wrapper(model_name=model, config=graph_config,
                                          static_edge_index=data_loader.get_edges_as_tensor(device=DEVICE),

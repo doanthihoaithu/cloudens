@@ -16,6 +16,7 @@ import ast
 import hashlib
 import inspect
 import io
+import itertools
 import os
 import re
 from datetime import datetime
@@ -353,12 +354,17 @@ def render_explorer(results):
         mask &= results[column].isin(values)
     filtered = results[mask]
 
-    if filtered.empty:
-        st.info('No grid-search row matches the filters.')
-        return
+    tab_overview, tab_compare, tab_target, tab_windows, tab_rows, tab_table = st.tabs(
+        ['Overview', 'Compare', 'Target model', 'Strategies by window', 'All settings', 'Results table'])
 
-    tab_overview, tab_compare, tab_target, tab_windows, tab_rows = st.tabs(
-        ['Overview', 'Compare', 'Target model', 'Strategies by window', 'All settings'])
+    # ── Results table: its own filters, shown whatever the sidebar filters ──
+    with tab_table:
+        render_results_table(results, family_scale)
+
+    if filtered.empty:
+        for tab in (tab_overview, tab_compare, tab_target, tab_windows, tab_rows):
+            tab.info('No grid-search row matches the filters of the sidebar.')
+        return
 
     # ── Overview: what has been run ──
     with tab_overview:
@@ -686,8 +692,10 @@ def render_explorer(results):
                 _, axis_title, fmt = MEASURES[m]
                 # Same value scale for a measure in every row of models
                 values = long.loc[long['measure'] == m, ['value', *(['q1', 'q3'] if 'q1' in long else [])]]
-                y = alt.Y('value:Q', title=axis_title,
-                          scale=alt.Scale(domain=[values.min().min(), values.max().max()], zero=False))
+                low, high = values.min().min(), values.max().max()
+                # No value of the measure (e.g. a column empty for these models): Vega-Lite rejects a NaN domain
+                y = alt.Y('value:Q', title=axis_title, scale=alt.Scale(
+                    zero=False, **({} if pd.isna(low) or pd.isna(high) else {'domain': [float(low), float(high)]})))
                 tooltip = ['model_folder', 'strategy', 'window', alt.Tooltip('value:Q', title=m, format=fmt)]
                 if statistic == 'Median over settings':
                     tooltip += [alt.Tooltip('q1:Q', format=fmt), alt.Tooltip('q3:Q', format=fmt), 'settings']
@@ -758,6 +766,210 @@ def render_explorer(results):
         st.dataframe(table, hide_index=True, height=600, column_config=DETECTION_COLUMN_CONFIG)
         st.download_button('Download as CSV', table.to_csv(index=False).encode(), file_name='grid_search_filtered.csv',
                            mime='text/csv')
+
+
+TABLE_STATISTICS = ['Best setting', 'Median', 'Mean', 'Max']
+TABLE_LAYOUTS = ['Measures under each column value', 'Column values under each measure', 'Measures as rows']
+TABLE_HIGHLIGHT = {'Per column': 'the best model / group of every column',
+                   'Per row': 'the best column of every row, for each measure', 'None': ''}
+BEST_CELL_STYLE = 'font-weight: bold; background-color: rgba(76, 120, 168, 0.22)'
+
+
+def _latex_text(value):
+    return str(value).replace('\\', '\\textbackslash{}').replace('_', '\\_').replace('%', '\\%').replace('&', '\\&')
+
+
+def latex_tabular(row_headers, header, cells):
+    """
+    booktabs tabular: row_headers (left columns), header the (outer, inner) labels of the value columns, cells
+    the rows (LaTeX text). Consecutive equal outer labels span their columns (multicolumn and cmidrule).
+    """
+    n_rows = len(row_headers)
+    lines = ['\\begin{tabular}{' + 'l' * n_rows + 'r' * len(header) + '}', '\\toprule']
+    if any(outer is not None for outer, _ in header):
+        spans, rules, start = [], [], n_rows + 1
+        for outer, group in itertools.groupby(o for o, _ in header):
+            width = len(list(group))
+            spans.append(f'\\multicolumn{{{width}}}{{c}}{{{outer or ""}}}' if width > 1 else (outer or ''))
+            if outer is not None:
+                rules.append(f'\\cmidrule(lr){{{start}-{start + width - 1}}}')
+            start += width
+        lines += [' & '.join([''] * n_rows + spans) + ' \\\\', ' '.join(rules)]
+    lines += [' & '.join(row_headers + [inner for _, inner in header]) + ' \\\\', '\\midrule']
+    lines += [' & '.join(map(str, row)) + ' \\\\' for row in cells]
+    lines += ['\\bottomrule', '\\end{tabular}']
+    return '\n'.join(lines) + '\n'
+
+
+def render_results_table(results, family_scale):
+    """
+    'Results table' tab: one cell per group of rows (e.g. models) and of columns (e.g. windows), with the
+    measures of the best setting of the group or a statistic over its settings. Its filters are its own:
+    the sidebar filters do not apply.
+    """
+    st.caption('This tab has its own filters: the filters of the sidebar do not apply here.')
+    with st.expander('Filters of the table', expanded=True, icon=':material/filter_alt:'):
+        filter_columns = st.columns(4)
+        mask = pd.Series(True, index=results.index)
+        for i, (column, label) in enumerate(DIMENSIONS.items()):
+            options = sorted(results[column].dropna().unique().tolist(), key=str)
+            chosen = filter_columns[i % 4].multiselect(label, options, default=options, key=f'table_filter_{column}')
+            mask &= results[column].isin(chosen)
+    rows = results[mask]
+
+    col_rows, col_columns, col_measures = st.columns(3)
+    row_dims = col_rows.multiselect('Rows', list(DIMENSIONS), default=['model_folder'], format_func=DIMENSIONS.get,
+                                    key='table_rows')
+    column_dims = col_columns.multiselect('Columns', list(DIMENSIONS), default=['window'], format_func=DIMENSIONS.get,
+                                          key='table_columns', help='Each measure is split into one column per value.')
+    column_dims = [d for d in column_dims if d not in row_dims]
+    available_measures = [m for m, (c, _, _) in MEASURES.items() if c in results and results[c].notna().any()]
+    measures = col_measures.multiselect('Measures (test)', available_measures, key='table_measures',
+                                        default=[m for m in ('F1', 'NAB standard', 'NAB reward_fn')
+                                                 if m in available_measures])
+    col_statistic, col_select, col_highlight = st.columns(3)
+    statistic = col_statistic.segmented_control(
+        'Value of a cell', TABLE_STATISTICS, default='Best setting', required=True, key='table_statistic',
+        help='Best setting: the measures of the setting with the best selection metric in the cell (one setting '
+             'for all the measures). Median / Mean / Max: over the settings of the cell, measure by measure.')
+    available_metrics = [m for m in SELECTION_METRICS if m in results.columns]
+    select_by = col_select.selectbox(
+        'Best setting by', available_metrics, key='table_select_by', disabled=statistic != 'Best setting',
+        index=available_metrics.index('train_valid_f1') if 'train_valid_f1' in available_metrics else 0,
+        help='train_valid_* / valid_* select without the test labels; f1 / NAB select on the test split itself.')
+    highlight = col_highlight.segmented_control('Bold the best', list(TABLE_HIGHLIGHT), default='Per column',
+                                                required=True, key='table_highlight')
+    layout = st.segmented_control(
+        'Layout', TABLE_LAYOUTS, default=TABLE_LAYOUTS[0], required=True, key='table_layout',
+        help='Measures under each column value: e.g. Window 6 · F1, Window 6 · NAB, Window 12 · F1, … '
+             'Column values under each measure: F1 · Window 6, F1 · Window 12, …, NAB · Window 6, … '
+             'Measures as rows: one row per model and measure, one column per window.')
+
+    if not row_dims or not measures:
+        st.info('Choose at least one dimension for the rows and one measure.')
+        return
+    keys = row_dims + column_dims
+    measure_columns = [MEASURES[m][0] for m in measures]
+    if statistic == 'Best setting':
+        rows = rows.dropna(subset=[select_by])
+    if rows.empty:
+        st.info('No grid-search row matches the filters of the table' +
+                (f' with `{select_by}`.' if statistic == 'Best setting' else '.'))
+        return
+    if statistic == 'Best setting':
+        picked = rows.loc[rows.groupby(keys)[select_by].idxmax()]
+        values = picked.set_index(keys)[measure_columns]
+    else:
+        values = rows.groupby(keys)[measure_columns].agg(statistic.lower())
+    values.columns = measures
+
+    # Value columns in the order of the layout, each with its (outer, inner) header labels: the outer label
+    # (e.g. 'Window 6') groups the columns under it in the LaTeX header; best cells within each measure
+    wide = values.unstack(column_dims) if column_dims else values
+    col_values = []
+    if column_dims:
+        wide.columns = pd.MultiIndex.from_tuples(
+            [(c[0], tuple(c[1:]) if isinstance(c, tuple) and len(c) > 2 else (c[1],)) for c in wide.columns])
+        col_values = list(dict.fromkeys(c[1] for c in wide.columns))
+    else:
+        wide.columns = pd.MultiIndex.from_tuples([(m, ()) for m in wide.columns])
+        col_values = [()]
+
+    def value_label(value):
+        return ' · '.join((f'Window {v}' if d == 'window' else str(v)) for d, v in zip(column_dims, value))
+
+    best_cells = []
+    if layout == 'Measures as rows':
+        # One row per (row group, measure), one column per value of the column dimensions
+        labels = [value_label(v) or 'Value' for v in col_values]
+        frames = []
+        for m in measures:
+            frame = wide[[(m, v) for v in col_values]].set_axis(labels, axis=1)
+            frames.append(frame.assign(measure=m).set_index('measure', append=True))
+        wide = pd.concat(frames).sort_index(level=list(range(len(row_dims))), sort_remaining=False, kind='stable')
+        header = [(None, label) for label in labels]
+        measure_index = wide.index.get_level_values('measure')
+        best = pd.DataFrame(False, index=wide.index, columns=labels)
+        for m in measures:
+            block = wide[measure_index == m]
+            if highlight == 'Per column':
+                best[measure_index == m] = block.eq(block.max(axis=0)) & block.notna()
+            elif highlight == 'Per row':
+                best[measure_index == m] = block.eq(block.max(axis=1), axis=0) & block.notna()
+        row_columns = row_dims + ['measure']
+    else:
+        if layout == 'Measures under each column value':
+            order = [(m, v) for v in col_values for m in measures]
+            header = [(value_label(v) or None, m) for m, v in order]
+        else:
+            order = [(m, v) for m in measures for v in col_values]
+            header = [(m, value_label(v)) if column_dims else (None, m) for m, v in order]
+        if all(outer is None for outer, _ in header) or len(measures) == 1 and column_dims:
+            header = [(None, value_label(v) if column_dims and len(measures) == 1 else inner)
+                      for (m, v), (_, inner) in zip(order, header)]
+        measures_of_columns = [m for m, _ in order]
+        wide = wide[order]
+        wide.columns = [inner if outer is None else f'{outer} · {inner}' for outer, inner in header]
+        best = pd.DataFrame(False, index=wide.index, columns=wide.columns)
+        for m in measures:
+            group = [c for c, cm in zip(wide.columns, measures_of_columns) if cm == m]
+            if highlight == 'Per column':
+                best[group] = wide[group].eq(wide[group].max(axis=0)) & wide[group].notna()
+            elif highlight == 'Per row':
+                best[group] = wide[group].eq(wide[group].max(axis=1), axis=0) & wide[group].notna()
+        row_columns = row_dims
+    value_columns = list(wide.columns)
+    table = wide.reset_index()
+    best = best.reset_index(drop=True)
+
+    def cell_format(row, column):
+        measure = table.at[row, 'measure'] if layout == 'Measures as rows' else \
+            measures_of_columns[value_columns.index(column)]
+        return '{:' + MEASURES[measure][2] + '}'
+
+    styler = table.style.apply(
+        lambda column: best[column.name].map({True: BEST_CELL_STYLE, False: ''}), subset=value_columns)
+    if layout == 'Measures as rows':
+        for m in measures:
+            styler = styler.format('{:' + MEASURES[m][2] + '}', na_rep='–',
+                                   subset=pd.IndexSlice[table.index[table['measure'] == m], value_columns])
+    else:
+        styler = styler.format({c: cell_format(0, c) for c in value_columns}, na_rep='–')
+    if 'model_folder' in row_dims:
+        family_colors = dict(zip(family_scale.domain, family_scale.range))
+        styler = styler.map(lambda m: f'color: {family_colors.get(model_family(m), NO_FAMILY_COLOR)}; font-weight: 600',
+                            subset=['model_folder'])
+    caption = {'Best setting': f'measures of the setting with the best `{select_by}` in each cell',
+               'Median': 'median over the settings of each cell', 'Mean': 'mean over the settings of each cell',
+               'Max': 'highest value over the settings of each cell (measure by measure)'}[statistic]
+    st.caption(f'{len(rows):,} settings, {len(table)} rows: {caption}.' +
+               (f' **Bold**: {TABLE_HIGHLIGHT[highlight]}.' if TABLE_HIGHLIGHT[highlight] else '') +
+               ' –: no value (e.g. AUC-PR / VUS-PR, computed for the score strategies only).')
+    st.dataframe(styler, hide_index=True,
+                 column_config={**{d: st.column_config.Column(DIMENSIONS[d]) for d in row_dims},
+                                'measure': st.column_config.Column('Measure')})
+
+    # Exports: the values, and a LaTeX table (two header rows when the columns are grouped, best cells in bold)
+    cells = [[_latex_text(table.at[i, c]) for c in row_columns] +
+             [(('\\textbf{%s}' if best.at[i, c] else '%s') % cell_format(i, c).format(table.at[i, c])
+               if pd.notna(table.at[i, c]) else '--') for c in value_columns] for i in table.index]
+    latex = latex_tabular([_latex_text(DIMENSIONS.get(c, 'Measure' if c == 'measure' else c)) for c in row_columns],
+                          [(None if o is None else _latex_text(o), _latex_text(i)) for o, i in header], cells)
+    col_csv, col_tex = st.columns(2)
+    col_csv.download_button('Download as CSV', table.to_csv(index=False).encode(), file_name='results_table.csv',
+                            mime='text/csv', icon=':material/download:', width='stretch')
+    col_tex.download_button('Download as LaTeX', latex.encode(), file_name='results_table.tex', mime='text/plain',
+                            icon=':material/download:', width='stretch')
+    with st.expander('LaTeX', icon=':material/code:'):
+        st.code(latex, language='latex')
+    if statistic == 'Best setting':
+        with st.expander('Settings of the cells', icon=':material/table_rows:'):
+            shown = [*keys, *[c for c in CONFIG_COLUMNS if c not in keys], select_by, *measure_columns,
+                     'nab_tp', 'nab_fp', 'nab_fn', 'detected', 'file']
+            shown = [c for c in dict.fromkeys(shown) if c in picked.columns]
+            st.dataframe(picked[shown].sort_values(keys), hide_index=True,
+                         column_config={**{MEASURES[m][0]: st.column_config.NumberColumn(m, format=f'%{MEASURES[m][2]}')
+                                           for m in measures}, **DETECTION_COLUMN_CONFIG})
 
 
 # ── Pages ─────────────────────────────────────────────────────────────────────

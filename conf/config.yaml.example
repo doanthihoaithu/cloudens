@@ -15,7 +15,7 @@ modeling:
 supported_models: ['GRU','A3TGCN']
 supported_sliding_windows: [6, 12, 18, 24, 30]
 # Graph-based models: the only ones null_padding_feature / null_padding_target apply to
-graph_models: ['A3TGCN', 'GDN', 'GST_PRO', 'STGformer']
+graph_models: ['A3TGCN', 'GDN', 'GST_PRO', 'STGformer', 'MAGE', 'BigST']
 
 evaluation:
   retrain: false
@@ -193,6 +193,30 @@ model_configs:
     # step; slide_win = one graph shared by all steps, as the official code for large graphs (~2400 nodes
     # here). Results go to STGformer_pool<k>/ when > 1
     temporal_kernel_size: ${evaluation.slide_win}
+    null_padding_target: ${evaluation.null_padding_target}
+    null_padding_feature: ${evaluation.null_padding_feature}
+  MAGE:
+    model_filename: 'MAGE_model.pt'
+    slide_win: ${evaluation.slide_win}
+    # Official defaults (Ma et al., NeurIPS 2025): mixture of 16 adaptive graph experts, top-4 per node
+    model_dim: 128
+    num_experts: 16
+    graph_dim: 32
+    topk: 4
+    null_padding_target: ${evaluation.null_padding_target}
+    null_padding_feature: ${evaluation.null_padding_feature}
+  BigST:
+    model_filename: 'BigST_model.pt'
+    slide_win: ${evaluation.slide_win}
+    # Official defaults (Han et al., PVLDB 2024): 3 linearised spatial convolutions, 64 random features
+    hid_dim: 32
+    node_dim: 32
+    num_layers: 3
+    tau: 0.25
+    random_feature_dim: 64
+    # Spatial regulariser on the operational-context graph (official --use_spatial, off in its default run);
+    # true: results go to BigST_..._spatial/
+    use_spatial: false
     null_padding_target: ${evaluation.null_padding_target}
     null_padding_feature: ${evaluation.null_padding_feature}
   GRU:

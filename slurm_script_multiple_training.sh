@@ -10,10 +10,12 @@
 #SBATCH --mail-type=END              # type of event notification
 #SBATCH --mail-user=thihoaithu.doan@gssi.it   # mail address
 
+# Extra arguments are Hydra overrides of conf/config.yaml, e.g.
+#   sbatch slurm_script_multiple_training.sh 'multiple_evaluation.models=[BigST]' model_configs.BigST.use_spatial=true
 module load python
 source torch210_new/bin/activate
 export PYTHONUNBUFFERED=1
-python src/run_training_multiple_models.py
+python src/run_training_multiple_models.py "$@"
 deactivate
 
 

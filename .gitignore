@@ -16,3 +16,5 @@ plot_results
 .codegraph
 **/.DS_Store
 .claude
+# Cited paper PDFs (kept locally; references/references.bib is tracked)
+references/papers/*.pdf

@@ -309,6 +309,52 @@ def test_stgformer() -> bool:
     return _report('STGformer', losses)
 
 
+# ── MAGE ──────────────────────────────────────────────────────────────────────
+
+def test_mage() -> bool:
+    """
+    MAGE: sparse mixture of adaptive graph experts (linear in N).
+    Forward: model(inputs) → [B, N, F].  Loss: MSE.
+    """
+    from model_wrappers.MAGEWrapper import MAGEWrapper
+
+    w = MAGEWrapper(num_nodes=N, node_features=F_DIM, slide_win=T,
+                    model_dim=16, num_experts=4, graph_dim=4, topk=2, lr=1e-3,
+                    device=DEVICE)
+    inputs, labels = make_batch()
+
+    losses = []
+    for _ in range(N_STEPS):
+        w.model.train()
+        losses.append(w.train_step(inputs, labels))
+
+    return _report('MAGE', losses)
+
+
+# ── BigST ─────────────────────────────────────────────────────────────────────
+
+def test_bigst() -> bool:
+    """
+    BigST: linearised (random-feature) spatial convolution, linear in N.
+    Forward: model(inputs) → [B, N, F].  Loss: MSE (+ spatial regulariser on a ring graph).
+    """
+    from model_wrappers.BigSTWrapper import BigSTWrapper
+
+    ring = torch.arange(N)
+    w = BigSTWrapper(num_nodes=N, node_features=F_DIM, slide_win=T,
+                     hid_dim=16, node_dim=16, num_layers=2, random_feature_dim=16, dropout=0.0,
+                     use_spatial=True, edge_index=torch.stack([ring, (ring + 1) % N]),
+                     edge_weight=torch.ones(N), device=DEVICE)
+    inputs, labels = make_batch()
+
+    losses = []
+    for _ in range(N_STEPS):
+        w.model.train()
+        losses.append(w.train_step(inputs, labels))
+
+    return _report('BigST', losses)
+
+
 # ── Orchestrator ──────────────────────────────────────────────────────────────
 
 ALL_TESTS = [
@@ -321,6 +367,8 @@ ALL_TESTS = [
     ('AnomalyTransformer',   test_anomaly_transformer),
     ('STformer',             test_stformer),
     ('STGformer',            test_stgformer),
+    ('MAGE',                 test_mage),
+    ('BigST',                test_bigst),
 ]
 
 

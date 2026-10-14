@@ -126,6 +126,38 @@ def default_merged_path(root):
     return MERGED_DIR / f'{Path(root).resolve().name}_{datetime.now():%Y%m%d_%H%M%S}.csv.gz'
 
 
+def write_merged_streaming(paths, path):
+    """
+    Merge the grid-search CSVs at paths into path (.csv.gz or .csv) one file at a time, so that the merged
+    table never sits in memory (millions of rows). Written to a temporary file renamed at the end: a merge
+    killed midway (e.g. out of memory) leaves no truncated file behind. Returns (rows, model folders).
+    """
+    path = Path(path)
+    if _suffix(path.name) not in ('.csv.gz', '.csv'):
+        raise ValueError(f'Streamed merge writes .csv.gz or .csv only: {path}')
+    # Columns of every file (older grids lack some): one header for all, in order of appearance
+    columns = []
+    for p in paths:
+        columns += [c for c in pd.read_csv(p, nrows=0).columns if c not in columns]
+    columns += [c for c in TAG_COLUMNS if c not in columns]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + '.tmp')
+    rows, model_folders = 0, set()
+    try:
+        opener = gzip.open if path.name.lower().endswith('.gz') else open
+        with opener(tmp_path, 'wt', newline='') as out:
+            for i, p in enumerate(paths):
+                frame = read_grid_files([p]).reindex(columns=columns)
+                frame.to_csv(out, index=False, header=i == 0)
+                rows += len(frame)
+                model_folders.add(frame['model_folder'].iat[0] if len(frame) else None)
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    return rows, len(model_folders - {None})
+
+
 def main():
     parser = argparse.ArgumentParser(description='Merge the grid-search CSVs of a results folder into one file.')
     parser.add_argument('root', help='Results folder, e.g. trained_models_log1p')
@@ -135,10 +167,15 @@ def main():
     files = find_grid_files(args.root)
     if not files:
         raise SystemExit(f'No *_grid_search_*.csv found under {args.root}')
-    results = read_grid_files([f['path'] for f in files])
-    path = write_merged(results, args.output or default_merged_path(args.root))
-    print(f'Merged {len(files)} grid-search files ({len(results):,} rows, '
-          f'{results["model_folder"].nunique()} model folders) into {path}')
+    path = Path(args.output or default_merged_path(args.root))
+    paths = [f['path'] for f in files]
+    if _suffix(path.name) == '.parquet':
+        results = read_grid_files(paths)
+        write_merged(results, path)
+        rows, model_folders = len(results), results['model_folder'].nunique()
+    else:
+        rows, model_folders = write_merged_streaming(paths, path)
+    print(f'Merged {len(files)} grid-search files ({rows:,} rows, {model_folders} model folders) into {path}')
 
 
 if __name__ == '__main__':

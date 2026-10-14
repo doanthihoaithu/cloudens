@@ -3,6 +3,7 @@
 #SBATCH --nodes=1 # 1 node
 #SBATCH --ntasks-per-node=4 # reading CSVs only, no GPU needed
 #SBATCH --time=01:00:00 # time limits: 1 hour
+#SBATCH --mem=8G # the merge is streamed: one grid-search file in memory at a time
 #SBATCH --error=merge.err # standard error file
 #SBATCH --output=merge.out # standard output file
 #SBATCH --partition=gprod_gssi # partition name
