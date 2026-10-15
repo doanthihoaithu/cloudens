@@ -18,7 +18,7 @@
 ROOT=${1:-trained_models_log1p}
 
 module load python
-source torch210/bin/activate
+source torch210_new/bin/activate
 if [ -n "$2" ]; then
     python streamlit_result_visualization/grid_results.py "$ROOT" -o "$2"
 else
