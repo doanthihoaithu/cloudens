@@ -25,7 +25,8 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from grid_results import (PROJECT_ROOT, TAG_COLUMNS, MERGED_DIR, MERGED_SUFFIXES, find_grid_files, grid_signature,
+from grid_results import (PROJECT_ROOT, TAG_COLUMNS, MERGED_DIR, MERGED_SUFFIXES, IGNORED_MODEL_FAMILIES,
+                          IGNORED_MODEL_FOLDERS, find_grid_files, grid_signature, is_ignored_model,
                           read_grid_files, read_merged, write_merged, merged_bytes, find_merged_files,
                           default_merged_path)
 
@@ -58,6 +59,7 @@ DIMENSIONS = {
     'threshold_type': 'Threshold type',
 }
 AUTO_REFRESH_INTERVALS = ['10s', '30s', '1m', '5m']
+MAX_SHOWN_ROWS = 10_000   # rows of a table sent to the browser at most (All settings tab)
 PARAMETER_COLUMNS = ['post_processing_strategy', 'threshold_type', 'topk', 'long_window', 'short_window', 'anomaly_threshold']
 # A configuration: everything about a setting but the model, so that it can be applied to every model
 CONFIG_COLUMNS = ['window', 'subset', 'fill_nan', 'score_normalization', *PARAMETER_COLUMNS]
@@ -111,9 +113,9 @@ def model_variant(model_folder, window):
 
 # Short model names of the results table: the model, '*' for the graph models with null padding (the sparsity
 # indicator), and a short tag for the other variants (e.g. 'STGformer_null_padding_feature_poolwin' -> 'STGformer*')
-# Whole folder names shown as given: Anomaly Transformer with the association-based score of its paper as the
-# model itself, the forecast-error variant (folder without suffix) tagged
-FOLDER_SHORT_NAMES = {'AnomalyTransformer_association': 'Anom.Trans.', 'AnomalyTransformer': 'Anom.Trans.-fc'}
+# Whole folder names shown as given: Anomaly Transformer scored by its forecasting error (folder without suffix,
+# as every other model) as the model itself, the association-based score of its paper tagged
+FOLDER_SHORT_NAMES = {'AnomalyTransformer': 'Anom.Trans.', 'AnomalyTransformer_association': 'Anom.Trans.-assoc'}
 # ClouDens backbones: A3TGCN (propagating on the operational-context graph) and BigST (learned graph; with the context
 # graph as its prior, folders <model>..._spatial: '-ctx'); '*' with the sparsity indicator
 CONTEXT_GRAPH_NAMES = {('A3TGCN', False): 'ClouDens-A3T', ('BigST', False): 'ClouDens-BigST',
@@ -294,6 +296,15 @@ def measure_column_config(measures, prefix='', label=''):
             for m in measures}
 
 
+def dimension_filters(container_of, options, key_prefix=''):
+    """One multiselect per dimension, empty by default (= all its values, 'All' as placeholder): every value
+    chosen by default made each rerun of the app filter and show the whole table. container_of(i) gives the
+    container of the i-th filter. Returns {column: chosen values}."""
+    return {column: container_of(i).multiselect(label, options[column][0], default=[], placeholder='All',
+                                                key=f'{key_prefix}{column}' if key_prefix else None)
+            for i, (column, label) in enumerate(DIMENSIONS.items())}
+
+
 def dimension_options(results):
     """Filter options of every dimension (its values, sorted) and whether it has missing values."""
     return {column: (sorted(results[column].dropna().unique().tolist(), key=str), bool(results[column].isna().any()))
@@ -301,12 +312,13 @@ def dimension_options(results):
 
 
 def filter_rows(results, options, chosen):
-    """Rows whose dimensions take chosen values. A dimension with all its values chosen and no missing value
-    restricts nothing: its (costly, on millions of rows) isin test is skipped, and results is returned as is
-    when no dimension restricts it."""
+    """Rows whose dimensions take chosen values; nothing chosen for a dimension = all its values. A dimension
+    with all its values chosen and no missing value restricts nothing: its (costly, on millions of rows) isin
+    test is skipped, and results is returned as is when no dimension restricts it."""
     mask = None
     for column, values in chosen.items():
         all_values, has_missing = options[column]
+        values = values or all_values
         if len(values) == len(all_values) and not has_missing:
             continue
         keep = results[column].isin(values)
@@ -359,7 +371,8 @@ def _detection_summary(counters):
 
 def prepare_results(results):
     """Explorer columns of a merged table (read_grid_files / read_merged): defaults for older grid searches,
-    the F1 rank of the own absolute thresholds, the NAB detections, the top-k labels and model families."""
+    the F1 rank of the own absolute thresholds, the NAB detections, the top-k labels and model families; the
+    rows of the ignored models (grid_results.is_ignored_model, e.g. from a merged file made before) are left out."""
     results = results.copy()
     # Older grid searches have no threshold_type: their likelihood thresholds were absolute values
     if 'threshold_type' not in results:
@@ -385,15 +398,18 @@ def prepare_results(results):
     results['topk'] = [_topk_label(k, s) for k, s in zip(results['topk'], results['post_processing_strategy'])]
     results['model_folder'] = [model_variant(m, w) for m, w in zip(results['model_folder'], results['window'])]
     results['model_family'] = results['model_folder'].map(model_family)
-    return results
+    # Ignored models: not merged any more, but a merged file written before may still hold them
+    ignored = {m for m in results['model_folder'].unique() if is_ignored_model(m)}
+    return results[~results['model_folder'].isin(ignored)] if ignored else results
 
 
 # Source of the code reading and shaping the rows, passed to every cached loader (its cache key holds the
 # arguments given, not the defaults): st.cache_data only hashes the source of the cached function itself, so without it a change to prepare_results (picked up by
 # runOnSave) would keep serving the rows prepared by the previous version until the cache is cleared
-LOADING_CODE = hashlib.md5(''.join(inspect.getsource(f) for f in (
+LOADING_CODE = hashlib.md5((''.join(inspect.getsource(f) for f in (
     prepare_results, model_variant, model_family, _topk_label, _parse_counters, _detection_summary,
-    read_grid_files, read_merged)).encode()).hexdigest()
+    read_grid_files, read_merged, is_ignored_model)) + repr(sorted(IGNORED_MODEL_FAMILIES))
+    + repr(sorted(IGNORED_MODEL_FOLDERS))).encode()).hexdigest()
 
 
 @st.cache_data(show_spinner='Reading grid-search files…', max_entries=8)
@@ -416,9 +432,10 @@ def load_merged_path(path, mtime, loading_code):
 
 
 @st.cache_data(show_spinner='Loading merged file…', max_entries=4)
-def load_merged_upload(data, name, loading_code):
-    """Rows of an uploaded merged file (its bytes)."""
-    return prepare_results(read_merged(io.BytesIO(data), name))
+def load_merged_upload(_uploaded, file_id, name, loading_code):
+    """Rows of an uploaded merged file. Cached by the upload's file_id: its bytes (hundreds of MB) are not
+    hashed on every rerun (the leading underscore keeps _uploaded out of the cache key)."""
+    return prepare_results(read_merged(io.BytesIO(_uploaded.getvalue()), name))
 
 
 # ── Views ─────────────────────────────────────────────────────────────────────
@@ -431,8 +448,8 @@ def render_explorer(results):
     with st.sidebar:
         st.header('Filters')
         options = dimension_options(results)
-        selected = {column: st.multiselect(label, options[column][0], default=options[column][0])
-                    for column, label in DIMENSIONS.items()}
+        st.caption('Empty filter: all its values. Choose at least one filter to explore the results.')
+        selected = dimension_filters(lambda i: st, options)
 
         st.header('Comparison')
         available_measures = [m for m, (c, _, _) in MEASURES.items() if c in results and results[c].notna().any()]
@@ -457,7 +474,8 @@ def render_explorer(results):
         group_by = st.multiselect('Compare groups of', list(DIMENSIONS), default=['model_folder', 'post_processing_strategy'],
                                   format_func=DIMENSIONS.get)
 
-    filtered = filter_rows(results, options, selected)
+    # Nothing chosen: the whole table (millions of rows) would be filtered and charted on every rerun
+    filtered = filter_rows(results, options, selected) if any(selected.values()) else None
 
     tab_overview, tab_compare, tab_target, tab_windows, tab_rows, tab_table = st.tabs(
         ['Overview', 'Compare', 'Target model', 'Strategies by window', 'All settings', 'Results table'])
@@ -466,9 +484,11 @@ def render_explorer(results):
     with tab_table:
         render_results_table(results, family_scale, options)
 
-    if filtered.empty:
+    if filtered is None or filtered.empty:
         for tab in (tab_overview, tab_compare, tab_target, tab_windows, tab_rows):
-            tab.info('No grid-search row matches the filters of the sidebar.')
+            tab.info('Choose at least one filter in the sidebar (e.g. a subset and a window size) to explore '
+                     f'the {len(results):,} grid-search settings.' if filtered is None else
+                     'No grid-search row matches the filters of the sidebar.')
         return
 
     # ── Overview: what has been run ──
@@ -858,16 +878,21 @@ def render_explorer(results):
 
     # ── All settings ──
     with tab_rows:
-        st.caption(f'{len(filtered):,} settings match the filters (sorted by {measure_title}).')
         leading = list(DIMENSIONS) + ['topk', 'long_window', 'short_window', 'anomaly_threshold',
                                       'reward_fn_normalized', 'standard_normalized', *DETECTION_COLUMNS,
                                       'nab_tp', 'nab_fp', 'nab_fn', 'precision', 'recall', 'f1']
         leading = [c for c in leading if c in filtered.columns]
-        others = [c for c in filtered.columns if c not in leading and c not in ('detection_counters',)]
-        table = filtered[leading + others].sort_values(measure_column, ascending=False)
-        st.dataframe(table, hide_index=True, height=600, column_config=DETECTION_COLUMN_CONFIG)
+        columns = leading + [c for c in filtered.columns if c not in leading and c not in ('detection_counters',)]
+        # Only the best MAX_SHOWN_ROWS rows are sent to the browser: the whole table (millions of rows) exceeded
+        # the 2 GB message limit of Streamlit. Sorting the one measure column picks them (NaN last, as before)
+        order = filtered[measure_column].sort_values(ascending=False).index
+        st.caption(f'{len(filtered):,} settings match the filters (sorted by {measure_title})' +
+                   (f'; the best {MAX_SHOWN_ROWS:,} are shown, all of them are in the CSV.'
+                    if len(filtered) > MAX_SHOWN_ROWS else '.'))
+        st.dataframe(filtered.loc[order[:MAX_SHOWN_ROWS], columns], hide_index=True, height=600,
+                     column_config=DETECTION_COLUMN_CONFIG)
         # The CSV of up to millions of rows is written on click only, not on every rerun
-        st.download_button('Download as CSV', lambda: table.to_csv(index=False).encode(),
+        st.download_button('Download as CSV', lambda: filtered.loc[order, columns].to_csv(index=False).encode(),
                            file_name='grid_search_filtered.csv', mime='text/csv')
 
 
@@ -894,6 +919,58 @@ table.merged-table td { text-align: right; }
 
 def _latex_text(value):
     return str(value).replace('\\', '\\textbackslash{}').replace('_', '\\_').replace('%', '\\%').replace('&', '\\&')
+
+
+def window_line_charts(values, measures, series_dims, facet_dims, family_scale, short_names):
+    """
+    Line charts of the results table along the window size, one per measure: one line per series (the rows of
+    the table, e.g. a model, and the other column dimensions), in its model family's color, the models of a
+    family told apart by their dash; one panel per group of rows (Group rows by, e.g. the subset).
+    values: the cells of the table, one row per (row, column) key, one column per measure.
+    """
+    data = values.reset_index()
+    order_key = data['model_folder'].map(model_order_key) if 'model_folder' in data else pd.Series(0, index=data.index)
+    family = data['model_folder'].map(model_family) if 'model_folder' in data else pd.Series('', index=data.index)
+    if short_names and 'model_folder' in data:
+        data['model_folder'] = data['model_folder'].map(short_model_name)
+    if short_names and 'subset' in data:
+        data['subset'] = data['subset'].map(short_subset_name)
+    data['series'] = join_columns(data, series_dims) if series_dims else 'value'
+    data['panel'] = join_columns(data, facet_dims) if facet_dims else ''
+    data['window'] = data['window'].astype(str)
+    windows = sorted(data['window'].unique(), key=float)
+    # Series in the order of the table, each in its family's color; models of a family by their dash
+    first = data.assign(_order=order_key, _family=family).sort_values(['_order', 'series'], kind='stable')
+    first = first.drop_duplicates('series')
+    colors = family_colors(family_scale)
+    series = first['series'].tolist()
+    rank = first.groupby('_family').cumcount()
+    color_scale = alt.Scale(domain=series, range=[colors.get(f, NO_FAMILY_COLOR) for f in first['_family']])
+    dash_scale = alt.Scale(domain=series, range=[BORDER_DASHES[r % len(BORDER_DASHES)] for r in rank])
+    panels = list(dict.fromkeys(data['panel']))
+    long = data.melt(id_vars=['series', 'panel', 'window'], value_vars=measures, var_name='measure')
+    legend = alt.Legend(orient='top', direction='vertical', labelLimit=0, symbolStrokeWidth=2)
+    title = ' · '.join(DIMENSIONS[d] for d in series_dims) or None
+    charts = []
+    for m in measures:
+        _, axis_title, fmt = MEASURES[m]
+        encodings = dict(
+            x=alt.X('window:O', sort=windows, title='Window size', axis=alt.Axis(labelAngle=0)),
+            y=alt.Y('value:Q', title=axis_title, scale=alt.Scale(zero=False)),
+            color=alt.Color('series:N', scale=color_scale, title=title, legend=legend),
+            tooltip=['series', 'panel', 'window', alt.Tooltip('value:Q', title=m, format=fmt)])
+        layers = alt.layer(
+            alt.Chart().mark_line(strokeWidth=2).encode(
+                strokeDash=alt.StrokeDash('series:N', scale=dash_scale, title=title, legend=legend), **encodings),
+            alt.Chart().mark_point(filled=True, size=50).encode(**encodings),
+            data=long[long['measure'] == m])
+        if facet_dims:
+            chart = layers.properties(width=220, height=180).facet(
+                facet=alt.Facet('panel:N', sort=panels, title=None), columns=4).properties(title=m)
+        else:
+            chart = layers.properties(width=420, height=260, title=m)
+        charts.append(chart)
+    return charts
 
 
 def latex_tabular(row_headers, header, cells, rule_before=()):
@@ -931,9 +1008,12 @@ def render_results_table(results, family_scale, options):
     st.caption('This tab has its own filters: the filters of the sidebar do not apply here.')
     with st.expander('Filters of the table', expanded=True, icon=':material/filter_alt:'):
         filter_columns = st.columns(4)
-        chosen = {column: filter_columns[i % 4].multiselect(label, options[column][0], default=options[column][0],
-                                                            key=f'table_filter_{column}')
-                  for i, (column, label) in enumerate(DIMENSIONS.items())}
+        st.caption('Empty filter: all its values. Choose at least one filter to build the table.')
+        chosen = dimension_filters(lambda i: filter_columns[i % 4], options, key_prefix='table_filter_')
+    if not any(chosen.values()):   # nothing chosen: the table of the whole results would be heavy
+        st.info(f'Choose at least one filter of the table (e.g. a subset and a window size): '
+                f'{len(results):,} grid-search settings in all.')
+        return
     rows = filter_rows(results, options, chosen)
 
     col_rows, col_columns, col_measures = st.columns(3)
@@ -1123,6 +1203,15 @@ def render_results_table(results, family_scale, options):
         st.dataframe(styler, hide_index=True,
                      column_config={c: st.column_config.Column(ROW_LABELS[c]) for c in [*row_dims, 'measure']})
 
+    # Line charts along the window size, one per measure, of the cells of the table
+    if 'window' in column_dims:
+        st.subheader('By window size', divider='gray')
+        series_dims = [d for d in row_dims + column_dims if d not in group_dims and d != 'window']
+        for chart in window_line_charts(values, measures, series_dims, group_dims, family_scale, short_names):
+            st.altair_chart(chart)
+    else:
+        st.caption('Line charts along the window size: put *Window size* in the Columns.')
+
     # Exports: the values, and a LaTeX table (two header rows when the columns are grouped; top 1 in bold,
     # top 2 underlined). Subsets in typewriter, as in the paper (\texttt{5xx count})
     cells = [[(f'\\texttt{{{_latex_text(table.at[i, c])}}}' if c == 'subset' else _latex_text(table.at[i, c]))
@@ -1225,7 +1314,7 @@ def merged_page():
                 st.info('Upload a merged file in the sidebar, e.g. one merged on the HPC server with '
                         '`python streamlit_result_visualization/grid_results.py trained_models_log1p`.')
                 return
-            load, args, label = load_merged_upload, (uploaded.getvalue(), uploaded.name, LOADING_CODE), uploaded.name
+            load, args, label = load_merged_upload, (uploaded, uploaded.file_id, uploaded.name, LOADING_CODE), uploaded.name
         else:
             files = find_merged_files()
             if not files:

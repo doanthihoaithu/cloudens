@@ -27,6 +27,16 @@ GRID_FILE_PATTERN = re.compile(r'^(?P<model>.+)_grid_search_(?P<normalization>gl
 TAG_COLUMNS = ['window', 'subset', 'fill_nan', 'model_folder', 'score_normalization', 'file', 'modified']
 MERGED_DIR = PROJECT_ROOT / 'merged_results'
 MERGED_SUFFIXES = ('.csv.gz', '.csv', '.parquet')
+# Models left out of the merged files and of the explorer: whole model families (the folder name before its
+# first '_', e.g. 'STGformer' for STGformer_null_padding_feature_pool6) and single model folders
+IGNORED_MODEL_FAMILIES = {'MAGE', 'STGformer'}
+IGNORED_MODEL_FOLDERS = {'AnomalyTransformer_association'}
+
+
+def is_ignored_model(model_folder):
+    """True for a model folder of IGNORED_MODEL_FOLDERS or of a family of IGNORED_MODEL_FAMILIES."""
+    model_folder = str(model_folder)
+    return model_folder in IGNORED_MODEL_FOLDERS or model_folder.split('_')[0] in IGNORED_MODEL_FAMILIES
 
 
 def parse_grid_path(path):
@@ -47,10 +57,12 @@ def parse_grid_path(path):
     }
 
 
-def find_grid_files(root):
-    """Experiment info of every grid-search CSV under root."""
+def find_grid_files(root, include_ignored=False):
+    """Experiment info of every grid-search CSV under root, but those of the ignored models (is_ignored_model)
+    unless include_ignored."""
     found = (parse_grid_path(p) for p in sorted(Path(root).glob('window_*/*/fill_nan_with_*/*/*_grid_search_*.csv')))
-    return [info for info in found if info is not None]
+    return [info for info in found
+            if info is not None and (include_ignored or not is_ignored_model(info['model_folder']))]
 
 
 def grid_signature(files):
@@ -163,8 +175,11 @@ def main():
     parser.add_argument('root', help='Results folder, e.g. trained_models_log1p')
     parser.add_argument('-o', '--output', help=f'Merged file ({", ".join(MERGED_SUFFIXES)}); '
                                                'default: merged_results/<folder>_<timestamp>.csv.gz')
+    parser.add_argument('--include-ignored', action='store_true',
+                        help=f'Also merge the ignored models (families {sorted(IGNORED_MODEL_FAMILIES)}, '
+                             f'folders {sorted(IGNORED_MODEL_FOLDERS)})')
     args = parser.parse_args()
-    files = find_grid_files(args.root)
+    files = find_grid_files(args.root, include_ignored=args.include_ignored)
     if not files:
         raise SystemExit(f'No *_grid_search_*.csv found under {args.root}')
     path = Path(args.output or default_merged_path(args.root))
@@ -175,7 +190,9 @@ def main():
         rows, model_folders = len(results), results['model_folder'].nunique()
     else:
         rows, model_folders = write_merged_streaming(paths, path)
-    print(f'Merged {len(files)} grid-search files ({rows:,} rows, {model_folders} model folders) into {path}')
+    print(f'Merged {len(files)} grid-search files ({rows:,} rows, {model_folders} model folders) into {path}' +
+          ('' if args.include_ignored else f'; ignored: families {sorted(IGNORED_MODEL_FAMILIES)}, '
+                                           f'folders {sorted(IGNORED_MODEL_FOLDERS)}'))
 
 
 if __name__ == '__main__':
