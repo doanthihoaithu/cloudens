@@ -19,6 +19,7 @@ from ibm_dataset_loader import IBMDatasetLoader
 from run_preprocessing import set_random_seed
 from run_training_single_model import evaluate_performance
 from nab_scoring import calculate_nab_score_with_window_based_tp_fn
+from model_outputs import read_predictions_for_assembles, predictions_for_assembles_path
 from utils import get_project_root, NumpyEncoder, scoring_result_file_name, results_root_dir, score_normalizations
 
 logging.basicConfig(level=logging.INFO)
@@ -233,11 +234,9 @@ def analyze_reconstruction_errors_essembles(cfg):
 
                 grid_search_combine_dir = os.path.join(get_project_root(), result_dir_from_project_root[1:])
 
-                label_ensemble_file = os.path.join(grid_search_combine_dir, scoring_result_file_name(model, 'predictions_for_assembles', score_normalization))
-                if not os.path.exists(label_ensemble_file):
+                label_essemble_df = read_predictions_for_assembles(grid_search_combine_dir, model, score_normalization)
+                if label_essemble_df is None:
                     raise RuntimeError('Label Ensembles file not found')
-                else:
-                    label_essemble_df = pd.read_csv(label_ensemble_file)
 
                 grid_search_file = os.path.join(grid_search_combine_dir, scoring_result_file_name(model, 'grid_search', score_normalization))
                 if not os.path.exists(grid_search_file):
@@ -528,10 +527,9 @@ def analyze_reconstruction_errors_essembles_of_optimal_configuration(cfg, most_o
                 model_folder,
             )
 
-            label_ensemble_file = os.path.join(result_dir, scoring_result_file_name(proposed_model_name, 'predictions_for_assembles', score_normalization))
-            if not os.path.exists(label_ensemble_file):
-                raise RuntimeError(f'Label Ensembles file not found: {label_ensemble_file}')
-            label_essemble_df = pd.read_csv(label_ensemble_file)
+            label_essemble_df = read_predictions_for_assembles(result_dir, proposed_model_name, score_normalization)
+            if label_essemble_df is None:
+                raise RuntimeError(f'Label Ensembles file not found: {predictions_for_assembles_path(result_dir, proposed_model_name, score_normalization)}')
 
             grid_search_file = os.path.join(result_dir, scoring_result_file_name(proposed_model_name, 'grid_search', score_normalization))
             if not os.path.exists(grid_search_file):

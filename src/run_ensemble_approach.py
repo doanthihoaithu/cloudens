@@ -16,6 +16,7 @@ from ibm_dataset_loader import IBMDatasetLoader
 from run_preprocessing import set_random_seed
 from run_training_single_model import evaluate_performance
 from nab_scoring import calculate_nab_score_with_window_based_tp_fn
+from model_outputs import read_predictions_for_assembles
 from utils import get_project_root, NumpyEncoder, scoring_result_file_name, results_root_dir, score_normalizations
 
 logging.basicConfig(level=logging.INFO)
@@ -196,11 +197,9 @@ def analyze_reconstruction_errors_essembles(ensembles_config, data_preparation_c
                 #
                 # assert reconstruction_error_raw.shape[0] == len(data_loader.test_index)
 
-                label_ensemble_file = os.path.join(model_dir, scoring_result_file_name(model, 'predictions_for_assembles', score_normalization))
-                if not os.path.exists(label_ensemble_file):
+                label_essemble_df = read_predictions_for_assembles(model_dir, model, score_normalization)
+                if label_essemble_df is None:
                     raise RuntimeError('Label Ensembles file not found')
-                else:
-                    label_essemble_df = pd.read_csv(label_ensemble_file)
 
                 grid_search_file = os.path.join(model_dir, scoring_result_file_name(model, 'grid_search', score_normalization))
                 if not os.path.exists(grid_search_file):

@@ -13,7 +13,9 @@ Per-model outputs on all data splits (train / valid / test):
         anomaly_score_postprocessed_by_likelihood_with_mahalanobis,
         anomaly_score_postprocessed_by_mahalanobis
     The file is updated in place: re-running with other scoring settings adds / overwrites
-    columns while keeping the others (unless the predictions themselves were recomputed).
+    columns while keeping the others (unless the predictions themselves were recomputed);
+  • the test predictions of every grid-search setting (for the ensembles) as a boolean parquet file
+    [T_test, settings], column i matching row i of the grid-search CSV (earlier CSVs are still read).
 
 Scoring statistics are fitted on windows without anomalies and applied to every split: the
 median / IQR of the errors on the train windows, the Mahalanobis mean / covariance on the
@@ -396,6 +398,38 @@ def read_anomaly_scores_file(path):
 def write_anomaly_scores_file(scores, path):
     """Scores rounded to SCORE_DECIMALS, as parquet."""
     round_scores(scores).to_parquet(path, index=False, **PARQUET_OPTIONS)
+
+
+def predictions_for_assembles_path(model_dir, model, normalization):
+    """Boolean parquet file of the test predictions of every grid-search setting."""
+    return os.path.join(model_dir, scoring_result_file_name(model, 'predictions_for_assembles', normalization)
+                        .removesuffix('.csv') + '.parquet')
+
+
+def legacy_predictions_for_assembles_path(model_dir, model, normalization):
+    """CSV of the grid-search test predictions written by earlier versions."""
+    return os.path.join(model_dir, scoring_result_file_name(model, 'predictions_for_assembles', normalization))
+
+
+def write_predictions_for_assembles(is_anomalies, model_dir, model, normalization):
+    """Write the predictions [T_test, settings] as booleans (parquet), removing an earlier CSV; returns the path."""
+    path = predictions_for_assembles_path(model_dir, model, normalization)
+    is_anomalies.astype(bool).to_parquet(path, index=False, **PARQUET_OPTIONS)
+    legacy_path = legacy_predictions_for_assembles_path(model_dir, model, normalization)
+    if os.path.exists(legacy_path):
+        os.remove(legacy_path)
+    return path
+
+
+def read_predictions_for_assembles(model_dir, model, normalization):
+    """Predictions [T_test, settings] as 0/1 ints, from the parquet file or an earlier CSV; None when neither exists."""
+    path = predictions_for_assembles_path(model_dir, model, normalization)
+    if os.path.exists(path):
+        return pd.read_parquet(path).astype(np.int64)
+    legacy_path = legacy_predictions_for_assembles_path(model_dir, model, normalization)
+    if os.path.exists(legacy_path):
+        return pd.read_csv(legacy_path)
+    return None
 
 
 def save_anomaly_scores(scores, model_dir, model, experiment_config, scorer_args, predictions_recomputed,

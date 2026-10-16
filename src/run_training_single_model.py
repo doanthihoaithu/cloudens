@@ -39,6 +39,7 @@ from plotting_module import plot_training_history, plot_reconstruction_and_mahal
 from anomaly_likelihood import compute_anomaly_likelihood
 from model_outputs import (predict_all_splits, save_predictions, predictions_exist, load_predictions,
                            compute_anomaly_scores, compute_mahalanobis_scores, save_anomaly_scores, label_from_scores,
+                           write_predictions_for_assembles,
                            likelihood_window_pairs, parse_topk, MAHALANOBIS_COLUMN, MAHALANOBIS_REFERENCES,
                            LIKELIHOOD_THRESHOLD_MODES, LIKELIHOOD_STRATEGIES)
 from nab_scoring import calculate_nab_score_with_window_based_tp_fn, merge_overlapping_windows
@@ -552,9 +553,8 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                 f"{model} models's best NAB score with reward_fn profile ({score_normalization}): {result_df['reward_fn_normalized'].max()}"
                 f" with params {result_df.loc[max_NAB_reward_fn_profile_index].values}")
 
-            predictions_for_assembles_file = os.path.join(
-                model_dir, scoring_result_file_name(model, 'predictions_for_assembles', score_normalization))
-            is_anomalies_df.to_csv(predictions_for_assembles_file, index=False)
+            predictions_for_assembles_file = write_predictions_for_assembles(is_anomalies_df, model_dir, model,
+                                                                             score_normalization)
             log.info('Prediction results saved to {}'.format(predictions_for_assembles_file))
 
 # Splits on which every grid-search setting is evaluated with the same metrics, e.g. to choose the
