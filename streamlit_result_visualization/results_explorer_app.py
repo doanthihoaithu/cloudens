@@ -81,6 +81,11 @@ def family_color_scale(families):
     free = iter(c for c in EXTRA_FAMILY_COLORS if c not in FAMILY_COLORS.values())
     colors = {f: FAMILY_COLORS.get(f) or next(free, NO_FAMILY_COLOR) for f in families}
     return alt.Scale(domain=families, range=[colors[f] for f in families])
+
+
+def family_colors(family_scale):
+    """{family: color} of a family_color_scale."""
+    return dict(zip(family_scale.domain, family_scale.range))
 # Groups are colored by model family; Vega-Lite has no hatch patterns, so up to two other group
 # dimensions are told apart by the fill shade and by the border style of the bars / boxes
 FILL_SHADES = [1.0, 0.55, 0.25, 0.8, 0.4]
@@ -102,6 +107,63 @@ def model_variant(model_folder, window):
     if match and int(match['size']) == int(window):
         return match['model'] + WHOLE_WINDOW_POOL
     return model_folder
+
+
+# Short model names of the results table: the model, '*' for the graph models with null padding (the sparsity
+# indicator), and a short tag for the other variants (e.g. 'STGformer_null_padding_feature_poolwin' -> 'STGformer*')
+# Whole folder names shown as given: Anomaly Transformer with the association-based score of its paper as the
+# model itself, the forecast-error variant (folder without suffix) tagged
+FOLDER_SHORT_NAMES = {'AnomalyTransformer_association': 'Anom.Trans.', 'AnomalyTransformer': 'Anom.Trans.-fc'}
+# ClouDens backbones: A3TGCN (propagating on the operational-context graph) and BigST (learned graph; with the context
+# graph as its prior, folders <model>..._spatial: '-ctx'); '*' with the sparsity indicator
+CONTEXT_GRAPH_NAMES = {('A3TGCN', False): 'ClouDens-A3T', ('BigST', False): 'ClouDens-BigST',
+                       ('BigST', True): 'ClouDens-BigST-ctx'}
+PROPOSED_MODEL_PREFIX = 'ClouDens'
+NULL_PADDING_SUFFIX = re.compile(r'_null_padding_(feature|target|both)')
+CONTEXT_GRAPH_SUFFIX = '_spatial'
+VARIANT_TAGS = {WHOLE_WINDOW_POOL: '', '_association': '-assoc', '_forecast': ''}
+
+
+def short_model_name(model_folder):
+    """'A3TGCN' -> 'ClouDens-A3T', 'A3TGCN_null_padding_feature' -> 'ClouDens-A3T*',
+    'BigST_null_padding_feature' -> 'ClouDens-BigST*',
+    'BigST_null_padding_feature_spatial' -> 'ClouDens-BigST-ctx*'."""
+    name = str(model_folder)
+    if name in FOLDER_SHORT_NAMES:
+        return FOLDER_SHORT_NAMES[name]
+    padded = bool(NULL_PADDING_SUFFIX.search(name))
+    name = NULL_PADDING_SUFFIX.sub('', name)
+    context = name.endswith(CONTEXT_GRAPH_SUFFIX)
+    name = name.removesuffix(CONTEXT_GRAPH_SUFFIX)
+    tags = []
+    for suffix, tag in VARIANT_TAGS.items():
+        if name.endswith(suffix):
+            name, tags = name[:-len(suffix)], [tag] + tags
+    match = POOL_SUFFIX.match(name)   # other pool sizes than the whole window: '-pool<k>'
+    if match:
+        name, tags = match['model'], [f'-pool{match["size"]}'] + tags
+    if (name, context) in CONTEXT_GRAPH_NAMES:
+        name = CONTEXT_GRAPH_NAMES[(name, context)]
+    elif context:   # a context-graph variant of another model
+        tags.append('+ctx')
+    return name + ('*' if padded else '') + ''.join(tags)
+
+
+def short_subset_name(subset):
+    """'no_group_5xx_count' -> '5xx count' (as the paper's subset names, src/analysis_results.py)."""
+    return ' '.join(str(subset).removeprefix('no_group_').split('_'))
+
+
+# Families of the graph-based models (conf graph_models), listed after the other models in the results table
+GRAPH_MODEL_FAMILIES = {'A3TGCN', 'GDN', 'GST', 'STGformer', 'MAGE', 'BigST'}
+
+
+def model_order_key(model_folder):
+    """Sort key of a model: the other models first, then the graph models, then ClouDens; by short name without
+    the null-padding mark, each model followed by its variant with it"""
+    name = short_model_name(model_folder)
+    return (model_family(model_folder) in GRAPH_MODEL_FAMILIES, name.startswith(PROPOSED_MODEL_PREFIX),
+            name.replace('*', ''), '*' in name)
 
 
 def model_family(model_folder):
@@ -147,9 +209,9 @@ def group_style(data, group_by, family_scale):
         legend_channels = {'opacity': alt.Opacity(f'{dim}:N', title=DIMENSIONS[dim], scale=scale, legend=legend)}
         if dim == 'model_folder':
             # Each model in its family color: a fill scale on the same field merges with the opacity legend
-            family_colors = dict(zip(family_scale.domain, family_scale.range))
+            colors = family_colors(family_scale)
             legend_channels['fill'] = alt.Fill(f'{dim}:N', title=DIMENSIONS[dim], legend=legend, scale=alt.Scale(
-                domain=domain, range=[family_colors.get(model_family(m), NO_FAMILY_COLOR) for m in domain]))
+                domain=domain, range=[colors.get(model_family(m), NO_FAMILY_COLOR) for m in domain]))
 
         def shade_legend(legend_data, x, y, legend_channels=legend_channels):
             # Invisible points carrying the same scale on the opacity channel, which has a legend; they
@@ -203,6 +265,53 @@ def configuration_keys(rows, columns):
         keys.loc[own_threshold, 'anomaly_threshold'] = [f'own best-F1 threshold #{int(r)} (train_valid)'
                                                         for r in rows.loc[own_threshold, 'f1_rank']]
     return keys
+
+
+def best_per_group(frame, keys, by):
+    """The row with the highest `by` of every group of frame (by keys)."""
+    return frame.loc[frame.groupby(keys)[by].idxmax()]
+
+
+def join_columns(frame, columns, sep=' · '):
+    """Values of the columns as text joined by sep, row by row: frame[columns].astype(str).agg(sep.join, axis=1),
+    vectorised (no Python call per row of tables of millions of rows)."""
+    if not columns:
+        return pd.Series('', index=frame.index)
+    text = frame[columns[0]].astype(str)
+    for column in columns[1:]:
+        text = text + sep + frame[column].astype(str)
+    return text
+
+
+def measure_format(measure):
+    """Python number format of a measure, e.g. '{:.4f}'."""
+    return '{:' + MEASURES[measure][2] + '}'
+
+
+def measure_column_config(measures, prefix='', label=''):
+    """st.dataframe number columns of the measures (columns prefix + measure column, titled label + measure)."""
+    return {f'{prefix}{MEASURES[m][0]}': st.column_config.NumberColumn(f'{label}{m}', format=f'%{MEASURES[m][2]}')
+            for m in measures}
+
+
+def dimension_options(results):
+    """Filter options of every dimension (its values, sorted) and whether it has missing values."""
+    return {column: (sorted(results[column].dropna().unique().tolist(), key=str), bool(results[column].isna().any()))
+            for column in DIMENSIONS}
+
+
+def filter_rows(results, options, chosen):
+    """Rows whose dimensions take chosen values. A dimension with all its values chosen and no missing value
+    restricts nothing: its (costly, on millions of rows) isin test is skipped, and results is returned as is
+    when no dimension restricts it."""
+    mask = None
+    for column, values in chosen.items():
+        all_values, has_missing = options[column]
+        if len(values) == len(all_values) and not has_missing:
+            continue
+        keep = results[column].isin(values)
+        mask = keep if mask is None else mask & keep
+    return results if mask is None else results[mask]
 
 
 # ── Loading ───────────────────────────────────────────────────────────────────
@@ -321,10 +430,9 @@ def render_explorer(results):
     # ── Filters ──
     with st.sidebar:
         st.header('Filters')
-        selected = {}
-        for column, label in DIMENSIONS.items():
-            options = sorted(results[column].dropna().unique().tolist(), key=str)
-            selected[column] = st.multiselect(label, options, default=options)
+        options = dimension_options(results)
+        selected = {column: st.multiselect(label, options[column][0], default=options[column][0])
+                    for column, label in DIMENSIONS.items()}
 
         st.header('Comparison')
         available_measures = [m for m, (c, _, _) in MEASURES.items() if c in results and results[c].notna().any()]
@@ -349,17 +457,14 @@ def render_explorer(results):
         group_by = st.multiselect('Compare groups of', list(DIMENSIONS), default=['model_folder', 'post_processing_strategy'],
                                   format_func=DIMENSIONS.get)
 
-    mask = pd.Series(True, index=results.index)
-    for column, values in selected.items():
-        mask &= results[column].isin(values)
-    filtered = results[mask]
+    filtered = filter_rows(results, options, selected)
 
     tab_overview, tab_compare, tab_target, tab_windows, tab_rows, tab_table = st.tabs(
         ['Overview', 'Compare', 'Target model', 'Strategies by window', 'All settings', 'Results table'])
 
     # ── Results table: its own filters, shown whatever the sidebar filters ──
     with tab_table:
-        render_results_table(results, family_scale)
+        render_results_table(results, family_scale, options)
 
     if filtered.empty:
         for tab in (tab_overview, tab_compare, tab_target, tab_windows, tab_rows):
@@ -387,8 +492,7 @@ def render_explorer(results):
                        *[f'best_{c}' for c in measure_columns], 'has_split_metrics', 'modified', 'file']],
             hide_index=True,
             column_config={
-                **{f'best_{MEASURES[m][0]}': st.column_config.NumberColumn(f'Best {m}', format=f'%{MEASURES[m][2]}')
-                   for m in measures},
+                **measure_column_config(measures, prefix='best_', label='Best '),
                 'has_split_metrics': st.column_config.CheckboxColumn('Train/valid metrics'),
                 'modified': st.column_config.DatetimeColumn('Modified', format='YYYY-MM-DD HH:mm'),
             })
@@ -402,8 +506,8 @@ def render_explorer(results):
             if ranked.empty:
                 st.info(f'No row has `{select_by}` (older grid searches lack the train/valid metrics).')
             else:
-                best = ranked.loc[ranked.groupby(group_by)[select_by].idxmax()].copy()
-                best['group'] = best[group_by].astype(str).agg(' · '.join, axis=1)
+                best = best_per_group(ranked, group_by, select_by).copy()
+                best['group'] = join_columns(best, group_by)
                 best = best.sort_values(measure_column, ascending=False)
 
                 st.caption(f'Best setting of each group by **{select_by}**; one chart per test measure, '
@@ -440,7 +544,7 @@ def render_explorer(results):
 
             st.subheader('Over all settings: median and mean')
             spread = filtered.copy()
-            spread['group'] = spread[group_by].astype(str).agg(' · '.join, axis=1)
+            spread['group'] = join_columns(spread, group_by)
             # Family of each group; '' when a group mixes several families (not grouped by model)
             group_family = spread.groupby('group')['model_family'].agg(lambda f: f.iloc[0] if f.nunique() == 1 else '')
 
@@ -531,7 +635,7 @@ def render_explorer(results):
             keys = configuration_keys(ranked, match_on)
             same = (keys == keys.loc[target_index]).all(axis=1)
             matched = ranked[same]
-            best_matched = matched.loc[matched.groupby('model_folder')[select_by].idxmax()].copy()
+            best_matched = best_per_group(matched, 'model_folder', select_by).copy()
             best_matched['role'] = ['target' if i == target_index else 'same configuration' for i in best_matched.index]
             # Target first, so that every other row can be checked against it
             best_matched = pd.concat([best_matched.loc[[target_index]],
@@ -542,9 +646,7 @@ def render_explorer(results):
             table_columns = ['model_family', 'model_folder', 'role', *config_columns, select_by, *measure_columns,
                              *DETECTION_COLUMNS, 'nab_tp', 'nab_fp', 'nab_fn', 'file']
             st.dataframe(best_matched[list(dict.fromkeys(table_columns))], hide_index=True,
-                         column_config={**{MEASURES[m][0]: st.column_config.NumberColumn(m, format=f'%{MEASURES[m][2]}')
-                                           for m in measures},
-                                        **DETECTION_COLUMN_CONFIG})
+                         column_config={**measure_column_config(measures), **DETECTION_COLUMN_CONFIG})
             missing = sorted(set(ranked['model_folder']) - set(best_matched['model_folder']))
             if missing:
                 st.warning(f'No setting with this configuration for: {", ".join(missing)}.')
@@ -621,7 +723,7 @@ def render_explorer(results):
         rows = filtered[filtered['model_folder'].isin(chosen)]
         if statistic != 'Median over settings':
             rows = rows.dropna(subset=[select_by])
-        rows = rows.assign(strategy=rows[strategy_keys].astype(str).agg(' · '.join, axis=1) if len(rows) else '')
+        rows = rows.assign(strategy=join_columns(rows, strategy_keys) if len(rows) else '')
         if not chosen:
             st.info('Choose at least one model.')
         elif rows.empty:
@@ -638,14 +740,15 @@ def render_explorer(results):
                     candidates = rows[(rows['window'] == window) & (rows['strategy'] == strategy)]
                     same = (config.loc[candidates.index] == config.loc[target_index]).all(axis=1)
                     matched = candidates[same]
-                    picked.append(matched.loc[matched.groupby('model_folder')[select_by].idxmax()])
-                    unmatched += [(m, window, strategy) for m in chosen if m not in set(matched['model_folder'])]
+                    picked.append(best_per_group(matched, 'model_folder', select_by))
+                    matched_models = set(matched['model_folder'])
+                    unmatched += [(m, window, strategy) for m in chosen if m not in matched_models]
                 per_window = (pd.concat(picked) if picked else rows.iloc[:0]).copy()
                 per_window['role'] = ['target' if m == target else 'same configuration'
                                       for m in per_window['model_folder']]
                 long = per_window.melt(id_vars=keys, value_vars=measure_columns, var_name='column', value_name='value')
             elif statistic == 'Best of each model':
-                per_window = rows.loc[rows.groupby(keys)[select_by].idxmax()]
+                per_window = best_per_group(rows, keys, select_by)
                 long = per_window.melt(id_vars=keys, value_vars=measure_columns, var_name='column', value_name='value')
             else:
                 long = rows.melt(id_vars=keys, value_vars=measure_columns, var_name='column', value_name='value')
@@ -679,13 +782,13 @@ def render_explorer(results):
                 rank = shown_families.groupby(shown_families).cumcount()
                 shade_scale = alt.Scale(domain=shown_models, range=[LINE_SHADES[r % len(LINE_SHADES)] for r in rank])
                 shade['opacity'] = alt.Opacity('model_folder:N', scale=shade_scale, legend=None)
-                family_colors = dict(zip(family_scale.domain, family_scale.range))
+                colors = family_colors(family_scale)
                 shade_legend = dict(
                     opacity=alt.Opacity('model_folder:N', title='Model', scale=shade_scale, legend=alt.Legend(
                         **legend, symbolType='square', symbolSize=150, symbolStrokeColor='black', symbolStrokeWidth=1)),
                     fill=alt.Fill('model_folder:N', title='Model', scale=alt.Scale(
                         domain=shown_models,
-                        range=[family_colors.get(model_family(m), NO_FAMILY_COLOR) for m in shown_models])))
+                        range=[colors.get(model_family(m), NO_FAMILY_COLOR) for m in shown_models])))
 
             def window_chart(data, m, title):
                 """Lines of the strategies (of one model, or of every model when together) for measure m."""
@@ -751,8 +854,7 @@ def render_explorer(results):
                 order = per_window.assign(not_target=per_window['model_folder'] != (target if by_target else None))
                 st.dataframe(order.sort_values(['strategy', 'window', 'not_target', 'model_folder'])[shown],
                              hide_index=True,
-                             column_config={**{MEASURES[m][0]: st.column_config.NumberColumn(m, format=f'%{MEASURES[m][2]}')
-                                               for m in measures}, **DETECTION_COLUMN_CONFIG})
+                             column_config={**measure_column_config(measures), **DETECTION_COLUMN_CONFIG})
 
     # ── All settings ──
     with tab_rows:
@@ -764,25 +866,41 @@ def render_explorer(results):
         others = [c for c in filtered.columns if c not in leading and c not in ('detection_counters',)]
         table = filtered[leading + others].sort_values(measure_column, ascending=False)
         st.dataframe(table, hide_index=True, height=600, column_config=DETECTION_COLUMN_CONFIG)
-        st.download_button('Download as CSV', table.to_csv(index=False).encode(), file_name='grid_search_filtered.csv',
-                           mime='text/csv')
+        # The CSV of up to millions of rows is written on click only, not on every rerun
+        st.download_button('Download as CSV', lambda: table.to_csv(index=False).encode(),
+                           file_name='grid_search_filtered.csv', mime='text/csv')
 
 
 TABLE_STATISTICS = ['Best setting', 'Median', 'Mean', 'Max']
 TABLE_LAYOUTS = ['Measures under each column value', 'Column values under each measure', 'Measures as rows']
-TABLE_HIGHLIGHT = {'Per column': 'the best model / group of every column',
-                   'Per row': 'the best column of every row, for each measure', 'None': ''}
-BEST_CELL_STYLE = 'font-weight: bold; background-color: rgba(76, 120, 168, 0.22)'
+TABLE_HIGHLIGHT = {'Per column': 'the two best models / groups of every column',
+                   'Per row': 'the two best columns of every row, for each measure', 'None': ''}
+# Top-1 / top-2 cells of the results table: darker / lighter shade (LaTeX: bold / underlined)
+RANK_CELL_STYLES = {0: '', 1: 'font-weight: bold; background-color: rgba(76, 120, 168, 0.45)',
+                    2: 'background-color: rgba(76, 120, 168, 0.18)'}
+LATEX_RANK_FORMATS = {0: '%s', 1: '\\textbf{%s}', 2: '\\underline{%s}'}
+HIGHLIGHT_AXES = {'Per column': 0, 'Per row': 1}   # axis of the top-1 / top-2 ranks of a highlight mode
+ROW_LABELS = {**DIMENSIONS, 'measure': 'Measure'}   # headers of the row columns of the results table
+# Static results table with merged cells (st.html): readable in the light and dark themes, scrolls when wide
+MERGED_TABLE_CSS = '''<style>
+div.merged-table { overflow-x: auto; }
+table.merged-table { border-collapse: collapse; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+table.merged-table th, table.merged-table td { border: 1px solid rgba(128, 128, 128, 0.35); padding: 4px 10px; }
+table.merged-table thead th { text-align: center; }
+table.merged-table tbody th { text-align: left; vertical-align: middle; font-weight: 600; }
+table.merged-table td { text-align: right; }
+</style>'''
 
 
 def _latex_text(value):
     return str(value).replace('\\', '\\textbackslash{}').replace('_', '\\_').replace('%', '\\%').replace('&', '\\&')
 
 
-def latex_tabular(row_headers, header, cells):
+def latex_tabular(row_headers, header, cells, rule_before=()):
     """
     booktabs tabular: row_headers (left columns), header the (outer, inner) labels of the value columns, cells
-    the rows (LaTeX text). Consecutive equal outer labels span their columns (multicolumn and cmidrule).
+    the rows (LaTeX text), with a rule before the rows rule_before. Consecutive equal outer labels span their
+    columns (multicolumn and cmidrule).
     """
     n_rows = len(row_headers)
     lines = ['\\begin{tabular}{' + 'l' * n_rows + 'r' * len(header) + '}', '\\toprule']
@@ -796,12 +914,15 @@ def latex_tabular(row_headers, header, cells):
             start += width
         lines += [' & '.join([''] * n_rows + spans) + ' \\\\', ' '.join(rules)]
     lines += [' & '.join(row_headers + [inner for _, inner in header]) + ' \\\\', '\\midrule']
-    lines += [' & '.join(map(str, row)) + ' \\\\' for row in cells]
+    for i, row in enumerate(cells):
+        if i in rule_before:   # e.g. between two groups of rows
+            lines.append('\\midrule')
+        lines.append(' & '.join(map(str, row)) + ' \\\\')
     lines += ['\\bottomrule', '\\end{tabular}']
     return '\n'.join(lines) + '\n'
 
 
-def render_results_table(results, family_scale):
+def render_results_table(results, family_scale, options):
     """
     'Results table' tab: one cell per group of rows (e.g. models) and of columns (e.g. windows), with the
     measures of the best setting of the group or a statistic over its settings. Its filters are its own:
@@ -810,12 +931,10 @@ def render_results_table(results, family_scale):
     st.caption('This tab has its own filters: the filters of the sidebar do not apply here.')
     with st.expander('Filters of the table', expanded=True, icon=':material/filter_alt:'):
         filter_columns = st.columns(4)
-        mask = pd.Series(True, index=results.index)
-        for i, (column, label) in enumerate(DIMENSIONS.items()):
-            options = sorted(results[column].dropna().unique().tolist(), key=str)
-            chosen = filter_columns[i % 4].multiselect(label, options, default=options, key=f'table_filter_{column}')
-            mask &= results[column].isin(chosen)
-    rows = results[mask]
+        chosen = {column: filter_columns[i % 4].multiselect(label, options[column][0], default=options[column][0],
+                                                            key=f'table_filter_{column}')
+                  for i, (column, label) in enumerate(DIMENSIONS.items())}
+    rows = filter_rows(results, options, chosen)
 
     col_rows, col_columns, col_measures = st.columns(3)
     row_dims = col_rows.multiselect('Rows', list(DIMENSIONS), default=['model_folder'], format_func=DIMENSIONS.get,
@@ -837,7 +956,7 @@ def render_results_table(results, family_scale):
         'Best setting by', available_metrics, key='table_select_by', disabled=statistic != 'Best setting',
         index=available_metrics.index('train_valid_f1') if 'train_valid_f1' in available_metrics else 0,
         help='train_valid_* / valid_* select without the test labels; f1 / NAB select on the test split itself.')
-    highlight = col_highlight.segmented_control('Bold the best', list(TABLE_HIGHLIGHT), default='Per column',
+    highlight = col_highlight.segmented_control('Highlight top 1 / top 2', list(TABLE_HIGHLIGHT), default='Per column',
                                                 required=True, key='table_highlight')
     layout = st.segmented_control(
         'Layout', TABLE_LAYOUTS, default=TABLE_LAYOUTS[0], required=True, key='table_layout',
@@ -845,6 +964,24 @@ def render_results_table(results, family_scale):
              'Column values under each measure: F1 · Window 6, F1 · Window 12, …, NAB · Window 6, … '
              'Measures as rows: one row per model and measure, one column per window.')
 
+    group_dims = st.multiselect(
+        'Group rows by', list(DIMENSIONS), default=['subset'], format_func=DIMENSIONS.get, key='table_group',
+        help='Leading columns of the table, e.g. the subset: its rows (models) are listed under every value and '
+             'the best cells are those of each group. Dimensions already in the rows or columns are ignored.')
+    group_dims = [d for d in group_dims if d not in row_dims + column_dims]
+    row_dims = group_dims + row_dims
+    short_names = st.toggle(
+        'Short names', value=True, key='table_short_names',
+        help="Subsets: 'no_group_5xx_count' → '5xx count'. Models (*: with the sparsity indicator, null padding): "
+             "'A3TGCN' / 'A3TGCN_null_padding_feature' → 'ClouDens-A3T' / 'ClouDens-A3T*', "
+             "'BigST_spatial' / 'BigST_null_padding_feature_spatial' (context graph) → 'ClouDens-BigST-ctx' / "
+             "'ClouDens-BigST-ctx*', 'BigST' / 'BigST_null_padding_feature' → 'ClouDens-BigST' / 'ClouDens-BigST*', "
+             "'STGformer_null_padding_feature_poolwin' "
+             "→ 'STGformer*'.")
+    merge_cells = st.toggle(
+        'Merge equal cells', value=True, key='table_merge', disabled=not group_dims,
+        help='One merged cell for each group (e.g. a subset over its models), as in the LaTeX table: a static '
+             'table. Off: the interactive table (sortable, one value per row).') and bool(group_dims)
     if not row_dims or not measures:
         st.info('Choose at least one dimension for the rows and one measure.')
         return
@@ -856,29 +993,34 @@ def render_results_table(results, family_scale):
         st.info('No grid-search row matches the filters of the table' +
                 (f' with `{select_by}`.' if statistic == 'Best setting' else '.'))
         return
+
+    def top_ranks(frame, axis):
+        """1 / 2 for the highest / second highest values (ties share a rank) of every column (axis 0, within
+        each group of rows of Group rows by) or of every row (axis 1) of frame; 0 elsewhere."""
+        if axis == 0 and group_dims:
+            ranks = frame.groupby(level=group_dims).rank(method='dense', ascending=False)
+        else:
+            ranks = frame.rank(axis=axis, method='dense', ascending=False)
+        return ranks.where(ranks <= 2, 0).astype(int)   # NaN <= 2 is False: missing values get 0 too
+
     if statistic == 'Best setting':
-        picked = rows.loc[rows.groupby(keys)[select_by].idxmax()]
+        picked = best_per_group(rows, keys, select_by)
         values = picked.set_index(keys)[measure_columns]
     else:
         values = rows.groupby(keys)[measure_columns].agg(statistic.lower())
     values.columns = measures
 
     # Value columns in the order of the layout, each with its (outer, inner) header labels: the outer label
-    # (e.g. 'Window 6') groups the columns under it in the LaTeX header; best cells within each measure
+    # (e.g. 'w=6') groups the columns under it in the LaTeX header; best cells within each measure
     wide = values.unstack(column_dims) if column_dims else values
-    col_values = []
-    if column_dims:
-        wide.columns = pd.MultiIndex.from_tuples(
-            [(c[0], tuple(c[1:]) if isinstance(c, tuple) and len(c) > 2 else (c[1],)) for c in wide.columns])
-        col_values = list(dict.fromkeys(c[1] for c in wide.columns))
-    else:
-        wide.columns = pd.MultiIndex.from_tuples([(m, ()) for m in wide.columns])
-        col_values = [()]
+    wide.columns = pd.MultiIndex.from_tuples([(c[0], tuple(c[1:])) for c in wide.columns] if column_dims
+                                             else [(m, ()) for m in wide.columns])
+    col_values = list(dict.fromkeys(c[1] for c in wide.columns)) if column_dims else [()]
 
     def value_label(value):
-        return ' · '.join((f'Window {v}' if d == 'window' else str(v)) for d, v in zip(column_dims, value))
+        return ' · '.join((f'w={v}' if d == 'window' else str(v)) for d, v in zip(column_dims, value))
 
-    best_cells = []
+    axis = HIGHLIGHT_AXES.get(highlight)   # None: no highlight
     if layout == 'Measures as rows':
         # One row per (row group, measure), one column per value of the column dimensions
         labels = [value_label(v) or 'Value' for v in col_values]
@@ -889,13 +1031,10 @@ def render_results_table(results, family_scale):
         wide = pd.concat(frames).sort_index(level=list(range(len(row_dims))), sort_remaining=False, kind='stable')
         header = [(None, label) for label in labels]
         measure_index = wide.index.get_level_values('measure')
-        best = pd.DataFrame(False, index=wide.index, columns=labels)
-        for m in measures:
-            block = wide[measure_index == m]
-            if highlight == 'Per column':
-                best[measure_index == m] = block.eq(block.max(axis=0)) & block.notna()
-            elif highlight == 'Per row':
-                best[measure_index == m] = block.eq(block.max(axis=1), axis=0) & block.notna()
+        best = pd.DataFrame(0, index=wide.index, columns=labels)
+        if axis is not None:
+            for m in measures:
+                best[measure_index == m] = top_ranks(wide[measure_index == m], axis)
         row_columns = row_dims + ['measure']
     else:
         if layout == 'Measures under each column value':
@@ -904,57 +1043,108 @@ def render_results_table(results, family_scale):
         else:
             order = [(m, v) for m in measures for v in col_values]
             header = [(m, value_label(v)) if column_dims else (None, m) for m, v in order]
-        if all(outer is None for outer, _ in header) or len(measures) == 1 and column_dims:
-            header = [(None, value_label(v) if column_dims and len(measures) == 1 else inner)
-                      for (m, v), (_, inner) in zip(order, header)]
-        measures_of_columns = [m for m, _ in order]
+        if len(measures) == 1 and column_dims:   # the measure over its column values, e.g. F1 over w=6, w=12, …
+            header = [(m, value_label(v)) for m, v in order]
         wide = wide[order]
         wide.columns = [inner if outer is None else f'{outer} · {inner}' for outer, inner in header]
-        best = pd.DataFrame(False, index=wide.index, columns=wide.columns)
-        for m in measures:
-            group = [c for c, cm in zip(wide.columns, measures_of_columns) if cm == m]
-            if highlight == 'Per column':
-                best[group] = wide[group].eq(wide[group].max(axis=0)) & wide[group].notna()
-            elif highlight == 'Per row':
-                best[group] = wide[group].eq(wide[group].max(axis=1), axis=0) & wide[group].notna()
+        measure_of_column = dict(zip(wide.columns, (m for m, _ in order)))
+        best = pd.DataFrame(0, index=wide.index, columns=wide.columns)
+        if axis is not None:
+            for m in measures:
+                group = [c for c in wide.columns if measure_of_column[c] == m]
+                best[group] = top_ranks(wide[group], axis)
         row_columns = row_dims
     value_columns = list(wide.columns)
     table = wide.reset_index()
     best = best.reset_index(drop=True)
+    # Model family of every shown model name (its color), before shortening the names
+    family_of = {}
+    if 'model_folder' in table:
+        # Same order of the models in every group: by model, each followed by its null-padding variant
+        # ('BigST', 'BigST*', ..., 'ClouDens-A3T', 'ClouDens-A3T*'); the rows keep their order otherwise
+        model_order = table['model_folder'].map(model_order_key)
+        positions = table.assign(__model_order=model_order).sort_values([*group_dims, '__model_order'],
+                                                                        kind='stable').index
+        table, best = table.loc[positions].reset_index(drop=True), best.loc[positions].reset_index(drop=True)
+        names = {m: short_model_name(m) if short_names else m for m in table['model_folder'].unique()}
+        family_of = {name: model_family(m) for m, name in names.items()}
+        table['model_folder'] = table['model_folder'].map(names)
+    if short_names and 'subset' in table:
+        table['subset'] = table['subset'].map(short_subset_name)
 
-    def cell_format(row, column):
-        measure = table.at[row, 'measure'] if layout == 'Measures as rows' else \
-            measures_of_columns[value_columns.index(column)]
-        return '{:' + MEASURES[measure][2] + '}'
+    def cell_measure(row, column):
+        return table.at[row, 'measure'] if layout == 'Measures as rows' else measure_of_column[column]
 
-    styler = table.style.apply(
-        lambda column: best[column.name].map({True: BEST_CELL_STYLE, False: ''}), subset=value_columns)
-    if layout == 'Measures as rows':
-        for m in measures:
-            styler = styler.format('{:' + MEASURES[m][2] + '}', na_rep='–',
-                                   subset=pd.IndexSlice[table.index[table['measure'] == m], value_columns])
-    else:
-        styler = styler.format({c: cell_format(0, c) for c in value_columns}, na_rep='–')
-    if 'model_folder' in row_dims:
-        family_colors = dict(zip(family_scale.domain, family_scale.range))
-        styler = styler.map(lambda m: f'color: {family_colors.get(model_family(m), NO_FAMILY_COLOR)}; font-weight: 600',
-                            subset=['model_folder'])
+    colors = family_colors(family_scale)
+
+    def model_style(model):
+        return f'color: {colors.get(family_of[model], NO_FAMILY_COLOR)}; font-weight: 600'
+
+    def styled(frame, ranks, shown_of, row_measures):
+        """Styler of the shown table frame: top-1 / top-2 shades from ranks and the number format of every value
+        cell; shown_of maps each value column to its column in frame, row_measures the measure of each row."""
+        shown = list(shown_of.values())
+        styler = frame.style.apply(lambda column: ranks[column.name].map(RANK_CELL_STYLES), subset=shown)
+        if layout == 'Measures as rows':
+            for m in measures:
+                styler = styler.format(measure_format(m), na_rep='–', subset=pd.IndexSlice[row_measures == m, shown])
+            return styler
+        return styler.format({shown_of[c]: measure_format(measure_of_column[c]) for c in value_columns}, na_rep='–')
+
     caption = {'Best setting': f'measures of the setting with the best `{select_by}` in each cell',
                'Median': 'median over the settings of each cell', 'Mean': 'mean over the settings of each cell',
                'Max': 'highest value over the settings of each cell (measure by measure)'}[statistic]
     st.caption(f'{len(rows):,} settings, {len(table)} rows: {caption}.' +
-               (f' **Bold**: {TABLE_HIGHLIGHT[highlight]}.' if TABLE_HIGHLIGHT[highlight] else '') +
-               ' –: no value (e.g. AUC-PR / VUS-PR, computed for the score strategies only).')
-    st.dataframe(styler, hide_index=True,
-                 column_config={**{d: st.column_config.Column(DIMENSIONS[d]) for d in row_dims},
-                                'measure': st.column_config.Column('Measure')})
+               (f' Dark / light: top 1 / top 2, {TABLE_HIGHLIGHT[highlight]}.' if TABLE_HIGHLIGHT[highlight] else '') +
+               ' –: no value (e.g. AUC-PR / VUS-PR, computed for the score strategies only).' +
+               (' *: graph model with null padding.' if short_names and 'model_folder' in row_dims else ''))
+    if merge_cells:
+        # Static HTML table: the row columns as a (sparsified) index, so equal consecutive values, e.g. a
+        # subset over its models, are one merged cell (st.dataframe has no merged cells)
+        indexed = table.set_index(row_columns)
+        indexed.index.names = [ROW_LABELS.get(c, c) for c in row_columns]
+        best_indexed = best.set_axis(indexed.index)
+        # Grouped columns (e.g. w=6 over its measures): two header rows, the outer label one merged cell
+        shown_of = dict(zip(value_columns, value_columns))
+        if all(outer is not None for outer, _ in header):
+            indexed.columns = best_indexed.columns = pd.MultiIndex.from_tuples(header)
+            shown_of = dict(zip(value_columns, indexed.columns))
+        merged = styled(indexed, best_indexed, shown_of,
+                        indexed.index.get_level_values(ROW_LABELS['measure']) if layout == 'Measures as rows' else None)
+        if 'model_folder' in row_dims:
+            merged = merged.map_index(model_style, level=DIMENSIONS['model_folder'])
+        st.html(MERGED_TABLE_CSS + '<div class="merged-table">' +
+                merged.set_table_attributes('class="merged-table"').to_html() + '</div>')
+    else:
+        styler = styled(table, best, dict(zip(value_columns, value_columns)),
+                        table['measure'].to_numpy() if layout == 'Measures as rows' else None)
+        if 'model_folder' in row_dims:
+            styler = styler.map(model_style, subset=['model_folder'])
+        st.dataframe(styler, hide_index=True,
+                     column_config={c: st.column_config.Column(ROW_LABELS[c]) for c in [*row_dims, 'measure']})
 
-    # Exports: the values, and a LaTeX table (two header rows when the columns are grouped, best cells in bold)
-    cells = [[_latex_text(table.at[i, c]) for c in row_columns] +
-             [(('\\textbf{%s}' if best.at[i, c] else '%s') % cell_format(i, c).format(table.at[i, c])
+    # Exports: the values, and a LaTeX table (two header rows when the columns are grouped; top 1 in bold,
+    # top 2 underlined). Subsets in typewriter, as in the paper (\texttt{5xx count})
+    cells = [[(f'\\texttt{{{_latex_text(table.at[i, c])}}}' if c == 'subset' else _latex_text(table.at[i, c]))
+              for c in row_columns] +
+             [(LATEX_RANK_FORMATS[best.at[i, c]] % measure_format(cell_measure(i, c)).format(table.at[i, c])
                if pd.notna(table.at[i, c]) else '--') for c in value_columns] for i in table.index]
-    latex = latex_tabular([_latex_text(DIMENSIONS.get(c, 'Measure' if c == 'measure' else c)) for c in row_columns],
-                          [(None if o is None else _latex_text(o), _latex_text(i)) for o, i in header], cells)
+    # Groups (Group rows by): their values in one merged cell (multirow) over their rows, a rule between groups.
+    # The table has a 0..n-1 index: its labels are the positions of the rows
+    group_starts = set()
+    if group_dims:
+        group_keys = join_columns(table, group_dims)
+        first = group_keys.ne(group_keys.shift())
+        group_starts = set(table.index[first][1:])
+        group_sizes = group_keys.groupby(first.cumsum()).transform('size')
+        for i in table.index:
+            cells[i][:len(group_dims)] = ([f'\\multirow{{{group_sizes[i]}}}{{*}}{{{c}}}' for c in cells[i][:len(group_dims)]]
+                                          if first[i] else [''] * len(group_dims))
+    latex = latex_tabular([_latex_text(ROW_LABELS.get(c, c)) for c in row_columns],
+                          [(None if o is None else _latex_text(o), _latex_text(i)) for o, i in header], cells,
+                          rule_before=group_starts)
+    if group_dims:
+        latex = '% Merged cells: \\usepackage{multirow}\n' + latex
     col_csv, col_tex = st.columns(2)
     col_csv.download_button('Download as CSV', table.to_csv(index=False).encode(), file_name='results_table.csv',
                             mime='text/csv', icon=':material/download:', width='stretch')
@@ -968,8 +1158,8 @@ def render_results_table(results, family_scale):
                      'nab_tp', 'nab_fp', 'nab_fn', 'detected', 'file']
             shown = [c for c in dict.fromkeys(shown) if c in picked.columns]
             st.dataframe(picked[shown].sort_values(keys), hide_index=True,
-                         column_config={**{MEASURES[m][0]: st.column_config.NumberColumn(m, format=f'%{MEASURES[m][2]}')
-                                           for m in measures}, **DETECTION_COLUMN_CONFIG})
+                         column_config={**measure_column_config(measures), **DETECTION_COLUMN_CONFIG})
+
 
 
 # ── Pages ─────────────────────────────────────────────────────────────────────
@@ -978,10 +1168,9 @@ def folder_page():
     """Grid-search files scanned under a results folder, refreshed when they change; can be merged."""
     with st.sidebar:
         st.header('Data')
-        candidate_roots = sorted(p.name for p in PROJECT_ROOT.glob('trained_models*') if p.is_dir())
-        default_root = 'trained_models_log1p' if 'trained_models_log1p' in candidate_roots else (candidate_roots or [''])[0]
-        root_name = st.selectbox('Results folder', candidate_roots or [default_root],
-                                 index=(candidate_roots or [default_root]).index(default_root))
+        roots = sorted(p.name for p in PROJECT_ROOT.glob('trained_models*') if p.is_dir()) or ['']
+        root_name = st.selectbox('Results folder', roots, index=roots.index('trained_models_log1p')
+                                 if 'trained_models_log1p' in roots else 0)
         if st.button('Rescan folder', icon=':material/refresh:', width='stretch'):
             merge_folder.clear()
             load_folder.clear()
@@ -992,7 +1181,7 @@ def folder_page():
 
     grid_files = find_grid_files(PROJECT_ROOT / root_name)
     # Files this run shows; the watcher reruns the app when the folder no longer matches
-    st.session_state['grid_signature'] = grid_signature(grid_files)
+    signature = st.session_state['grid_signature'] = grid_signature(grid_files)
 
     def watch_results_folder():
         """Fragment rerun on a timer: cheap check of the folder, full rerun only when it changed."""
@@ -1006,18 +1195,18 @@ def folder_page():
     if not grid_files:
         st.warning(f'No `*_grid_search_*.csv` found under `{root_name}`.')
         return
-    signature = grid_signature(grid_files)
     results = load_folder(signature, LOADING_CODE)
 
     with st.sidebar:
         st.header('Merge')
         st.caption(f'{len(grid_files)} grid-search files, {len(results):,} rows: one merged file, '
                    "to open in the 'Merged file' page (also on another machine).")
-        merged = merge_folder(signature, LOADING_CODE)
+        # The merged table (a cached copy of millions of rows) only when saved or downloaded, not on every rerun
         if st.button('Save to merged_results/', icon=':material/save:', width='stretch'):
-            path = write_merged(merged, default_merged_path(PROJECT_ROOT / root_name))
+            path = write_merged(merge_folder(signature, LOADING_CODE), default_merged_path(PROJECT_ROOT / root_name))
             st.success(f'Saved `{os.path.relpath(path, PROJECT_ROOT)}`')
-        st.download_button('Download merged file', lambda: merged_bytes(merged), icon=':material/download:',
+        st.download_button('Download merged file', lambda: merged_bytes(merge_folder(signature, LOADING_CODE)),
+                           icon=':material/download:',
                            file_name=default_merged_path(PROJECT_ROOT / root_name).name,
                            mime='application/gzip', width='stretch')
     render_explorer(results)

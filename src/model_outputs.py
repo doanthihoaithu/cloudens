@@ -335,20 +335,26 @@ def compute_anomaly_scores(outputs, data_loader, experiment_config, scorer_args,
 
     distances, reference_distances, mahalanobis_contributions = (
         mahalanobis or compute_mahalanobis_scores(outputs, data_loader, experiment_config, scorer_args))
-
-    # Distances min-max scaled with the min / max of the reference distances: the reference lies
-    # in [0, 1] and other splits may exceed it (> 1 = farther than any reference timestamp)
-    d_min, d_max = reference_distances.min(), reference_distances.max()
-    scaled = {s: (distances[s] - d_min) / max(d_max - d_min, 1e-12) for s in SPLITS}
-    score_columns[MAHALANOBIS_COLUMN] = np.concatenate([scaled[s] for s in SPLITS])
-
-    # Likelihood of the scaled distances, computed on each segment of LIKELIHOOD_SEGMENTS
-    scaled_likelihoods = _segment_likelihoods(scaled, window_pairs)
-    for lw, sw in window_pairs:
-        score_columns[mahalanobis_likelihood_column(lw, sw, with_windows)] = np.concatenate(
-            [scaled_likelihoods[s][(lw, sw)] for s in SPLITS])
+    score_columns.update(mahalanobis_score_columns(distances, reference_distances, window_pairs, with_windows))
     scores = pd.concat([scores, pd.DataFrame(score_columns, index=scores.index)], axis=1)
     return round_scores(scores), {'likelihood': likelihood_contributions, 'mahalanobis': mahalanobis_contributions}
+
+
+def mahalanobis_score_columns(distances, reference_distances, window_pairs, with_windows):
+    """
+    Score columns of the Mahalanobis distances {split: [T_split]}, concatenated over SPLITS: the distances
+    min-max scaled with the min / max of the reference distances (the reference lies in [0, 1] and other
+    splits may exceed it: > 1 = farther than any reference timestamp), and their likelihood, computed on
+    each segment of LIKELIHOOD_SEGMENTS.
+    """
+    d_min, d_max = reference_distances.min(), reference_distances.max()
+    scaled = {s: (distances[s] - d_min) / max(d_max - d_min, 1e-12) for s in SPLITS}
+    columns = {MAHALANOBIS_COLUMN: np.concatenate([scaled[s] for s in SPLITS])}
+    scaled_likelihoods = _segment_likelihoods(scaled, window_pairs)
+    for lw, sw in window_pairs:
+        columns[mahalanobis_likelihood_column(lw, sw, with_windows)] = np.concatenate(
+            [scaled_likelihoods[s][(lw, sw)] for s in SPLITS])
+    return columns
 
 
 def round_scores(scores):

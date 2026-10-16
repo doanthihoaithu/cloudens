@@ -127,7 +127,7 @@ plotting:
   nab_profiles: ['standard', 'low_fn']
 
 multiple_evaluation:
-  models: ['MAGE', 'BigST']  # also: 'AnomalyTransformer','GRU','A3TGCN','STGformer','GDN'
+  models: ['BigST']  # also: 'MAGE','AnomalyTransformer','GRU','A3TGCN','STGformer','GDN'
 #  models: ['GRU']
   slide_wins: ${supported_sliding_windows}
 #  slide_wins: [30]
@@ -210,9 +210,9 @@ model_configs:
     num_layers: 3
     tau: 0.25
     random_feature_dim: 64
-    # Spatial regulariser on the operational-context graph (official --use_spatial, off in its default run);
-    # true: results go to BigST_..._spatial/. Run both: override model_configs.BigST.use_spatial=true
-    use_spatial: false
+    # Spatial regulariser on the operational-context graph (official --use_spatial, off in its default run):
+    # true = BigST with the context graph, results in BigST_..._spatial/; false = learned graph only (BigST_.../)
+    use_spatial: true
     null_padding_target: ${evaluation.null_padding_target}
     null_padding_feature: ${evaluation.null_padding_feature}
   GRU:
