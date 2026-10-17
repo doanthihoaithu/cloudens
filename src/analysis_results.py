@@ -13,9 +13,8 @@ from matplotlib.patches import FancyBboxPatch
 from omegaconf import DictConfig
 
 from utils import get_project_root, scoring_result_file_name, results_root_dir, score_normalizations
-
-ONE_COLUMN_FIGURE_WIDTH = 5
-TWO_COLUMN_FIGURE_WIDTH = 12
+from figure_style import (ONE_COLUMN_FIGURE_WIDTH, TWO_COLUMN_FIGURE_WIDTH, TITLE_FONT_SIZE, LEGEND_FONT_SIZE,
+                          TICK_FONT_SIZE, AXIS_LABEL_FONT_SIZE)
 
 MODEL_DISPLAY_NAME_MAP = {
     'A3TGCN_null_padding_feature': 'ClouDens',
@@ -41,11 +40,6 @@ MODEL_FAMILY_HUE_MAP = {
     'A3TGCN': 2 / 3,  # blue
     'GRU': 1 / 3,     # green
 }
-
-TITLE_FONT_SIZE = 10
-LEGEND_FONT_SIZE = TITLE_FONT_SIZE - 2
-TICK_FONT_SIZE = TITLE_FONT_SIZE - 2
-AXIS_LABEL_FONT_SIZE = TITLE_FONT_SIZE - 2
 
 NUM_TESTING_ANOMALIES = 19
 

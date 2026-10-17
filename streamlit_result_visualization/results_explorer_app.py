@@ -19,16 +19,21 @@ import io
 import itertools
 import os
 import re
+import sys
 from datetime import datetime
 
 import altair as alt
 import pandas as pd
 import streamlit as st
+from PIL import Image
 
 from grid_results import (PROJECT_ROOT, TAG_COLUMNS, MERGED_DIR, MERGED_SUFFIXES, IGNORED_MODEL_FAMILIES,
                           IGNORED_MODEL_FOLDERS, find_grid_files, grid_signature, is_ignored_model,
                           read_grid_files, read_merged, write_merged, merged_bytes, find_merged_files,
                           default_merged_path)
+
+sys.path.insert(0, str(PROJECT_ROOT / 'src'))
+from figure_style import TICK_FONT_SIZE, AXIS_LABEL_FONT_SIZE, LEGEND_FONT_SIZE  # noqa: E402
 
 NAB_COLUMNS = {'reward_fn': 'reward_fn_normalized', 'standard': 'standard_normalized'}
 # Test measures the charts can show: label -> (column, axis title, number format)
@@ -95,6 +100,28 @@ BORDER_DASHES = [[1, 0], [6, 3], [2, 2], [8, 3, 2, 3]]
 # Lines (Strategies by window tab): strategies by their point shape and dash, models of a family by their shade
 STRATEGY_SHAPES = ['circle', 'square', 'triangle-up', 'diamond', 'cross', 'triangle-down']
 LINE_SHADES = [1.0, 0.55, 0.3]
+LINE_DASHES = {False: [1, 0], True: [6, 3]}   # window charts of the results table: solid / dashed
+CHART_BORDER = '#9e9e9e'   # border of the plots of the results-table charts
+# Window charts of the results table sized as a figure of the paper: chart units are points (1/72 in), so the
+# fonts have their size in points (src/figure_style.py) once the PNG is shown FIGURE_WIDTH_INCHES wide
+FIGURE_WIDTH_INCHES = 6.5
+POINTS_PER_INCH = 72
+FIGURE_WIDTH = FIGURE_WIDTH_INCHES * POINTS_PER_INCH
+PNG_DPI = 600
+PANEL_COLUMNS = 4          # panels per row (one panel per group)
+PANEL_SPACING = 4          # between the panels
+PANEL_ASPECT = 0.8         # height / width of a panel
+CHART_ASPECT = 0.6         # height / width of a single chart (no panels)
+FONT_SIZE_INCREASE = 3     # points added to the font sizes of src/figure_style.py (the matplotlib figures)
+Y_TICK_FONT_SIZE_DECREASE = 2   # y tick labels smaller than the other text (long numbers, e.g. 0.005)
+LEGEND_OFFSET = 4          # between a legend and the plots
+LEGEND_PADDING = 4         # between the frame of a legend and its entries
+PANEL_AXIS_SPACE = 28 + 4 * (FONT_SIZE_INCREASE - Y_TICK_FONT_SIZE_DECREASE)   # y tick labels left of a panel, about
+PANEL_TITLE_OFFSET = 4     # between the measure (left of the panels) and their y axes
+CHART_GROUPINGS = ['One panel per group', 'All groups in one chart']
+# Point shapes of the groups drawn in one chart: enough for the 8 subsets
+GROUP_SHAPES = ['circle', 'square', 'triangle-up', 'diamond', 'cross', 'triangle-down', 'triangle-left',
+                'triangle-right', 'wedge', 'arrow']
 
 
 # STGformer pooled over the whole window (temporal_kernel_size = slide_win) is saved as <model>_pool<window>,
@@ -440,6 +467,323 @@ def load_merged_upload(_uploaded, file_id, name, loading_code):
 
 # ── Views ─────────────────────────────────────────────────────────────────────
 
+# Detected test anomalies (NAB true positives) of the models, by the source of the anomaly
+ANOMALY_SOURCE_NAMES = {'issue': 'Issue tracker', 'im': 'Instant messenger', 'TestLog': 'Test log'}
+ANOMALY_SOURCE_SHORT = {'Issue tracker': 'Issue', 'Instant messenger': 'IM', 'Test log': 'Log'}
+# Colors of the sources as in the detected-anomalies table of the paper (src/analysis_results.py)
+ANOMALY_SOURCE_COLORS = {'Issue tracker': 'green', 'Instant messenger': 'orange', 'Test log': 'violet'}
+CONFIGURATION_COLUMNS = ['window', 'subset', 'fill_nan', 'model_folder']   # one setting picked for each
+# y axis (labels and title) left of the first column of panels, about: the panels share it
+HEATMAP_AXIS_SPACE = 52
+SCATTER_AXIS_SPACE = 40
+BAR_AXIS_SPACE = 40
+HEATMAP_ROW_HEIGHT = 7      # of an anomaly
+BAR_Y_TITLE = 'Detected (mean)'   # the same in both layers: one title; short: one per row of panels
+
+
+def anomaly_sources(rows):
+    """{anomaly id: source name} of the test anomalies, from the ground truth of the detection counters."""
+    counters = _parse_counters(rows['detection_counters'].dropna().iloc[0])
+    return {i: name for source, name in ANOMALY_SOURCE_NAMES.items() for i in counters.get(f'gt_{source}_ids', [])}
+
+
+def detection_data(picked, short_names):
+    """The picked setting of every configuration with its model and subset as shown, models in table order."""
+    data = picked.copy()
+    models = sorted(data['model_folder'].unique(), key=model_order_key)
+    name = short_model_name if short_names else str
+    data['model'] = data['model_folder'].map(name)
+    data['family'] = data['model_folder'].map(model_family)
+    data['subset_shown'] = data['subset'].map(short_subset_name if short_names else str)
+    subsets = sorted(data['subset_shown'].unique())
+    return data, [name(m) for m in models], [model_family(m) for m in models], subsets
+
+
+def model_scales(models, families, family_scale):
+    """Color (family) and shape (rank in the family) scales of the models, and their legend layout."""
+    colors = family_colors(family_scale)
+    rank = pd.Series(families).groupby(families).cumcount().tolist()
+    domain, columns = family_legend_layout(models, families)
+    color_of = dict(zip(models, [colors.get(f, NO_FAMILY_COLOR) for f in families]))
+    shape_of = dict(zip(models, [STRATEGY_SHAPES[r % len(STRATEGY_SHAPES)] for r in rank]))
+    color = alt.Scale(domain=domain, range=[color_of.get(m, 'transparent') for m in domain])
+    shape = alt.Scale(domain=domain, range=[shape_of.get(m, 'circle') for m in domain])
+    legend = alt.Legend(orient='top', direction='horizontal', columns=columns, labelLimit=0, symbolSize=40,
+                        symbolOpacity=1, columnPadding=8, rowPadding=1, titleOrient='left', titleAnchor='start',
+                        titleBaseline='top', offset=LEGEND_OFFSET)
+    return color, shape, legend
+
+
+def facet_panels(layers, subsets, axis_space, height=None, columns=PANEL_COLUMNS):
+    """One panel per subset, FIGURE_WIDTH wide in all; their shared y axis (axis_space wide) left of the first
+    column only. height: of a panel (default: PANEL_ASPECT times its width)."""
+    columns = min(columns, len(subsets))
+    width = (FIGURE_WIDTH - axis_space - PANEL_SPACING * (columns - 1)) / columns
+    return layers.properties(width=width, height=height or width * PANEL_ASPECT).facet(
+        facet=alt.Facet('subset_shown:N', sort=subsets, title=None), columns=columns, spacing=PANEL_SPACING)
+
+
+def detection_heatmap(data, models, subsets, sources):
+    """(A) Share of the configurations of each subset (windows x fill NaN) in which each model detects each test
+    anomaly: rows the anomalies by source, columns the models, one panel per subset."""
+    n_configurations = data.groupby(['subset_shown', 'model']).size().rename('configurations')
+    hits = (data[['subset_shown', 'model', 'detected_ids']].explode('detected_ids').dropna()
+            .groupby(['subset_shown', 'model', 'detected_ids']).size().rename('hits'))
+    ids = sorted(sources, key=lambda i: (list(ANOMALY_SOURCE_NAMES.values()).index(sources[i]), i))
+    grid = pd.MultiIndex.from_product([subsets, models, ids], names=['subset_shown', 'model', 'detected_ids'])
+    rate = hits.reindex(grid, fill_value=0).reset_index().join(n_configurations, on=['subset_shown', 'model'])
+    rate = rate.dropna(subset=['configurations'])
+    rate['detected (%)'] = 100 * rate['hits'] / rate['configurations']
+    rate['anomaly'] = [f'{ANOMALY_SOURCE_SHORT[sources[i]]} #{i}' for i in rate['detected_ids']]
+    anomalies = [f'{ANOMALY_SOURCE_SHORT[sources[i]]} #{i}' for i in ids]
+    heat = alt.Chart().mark_rect().encode(
+        x=alt.X('model:N', sort=models, title=None, axis=alt.Axis(labelAngle=-90, labelLimit=0, domain=False)),
+        y=alt.Y('anomaly:N', sort=anomalies, title=None, axis=alt.Axis(domain=False, labelFontSize=TICK_FONT_SIZE)),
+        color=alt.Color('detected (%):Q', scale=alt.Scale(scheme='blues', domain=[0, 100]),
+                        legend=alt.Legend(orient='top', direction='horizontal', titleOrient='left',
+                                          titleAnchor='start', titleBaseline='top', offset=LEGEND_OFFSET,
+                                          gradientLength=160, title='Configurations detecting it (%)')),
+        tooltip=['subset_shown', 'model', 'anomaly', alt.Tooltip('detected (%):Q', format='.0f'), 'hits',
+                 'configurations'])
+    return paper_style(facet_panels(alt.layer(heat, data=rate), subsets, HEATMAP_AXIS_SPACE,
+                                    height=HEATMAP_ROW_HEIGHT * len(anomalies)))
+
+
+def detection_scatter(data, models, families, subsets, family_scale):
+    """(B) Detected anomalies against false positives of the picked setting of every configuration, with each
+    model's Pareto front (most anomalies for at most so many false positives); one panel per subset."""
+    color, shape, legend = model_scales(models, families, family_scale)
+    points = data[['subset_shown', 'model', 'window', 'fill_nan', 'nab_tp', 'nab_fp']].dropna(subset=['nab_tp', 'nab_fp'])
+    points = points.sort_values(['subset_shown', 'model', 'nab_fp', 'nab_tp'], ascending=[True, True, True, False])
+    best_so_far = points.groupby(['subset_shown', 'model'])['nab_tp'].cummax()
+    previous = best_so_far.groupby([points['subset_shown'], points['model']]).shift(fill_value=-1)
+    points['front'] = points['nab_tp'] > previous   # the facet needs one data set: the front is a filter of it
+    x = alt.X('nab_fp:Q', title='False positives', axis=alt.Axis(domain=False, tickCount=3, format='~s'))
+    y = alt.Y('nab_tp:Q', title='Detected anomalies', scale=alt.Scale(domainMin=0),
+              axis=alt.Axis(domain=False, tickMinStep=1))
+    tooltip = ['model', 'window', 'fill_nan', alt.Tooltip('nab_tp:Q', title='detected'),
+               alt.Tooltip('nab_fp:Q', title='false positives')]
+    model_color = alt.Color('model:N', scale=color, title='Model', legend=legend)
+    layers = alt.layer(
+        alt.Chart().mark_line(interpolate='step-after', strokeWidth=1.2).encode(x=x, y=y, color=model_color)
+        .transform_filter('datum.front'),
+        alt.Chart().mark_point(filled=True, size=22, opacity=0.8).encode(
+            x=x, y=y, color=model_color, shape=alt.Shape('model:N', scale=shape, title='Model', legend=legend),
+            tooltip=tooltip),
+        data=points)
+    return paper_style(facet_panels(layers, subsets, SCATTER_AXIS_SPACE).resolve_scale(x='independent'))
+
+
+def detection_bars(data, models, subsets, sources, nab_measure):
+    """(C) Mean number of detected anomalies of every model over the configurations of a subset, stacked by
+    source, with the mean NAB score written above the bar (Vega-Lite has no second y axis in panels); one panel
+    per subset."""
+    source_of = pd.Series(sources)
+    counts = data[['subset_shown', 'model', 'detected_ids']].explode('detected_ids')
+    counts['source'] = counts['detected_ids'].map(source_of)
+    per_row = counts.dropna(subset=['source']).groupby([counts.dropna(subset=['source']).index, 'source']).size()
+    per_row = per_row.unstack(fill_value=0).reindex(columns=list(ANOMALY_SOURCE_NAMES.values()), fill_value=0)
+    per_row = per_row.reindex(data.index, fill_value=0)
+    means = (pd.concat([data[['subset_shown', 'model']], per_row], axis=1)
+             .groupby(['subset_shown', 'model']).mean()
+             .reset_index().melt(id_vars=['subset_shown', 'model'], var_name='source', value_name='detected'))
+    nab_column = MEASURES[nab_measure][0]
+    nab = data.groupby(['subset_shown', 'model'])[nab_column].mean().rename('nab').reset_index()
+    nab = nab.join(means.groupby(['subset_shown', 'model'])['detected'].sum().rename('total'),
+                   on=['subset_shown', 'model'])
+    both = pd.concat([means, nab], ignore_index=True)   # the facet needs one data set: bars and points filter it
+    sources_order = list(ANOMALY_SOURCE_NAMES.values())
+    x = alt.X('model:N', sort=models, title=None, axis=alt.Axis(labelAngle=-90, labelLimit=0, domain=False))
+    bars = alt.Chart().mark_bar().encode(
+        x=x, y=alt.Y('sum(detected):Q', title=BAR_Y_TITLE, axis=alt.Axis(domain=False)),
+        color=alt.Color('source:N', title='Source', scale=alt.Scale(
+            domain=sources_order, range=[ANOMALY_SOURCE_COLORS[s] for s in sources_order]),
+            legend=alt.Legend(orient='top', direction='horizontal', titleOrient='left', titleAnchor='start',
+                              titleBaseline='top', offset=LEGEND_OFFSET, symbolSize=40)),
+        order=alt.Order('source_rank:Q'),
+        tooltip=['model', 'source', alt.Tooltip('detected:Q', format='.2f')]
+    ).transform_filter('isValid(datum.source)').transform_calculate(
+        source_rank=f'indexof({sources_order}, datum.source)')
+    labels = alt.Chart().transform_filter('isValid(datum.nab)').mark_text(
+        angle=270, align='left', baseline='middle', dx=2, fontSize=TICK_FONT_SIZE).encode(
+        x=x, y=alt.Y('total:Q', title=BAR_Y_TITLE, axis=alt.Axis(domain=False)),
+        text=alt.Text('nab:Q', format='.1f'),
+        tooltip=['model', alt.Tooltip('nab:Q', title=nab_measure, format='.1f')])
+    layers = alt.layer(bars, labels, data=both)
+    return paper_style(facet_panels(layers, subsets, BAR_AXIS_SPACE))
+
+
+# Bubble chart of the likelihood windows: the measures it can show (label -> column, number format)
+BUBBLE_MEASURES = {
+    'NAB reward_fn': ('reward_fn_normalized', '.1f'),
+    'NAB standard': ('standard_normalized', '.1f'),
+    'Detected anomalies': ('nab_tp', '.0f'),
+    'F1': ('f1', '.3f'),
+}
+BUBBLE_STATISTICS = ['Best setting', 'Max', 'Mean', 'Median']
+BUBBLE_SIZES = [15, 280]          # area of the smallest / largest bubble
+BUBBLE_AXIS_SPACE = 30            # y axis (labels and title) left of each panel, about
+LIKELIHOOD_WINDOW_COLUMNS = ['short_window', 'long_window']
+
+
+def bubble_charts(values, measure, panel_dims, short_names):
+    """
+    Bubble chart of the likelihood windows: x the short window, y the long window, the bubble (area and color)
+    the value of the measure; one panel per value of panel_dims (e.g. the model), all on the same scale.
+    values: one row per (panel_dims..., short_window, long_window), column 'value'.
+    """
+    column, fmt = BUBBLE_MEASURES[measure]
+    data = values.reset_index()
+    # Panels in the order of the results table: models by model_order_key, then the other dimensions
+    order_key = data['model_folder'].map(model_order_key) if 'model_folder' in data else pd.Series(0, index=data.index)
+    if short_names and 'model_folder' in data:
+        data['model_folder'] = data['model_folder'].map(short_model_name)
+    if short_names and 'subset' in data:
+        data['subset'] = data['subset'].map(short_subset_name)
+    data['panel'] = join_columns(data, panel_dims) if panel_dims else ''
+    panels = list(dict.fromkeys(data.assign(_order=order_key).sort_values(['_order', 'panel'], kind='stable')['panel']))
+    shorts = sorted(data['short_window'].unique())
+    longs = sorted(data['long_window'].unique(), reverse=True)
+    encodings = dict(
+        x=alt.X('short_window:O', sort=shorts, title='Short window', axis=alt.Axis(labelAngle=0, domain=False)),
+        y=alt.Y('long_window:O', sort=longs, title='Long window', axis=alt.Axis(domain=False)),
+        size=alt.Size('value:Q', title=measure, scale=alt.Scale(zero=False, nice=False, range=BUBBLE_SIZES),
+                      legend=alt.Legend(orient='top', direction='horizontal', titleOrient='left',
+                                        titleAnchor='start', titleBaseline='top', offset=LEGEND_OFFSET,
+                                        format=fmt)),
+        color=alt.Color('value:Q', title=measure, scale=alt.Scale(scheme='viridis', zero=False, nice=False),
+                        legend=alt.Legend(orient='top', direction='horizontal', titleOrient='left',
+                                          titleAnchor='start', titleBaseline='top', offset=LEGEND_OFFSET,
+                                          format=fmt, gradientLength=120)),
+        tooltip=['panel', 'short_window', 'long_window', alt.Tooltip('value:Q', title=measure, format=fmt),
+                 alt.Tooltip('settings:Q', title='settings')])
+    base = alt.Chart().mark_circle(opacity=0.85, stroke='white', strokeWidth=0.5).encode(**encodings)
+    layers = alt.layer(base, data=data)
+    if panel_dims:
+        columns = min(PANEL_COLUMNS, len(panels))
+        width = panel_width(columns, BUBBLE_AXIS_SPACE)
+        chart = layers.properties(width=width, height=width).facet(
+            facet=alt.Facet('panel:N', sort=panels, title=None), columns=columns, spacing=PANEL_SPACING)
+    else:
+        width = FIGURE_WIDTH * 0.6
+        chart = layers.properties(width=width, height=width)
+    return paper_style(chart)
+
+
+def render_detections(rows, family_scale):
+    """Detected test anomalies of the models, one panel per subset: (A) heatmap anomaly x model, (B) detected
+    anomalies against false positives, (C) detected anomalies by source with the NAB score."""
+    st.subheader('Detected anomalies', divider='gray')
+    col_select, col_nab, col_short = st.columns([2, 2, 1])
+    available_metrics = [m for m in SELECTION_METRICS if m in rows.columns and rows[m].notna().any()]
+    select_by = col_select.selectbox(
+        'Setting of each configuration picked by', available_metrics, key='det_select_by',
+        index=available_metrics.index('train_valid_f1') if 'train_valid_f1' in available_metrics else 0,
+        help='A configuration is a window, subset, fill NaN and model: its setting (strategy, threshold, ...) with '
+             'the highest value of this metric. train_valid_* / valid_* pick without the test labels; NAB / F1 '
+             'pick on the test split itself.')
+    nab_measures = [m for m in ('NAB reward_fn', 'NAB standard') if MEASURES[m][0] in rows]
+    nab_measure = col_nab.selectbox('NAB score (C)', nab_measures, key='det_nab')
+    short_names = col_short.toggle('Short names', value=True, key='det_short_names')
+    picked = best_per_group(rows.dropna(subset=[select_by]), CONFIGURATION_COLUMNS, select_by)
+    if picked.empty or picked['detection_counters'].isna().all():
+        st.info('No detection counters for these settings.')
+        return
+    sources = anomaly_sources(picked)
+    data, models, families, subsets = detection_data(picked, short_names)
+    n_configurations = data.groupby(['subset_shown', 'model']).size()
+    st.caption(f'One setting per configuration (window x fill NaN x model of a subset), picked by `{select_by}`: '
+               f'{n_configurations.min()}–{n_configurations.max()} configurations per model and subset.')
+
+    st.markdown('**(A) Which anomalies each model detects**: share of the configurations of the subset in '
+                'which the model detects the anomaly (rows grouped by source).')
+    chart = detection_heatmap(data, models, subsets, sources)
+    st.altair_chart(chart, width='content')
+    export_buttons(chart, 'detected_anomalies_heatmap', 'det_heatmap')
+
+    st.markdown('**(B) Detected anomalies against false positives**: one point per configuration; line: the '
+                'Pareto front of the model (most anomalies detected for at most so many false positives).')
+    chart = detection_scatter(data, models, families, subsets, family_scale)
+    st.altair_chart(chart, width='content')
+    export_buttons(chart, 'detected_anomalies_vs_false_positives', 'det_scatter')
+
+    st.markdown(f'**(C) Detected anomalies by source**: mean over the configurations of the subset; above each '
+                f'bar, the mean {nab_measure}.')
+    chart = detection_bars(data, models, subsets, sources, nab_measure)
+    st.altair_chart(chart, width='content')
+    export_buttons(chart, 'detected_anomalies_by_source', 'det_bars')
+
+
+def render_likelihood_windows(results, options, family_scale):
+    """
+    'Likelihood windows' tab: the detected test anomalies of the models (render_detections), then the measures
+    of the likelihood strategies over their short and long windows, as bubbles. Its filters are its own: the
+    sidebar filters do not apply.
+    """
+    st.caption('This tab has its own filters: the filters of the sidebar do not apply here.')
+    with st.expander('Filters', expanded=True, icon=':material/filter_alt:'):
+        filter_columns = st.columns(4)
+        st.caption('Empty filter: all its values. Choose at least one filter to draw the charts.')
+        chosen = dimension_filters(lambda i: filter_columns[i % 4], options, key_prefix='bubble_filter_')
+    if not any(chosen.values()):
+        st.info('Choose at least one filter (e.g. a subset and a window size).')
+        return
+    rows = filter_rows(results, options, chosen)
+    if rows.empty:
+        st.info('No setting matches the filters.')
+        return
+    render_detections(rows, family_scale)
+
+    st.subheader('Likelihood windows', divider='gray')
+    st.caption('Likelihood strategies only (the others have no short / long window).')
+    if not set(LIKELIHOOD_WINDOW_COLUMNS) <= set(rows.columns):
+        st.info('These results have no short / long window columns.')
+        return
+    rows = rows[rows['post_processing_strategy'].str.startswith('likelihood')
+                & rows['short_window'].gt(0) & rows['long_window'].gt(0)]
+    if rows.empty:
+        st.info('No likelihood setting matches the filters.')
+        return
+
+    col_measure, col_statistic, col_select = st.columns(3)
+    available = [m for m, (c, _) in BUBBLE_MEASURES.items() if c in rows and rows[c].notna().any()]
+    measure = col_measure.selectbox('Bubble', available, key='bubble_measure',
+                                    help='Detected anomalies: test anomalies detected (NAB true positives).')
+    statistic = col_statistic.segmented_control(
+        'Value of a bubble', BUBBLE_STATISTICS, default='Best setting', required=True, key='bubble_statistic',
+        help='Over the other settings of the bubble (thresholds, top-k, ...): the measure of the best one, '
+             'or the max / mean / median of the measure.')
+    available_metrics = [m for m in SELECTION_METRICS if m in rows.columns and rows[m].notna().any()]
+    select_by = col_select.selectbox(
+        'Best setting by', available_metrics, key='bubble_select_by', disabled=statistic != 'Best setting',
+        index=available_metrics.index('train_valid_f1') if 'train_valid_f1' in available_metrics else 0)
+    col_panels, col_short = st.columns([3, 1])
+    panel_dims = col_panels.multiselect('One panel per', list(DIMENSIONS), default=['model_folder'],
+                                        format_func=DIMENSIONS.get, key='bubble_panels')
+    short_names = col_short.toggle('Short names', value=True, key='bubble_short_names')
+
+    column = BUBBLE_MEASURES[measure][0]
+    keys = [*panel_dims, *LIKELIHOOD_WINDOW_COLUMNS]
+    groups = rows.groupby(keys)
+    if statistic == 'Best setting':
+        picked = best_per_group(rows.dropna(subset=[select_by]), keys, select_by)
+        values = picked.set_index(keys)[[column]].rename(columns={column: 'value'})
+    else:
+        values = groups[column].agg(statistic.lower()).to_frame('value')
+    values['settings'] = groups.size()
+    if values['value'].notna().sum() == 0:
+        st.info(f'No value of {measure} for these settings.')
+        return
+    if statistic == 'Max' and measure == 'Detected anomalies':
+        st.caption('The most anomalies detected by any threshold: low thresholds detect many, with many false '
+                   'positives too. *Best setting* picks one setting per bubble without the test labels.')
+    chart = bubble_charts(values, measure, panel_dims, short_names)
+    st.altair_chart(chart, width='content')
+    export_buttons(chart, f'likelihood_windows_{measure}'.replace(' ', '_'), 'bubble')
+    with st.expander('Values of the bubbles'):
+        st.dataframe(values.reset_index(), hide_index=True)
+
+
 def render_explorer(results):
     """Filters (sidebar) and tabs of the explorer over the rows of a merged table, whatever its source."""
     family_scale = family_color_scale(results['model_family'].unique())
@@ -477,12 +821,15 @@ def render_explorer(results):
     # Nothing chosen: the whole table (millions of rows) would be filtered and charted on every rerun
     filtered = filter_rows(results, options, selected) if any(selected.values()) else None
 
-    tab_overview, tab_compare, tab_target, tab_windows, tab_rows, tab_table = st.tabs(
-        ['Overview', 'Compare', 'Target model', 'Strategies by window', 'All settings', 'Results table'])
+    tab_overview, tab_compare, tab_target, tab_windows, tab_rows, tab_table, tab_bubbles = st.tabs(
+        ['Overview', 'Compare', 'Target model', 'Strategies by window', 'All settings', 'Results table',
+         'Likelihood windows'])
 
-    # ── Results table: its own filters, shown whatever the sidebar filters ──
+    # ── Results table and likelihood windows: their own filters, shown whatever the sidebar filters ──
     with tab_table:
         render_results_table(results, family_scale, options)
+    with tab_bubbles:
+        render_likelihood_windows(results, options, family_scale)
 
     if filtered is None or filtered.empty:
         for tab in (tab_overview, tab_compare, tab_target, tab_windows, tab_rows):
@@ -921,55 +1268,169 @@ def _latex_text(value):
     return str(value).replace('\\', '\\textbackslash{}').replace('_', '\\_').replace('%', '\\%').replace('&', '\\&')
 
 
-def window_line_charts(values, measures, series_dims, facet_dims, family_scale, short_names):
+PANEL_TITLE_SIZE = AXIS_LABEL_FONT_SIZE + FONT_SIZE_INCREASE   # the measure on the left of the panels
+
+
+def panel_width(columns, axis_space=PANEL_AXIS_SPACE):
+    """Width of the panels of a figure FIGURE_WIDTH wide with `columns` panels per row, the measure on their left
+    and a y axis axis_space wide (estimated) on the left of each."""
+    return ((FIGURE_WIDTH - PANEL_TITLE_SIZE - PANEL_TITLE_OFFSET - PANEL_SPACING * (columns - 1)) / columns
+            - axis_space)
+
+
+def paper_style(chart):
+    """The text sizes (src/figure_style.py, plus FONT_SIZE_INCREASE) and frames of a figure of the paper."""
+    return (chart.configure_view(stroke=CHART_BORDER, strokeWidth=1)   # a border around each plot
+            .configure_axis(labelFontSize=TICK_FONT_SIZE + FONT_SIZE_INCREASE,
+                            titleFontSize=AXIS_LABEL_FONT_SIZE + FONT_SIZE_INCREASE)
+            .configure_axisY(labelFontSize=TICK_FONT_SIZE + FONT_SIZE_INCREASE - Y_TICK_FONT_SIZE_DECREASE)
+            .configure_legend(labelFontSize=LEGEND_FONT_SIZE + FONT_SIZE_INCREASE,
+                              titleFontSize=LEGEND_FONT_SIZE + FONT_SIZE_INCREASE,
+                              strokeColor=CHART_BORDER, padding=LEGEND_PADDING)   # a frame around each legend
+            .configure_header(labelFontSize=AXIS_LABEL_FONT_SIZE + FONT_SIZE_INCREASE,   # the panel titles
+                              labelPadding=2))
+
+
+def export_buttons(chart, name, key):
+    """PNG and PDF downloads of a chart, made only when clicked."""
+    col_png, col_pdf, _ = st.columns([1, 1, 3])
+    col_png.download_button('Export as PNG', lambda: chart_png(chart), file_name=f'{name}.png', mime='image/png',
+                            key=f'png_{key}', icon=':material/image:', on_click='ignore')
+    col_pdf.download_button('Export as PDF', lambda: chart_pdf(chart), file_name=f'{name}.pdf',
+                            mime='application/pdf', key=f'pdf_{key}', icon=':material/picture_as_pdf:',
+                            on_click='ignore', help='Vector figure (sharp at any zoom), for LaTeX')
+
+
+def chart_pdf(chart):
+    """PDF bytes of an Altair chart: vector, its units in points, so FIGURE_WIDTH_INCHES wide as it is."""
+    buffer = io.BytesIO()
+    chart.save(buffer, format='pdf')
+    return buffer.getvalue()
+
+
+def chart_png(chart):
+    """PNG bytes of an Altair chart at PNG_DPI, its resolution set so that it is FIGURE_WIDTH_INCHES wide."""
+    buffer = io.BytesIO()
+    chart.save(buffer, format='png', scale_factor=PNG_DPI / POINTS_PER_INCH)
+    image = Image.open(io.BytesIO(buffer.getvalue()))
+    dpi = image.width / FIGURE_WIDTH_INCHES   # PNG_DPI, up to the width of the panel axes (estimated)
+    buffer = io.BytesIO()
+    image.save(buffer, format='png', dpi=(dpi, dpi))
+    return buffer.getvalue()
+
+
+def family_legend_layout(series, families):
+    """
+    Legend entries (domain) of series laid out in columns: one per model family with several series, the other
+    series together in the first one. Vega-Lite fills a legend row by row: the columns are laid out with blank
+    entries (no label, no symbol, whatever the scales give them). Returns (domain, number of columns).
+    """
+    family_series = pd.Series(list(series)).groupby(list(families), sort=False).agg(list)
+    singles = [s for f in family_series if len(f) == 1 for s in f]
+    columns = [singles] * bool(singles) + [f for f in family_series if len(f) > 1]
+    n_rows = max(map(len, columns))
+    blanks = iter('\u200b' * (i + 1) for i in range(n_rows * len(columns)))
+    return [column[row] if row < len(column) else next(blanks) for row in range(n_rows) for column in columns], \
+        len(columns)
+
+
+def window_line_charts(values, measures, series_dims, facet_dims, family_scale, short_names, overlay_dims=()):
     """
     Line charts of the results table along the window size, one per measure: one line per series (the rows of
-    the table, e.g. a model, and the other column dimensions), in its model family's color, the models of a
-    family told apart by their dash; one panel per group of rows (Group rows by, e.g. the subset).
+    the table, e.g. a model, and the other column dimensions), in its model family's color; ClouDens models are
+    solid with the sparsity indicator (*) and dashed without it, the other models solid. One panel per group of
+    rows of facet_dims (Group rows by, e.g. the subset), or the groups of overlay_dims all in the same chart, told
+    apart by their point shape. The series that still share a color and a dash are told apart by their point
+    shape (one panel per group) or by the shade of their color (groups in one chart).
     values: the cells of the table, one row per (row, column) key, one column per measure.
     """
+    overlay_dims = list(overlay_dims)
     data = values.reset_index()
     order_key = data['model_folder'].map(model_order_key) if 'model_folder' in data else pd.Series(0, index=data.index)
     family = data['model_folder'].map(model_family) if 'model_folder' in data else pd.Series('', index=data.index)
+    dashed = (data['model_folder'].map(lambda f: short_model_name(f).startswith(PROPOSED_MODEL_PREFIX)
+                                       and not NULL_PADDING_SUFFIX.search(str(f)))
+              if 'model_folder' in data else pd.Series(False, index=data.index))
     if short_names and 'model_folder' in data:
         data['model_folder'] = data['model_folder'].map(short_model_name)
     if short_names and 'subset' in data:
         data['subset'] = data['subset'].map(short_subset_name)
     data['series'] = join_columns(data, series_dims) if series_dims else 'value'
     data['panel'] = join_columns(data, facet_dims) if facet_dims else ''
+    data['group'] = join_columns(data, overlay_dims) if overlay_dims else ''
+    data['line'] = data['series'] + ' · ' + data['group']
     data['window'] = data['window'].astype(str)
     windows = sorted(data['window'].unique(), key=float)
-    # Series in the order of the table, each in its family's color; models of a family by their dash
-    first = data.assign(_order=order_key, _family=family).sort_values(['_order', 'series'], kind='stable')
+    # Series in the order of the table, each in its family's color and its model's dash
+    first = data.assign(_order=order_key, _family=family, _dashed=dashed).sort_values(['_order', 'series'],
+                                                                                      kind='stable')
     first = first.drop_duplicates('series')
     colors = family_colors(family_scale)
     series = first['series'].tolist()
-    rank = first.groupby('_family').cumcount()
-    color_scale = alt.Scale(domain=series, range=[colors.get(f, NO_FAMILY_COLOR) for f in first['_family']])
-    dash_scale = alt.Scale(domain=series, range=[BORDER_DASHES[r % len(BORDER_DASHES)] for r in rank])
+    rank = first.groupby(['_family', '_dashed']).cumcount()
+    legend_domain, legend_columns = family_legend_layout(first['series'], first['_family'])
+    color_of = dict(zip(series, [colors.get(f, NO_FAMILY_COLOR) for f in first['_family']]))
+    dash_of = dict(zip(series, [LINE_DASHES[d] for d in first['_dashed']]))
+    shape_of = dict(zip(series, [STRATEGY_SHAPES[r % len(STRATEGY_SHAPES)] for r in rank]))
+    color_scale = alt.Scale(domain=legend_domain, range=[color_of.get(s, 'transparent') for s in legend_domain])
+    dash_scale = alt.Scale(domain=legend_domain, range=[dash_of.get(s, LINE_DASHES[False]) for s in legend_domain])
     panels = list(dict.fromkeys(data['panel']))
-    long = data.melt(id_vars=['series', 'panel', 'window'], value_vars=measures, var_name='measure')
-    legend = alt.Legend(orient='top', direction='vertical', labelLimit=0, symbolStrokeWidth=2)
+    groups = list(dict.fromkeys(data['group']))
+    long = data.melt(id_vars=['series', 'panel', 'group', 'line', 'window'], value_vars=measures, var_name='measure')
+    # Legends compact (e.g. for a figure of a paper): the series above the chart, the groups drawn in one chart
+    # (point shapes) below it
+    legend = alt.Legend(orient='top', direction='horizontal', columns=legend_columns, labelLimit=0,
+                        symbolStrokeWidth=1.5, symbolSize=40, symbolOpacity=1, columnPadding=8, rowPadding=1,
+                        titleOrient='left', titleAnchor='start', titleBaseline='top',   # title in the top left corner
+                        offset=LEGEND_OFFSET)
     title = ' · '.join(DIMENSIONS[d] for d in series_dims) or None
+    if overlay_dims:
+        # The shape tells apart the groups, the same for every series; the shade the series of a family and dash
+        shape = alt.Shape('group:N', scale=alt.Scale(domain=groups, range=_cycled(GROUP_SHAPES, len(groups))),
+                          title=' · '.join(DIMENSIONS[d] for d in overlay_dims),
+                          legend=alt.Legend(orient='bottom', direction='horizontal', columns=4, labelLimit=0,
+                                            symbolSize=40, columnPadding=8, rowPadding=1, titleOrient='left',
+                                            titleAnchor='start', titleBaseline='top', offset=LEGEND_OFFSET))
+        shade = alt.Opacity('series:N', scale=alt.Scale(domain=series, range=[LINE_SHADES[r % len(LINE_SHADES)]
+                                                                               for r in rank]), legend=None)
+        tooltip = ['series', 'group', 'window']
+    else:
+        shape = alt.Shape('series:N', scale=alt.Scale(domain=legend_domain,
+                                                      range=[shape_of.get(s, 'circle') for s in legend_domain]),
+                          title=title, legend=legend)
+        shade = alt.value(1)
+        tooltip = ['series', 'panel', 'window']
     charts = []
     for m in measures:
-        _, axis_title, fmt = MEASURES[m]
+        fmt = MEASURES[m][2]
         encodings = dict(
-            x=alt.X('window:O', sort=windows, title='Window size', axis=alt.Axis(labelAngle=0)),
-            y=alt.Y('value:Q', title=axis_title, scale=alt.Scale(zero=False)),
+            x=alt.X('window:O', sort=windows, title='Window size', axis=alt.Axis(labelAngle=0, domain=False, tickSize=3, labelPadding=2)),
+            # padding: the top / bottom grid lines inside the border instead of over it
+            # panels: the measure once on the left of all of them (the chart title) instead of on every y axis
+            y=alt.Y('value:Q', title=None if facet_dims else m, scale=alt.Scale(zero=False, nice=False, padding=8),
+                    axis=alt.Axis(tickSize=3, labelPadding=2, domain=False)),   # the border as axis line
             color=alt.Color('series:N', scale=color_scale, title=title, legend=legend),
-            tooltip=['series', 'panel', 'window', alt.Tooltip('value:Q', title=m, format=fmt)])
+            opacity=shade,
+            tooltip=[*tooltip, alt.Tooltip('value:Q', title=m, format=fmt)])
         layers = alt.layer(
-            alt.Chart().mark_line(strokeWidth=2).encode(
-                strokeDash=alt.StrokeDash('series:N', scale=dash_scale, title=title, legend=legend), **encodings),
-            alt.Chart().mark_point(filled=True, size=50).encode(**encodings),
+            alt.Chart().mark_line(strokeWidth=1.5).encode(
+                strokeDash=alt.StrokeDash('series:N', scale=dash_scale, title=title, legend=legend),
+                detail='line:N', **encodings),
+            alt.Chart().mark_point(filled=True, size=20).encode(shape=shape, **encodings),
             data=long[long['measure'] == m])
+        # FIGURE_WIDTH wide in all: a single chart fits it exactly, the panels share it (their axes estimated)
         if facet_dims:
-            chart = layers.properties(width=220, height=180).facet(
-                facet=alt.Facet('panel:N', sort=panels, title=None), columns=4).properties(title=m)
+            columns = min(PANEL_COLUMNS, len(panels))
+            width = panel_width(columns)
+            chart = layers.properties(width=width, height=width * PANEL_ASPECT).facet(
+                facet=alt.Facet('panel:N', sort=panels, title=None), columns=columns, spacing=PANEL_SPACING
+            ).resolve_scale(y='independent').properties(   # each panel its own y range
+                title=alt.TitleParams(m, orient='left', anchor='middle', fontSize=PANEL_TITLE_SIZE,
+                                      fontWeight='bold', offset=PANEL_TITLE_OFFSET))
         else:
-            chart = layers.properties(width=420, height=260, title=m)
-        charts.append(chart)
+            chart = layers.properties(width=FIGURE_WIDTH, height=FIGURE_WIDTH * CHART_ASPECT,
+                                      autosize=alt.AutoSizeParams(type='fit-x', contains='padding'))
+        charts.append(paper_style(chart))
     return charts
 
 
@@ -1207,8 +1668,19 @@ def render_results_table(results, family_scale, options):
     if 'window' in column_dims:
         st.subheader('By window size', divider='gray')
         series_dims = [d for d in row_dims + column_dims if d not in group_dims and d != 'window']
-        for chart in window_line_charts(values, measures, series_dims, group_dims, family_scale, short_names):
-            st.altair_chart(chart)
+        panel_dims, overlay_dims = group_dims, []
+        if group_dims:
+            grouping = st.segmented_control(
+                'Groups', CHART_GROUPINGS, default=CHART_GROUPINGS[0], required=True, key='table_chart_groups',
+                help='One panel per group of rows, or the lines of every group in the same chart (one point shape '
+                     'per group).')
+            if grouping == CHART_GROUPINGS[1]:
+                panel_dims, overlay_dims = [], group_dims
+        charts = window_line_charts(values, measures, series_dims, panel_dims, family_scale, short_names,
+                                    overlay_dims)
+        for measure, chart in zip(measures, charts):
+            st.altair_chart(chart, width='content')   # the widths set in window_line_charts, not the page width
+            export_buttons(chart, f'results_by_window_{measure}'.replace(' ', '_'), measure)
     else:
         st.caption('Line charts along the window size: put *Window size* in the Columns.')
 

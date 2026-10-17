@@ -11,6 +11,7 @@ From the project root:
 import argparse
 import glob
 import os
+import signal
 import sys
 
 import pandas as pd
@@ -43,6 +44,7 @@ def convert(csv_path):
 
 
 def main():
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)   # quiet exit when the output is piped to head
     parser = argparse.ArgumentParser(description='Convert the predictions_for_assembles CSVs to boolean parquet.')
     parser.add_argument('root', help='Results folder, e.g. trained_models_log1p')
     parser.add_argument('--dry-run', action='store_true', help='Only list the files')

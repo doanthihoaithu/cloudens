@@ -403,10 +403,10 @@ def analyze_reconstruction_errors(data_loader, selected_group_mode, model_config
                                      f'fill_nan_with_{fill_nan}',
                                      f'{model}_null_padding_both')
 
-        # Models with a configurable anomaly score keep each mode's results apart,
-        # e.g. AnomalyTransformer_forecast / AnomalyTransformer_association
+        # Models with a configurable anomaly score keep the other modes' results apart, e.g.
+        # AnomalyTransformer_association; the default one (forecast) stays in the model's own folder
         score_mode = model_config.get('score_mode', None)
-        if score_mode is not None:
+        if score_mode not in (None, 'forecast'):
             model_dir = f'{model_dir}_{score_mode}'
         # STGformer with its graphs pooled over time (temporal_kernel_size > 1): results kept apart,
         # e.g. STGformer_pool6, since the trained weights differ in shape

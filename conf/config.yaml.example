@@ -147,7 +147,7 @@ model_configs:
     slide_win: ${evaluation.slide_win}
     null_padding_target: false
     null_padding_feature: false
-    score_mode: 'forecast'      # 'forecast' or 'association' (results go to AnomalyTransformer_<score_mode>/)
+    score_mode: 'forecast'      # 'forecast' (results in AnomalyTransformer/) or 'association' (AnomalyTransformer_association/)
     score_temperature: 1.0      # τ in Softmax(-AssocDisc * τ), used only when score_mode == 'association'
   GST_PRO:
     model_filename: 'GST_PRO_model.pt'
