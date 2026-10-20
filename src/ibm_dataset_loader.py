@@ -228,19 +228,17 @@ class IBMDatasetLoader(object):
     #
     #     return dataset_train, dataset_valid, dataset_test
 
-    def _window_split(self, split, window_size, with_is_nan_channel):
+    def _padded_series(self, split, window_size, with_is_nan_channel):
         """
-        Sliding windows [L, window_size + 1, N, F(+1)] of one split, one per timestamp: the
-        series is front-padded with its first value so the first timestamp is a target too.
+        Series [T + window_size, N, F(+1)] (float32) of one split, front-padded with its first value so the first
+        timestamp is a target too: window i is rows i .. i + window_size (inputs), its target row i + window_size.
         With with_is_nan_channel the is_nan mask is appended as the last channel.
         """
         values = self.split_scaled[split].reshape(-1, self.num_nodes, self.num_node_features)
         if with_is_nan_channel:
             mask = self.split_is_nan_mask[split].values.reshape(-1, self.num_nodes, self.num_node_features)
             values = np.concatenate((values, mask), axis=-1)
-        padded = np.concatenate([values[0:1].repeat(window_size, axis=0), values], axis=0)
-        windows = torch.tensor(padded).unfold(dimension=0, size=window_size + 1, step=1)   # [L, N, C, W+1]
-        return windows.permute(0, 3, 1, 2).numpy()                                         # [L, W+1, N, C]
+        return np.concatenate([values[0:1].repeat(window_size, axis=0), values], axis=0).astype(np.float32)
 
     def _anomaly_free_windows(self, split, window_size):
         """True for the windows of a split whose timestamps (inputs and target) carry no anomaly label."""
@@ -250,18 +248,18 @@ class IBMDatasetLoader(object):
 
     def _generate_task(self, window_size: int, null_padding_feature, null_padding_target):
         """
-        Builds features [L, W, N, F_in] and targets [L, N, F_out] for every split.
-        Train and valid windows containing an anomaly are removed for training and for
-        monitoring the validation loss (features_train / targets_train, features_valid /
-        targets_valid); the full windows are kept (*_full) to predict on the whole series later.
+        Sliding windows of every split: features [L, W, N, F_in] and targets [L, N, F_out], cut from the padded
+        series of the split batch by batch (WindowLoader) instead of being stored: the windows of the subsets with
+        many nodes and long windows (e.g. 4xx + 5xx, W = 30) would not fit in memory. Train and valid windows
+        containing an anomaly are left out for training and for monitoring the validation loss; all the windows
+        are kept to predict on the whole series later (get_split_loader).
         """
         F = self.num_node_features
         with_mask = null_padding_feature or null_padding_target
-        windows = {split: self._window_split(split, window_size, with_mask) for split in ('train', 'valid', 'test')}
-        features = {split: w[:, :window_size, :, :] if null_padding_feature else w[:, :window_size, :, :F]
-                    for split, w in windows.items()}
-        targets = {split: w[:, window_size, :, :] if null_padding_target else w[:, window_size, :, :F]
-                   for split, w in windows.items()}
+        self.window_size = window_size
+        self.series = {split: self._padded_series(split, window_size, with_mask) for split in ('train', 'valid', 'test')}
+        self.input_channels = None if null_padding_feature else F    # None: every channel
+        self.target_channels = None if null_padding_target else F
 
         self.train_clean_mask = self._anomaly_free_windows('train', window_size)
         log.info('Train windows: {} in total, {} without anomalies'.format(len(self.train_clean_mask), self.train_clean_mask.sum()))
@@ -271,14 +269,6 @@ class IBMDatasetLoader(object):
         if not self.valid_clean_mask.any():
             log.warning('Every valid window contains an anomaly: the validation loss is computed on all of them')
             self.valid_clean_mask[:] = True
-
-        self.features_train_full, self.targets_train_full = features['train'], targets['train']
-        self.features_train = features['train'][self.train_clean_mask]
-        self.targets_train = targets['train'][self.train_clean_mask]
-        self.features_valid_full, self.targets_valid_full = features['valid'], targets['valid']
-        self.features_valid = features['valid'][self.valid_clean_mask]
-        self.targets_valid = targets['valid'][self.valid_clean_mask]
-        self.features_test, self.targets_test = features['test'], targets['test']
 
     def _get_edges_and_weights(self):
         # self.edges = np.array(self.adjacency_matrix)
@@ -832,33 +822,57 @@ class IBMDatasetLoader(object):
         return self.num_node_features
 
 
-    @staticmethod
-    def _make_loader(features, targets, batch_size, shuffle, device):
-        dataset = torch.utils.data.TensorDataset(
-            torch.from_numpy(features).type(torch.FloatTensor).to(device),   # [L, W, N, F_in]
-            torch.from_numpy(targets).type(torch.FloatTensor).to(device))    # [L, N, F_out]
-        return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=False)
+    def _make_loader(self, split, windows, batch_size, shuffle, device):
+        """Loader of the windows (indices) of a split, batches of (features, targets) on device."""
+        return WindowLoader(self.series[split], windows, self.window_size, self.input_channels,
+                            self.target_channels, batch_size, shuffle, device)
 
     def get_index_dataset(self, window_size, null_padding_feature, null_padding_target, batch_size=8, shuffle=False, device='cpu'):
         """Loaders for training and validation (windows without anomalies) and test (all windows)."""
         self._get_edges_and_weights()
         self._generate_task(window_size, null_padding_feature, null_padding_target)
 
-        train_loader = self._make_loader(self.features_train, self.targets_train, batch_size, shuffle, device)
-        valid_loader = self._make_loader(self.features_valid, self.targets_valid, batch_size, shuffle, device)
-        test_loader = self._make_loader(self.features_test, self.targets_test, batch_size, shuffle, device)
-        self.count_5xx = self.targets_test[:, :, 0].sum(axis=-1)
+        train_loader = self._make_loader('train', np.flatnonzero(self.train_clean_mask), batch_size, shuffle, device)
+        valid_loader = self._make_loader('valid', np.flatnonzero(self.valid_clean_mask), batch_size, shuffle, device)
+        test_loader = self._make_loader('test', np.arange(len(self.split_index['test'])), batch_size, shuffle, device)
+        self.count_5xx = self.series['test'][window_size:, :, 0].sum(axis=-1)   # targets of the test windows
 
         return train_loader, valid_loader, test_loader, torch.LongTensor(self.edges)
 
     def get_split_loader(self, split, batch_size=8, device='cpu'):
         """Ordered loader over all windows of a split (train / valid include the windows with anomalies)."""
-        features, targets = {
-            'train': (self.features_train_full, self.targets_train_full),
-            'valid': (self.features_valid_full, self.targets_valid_full),
-            'test': (self.features_test, self.targets_test),
-        }[split]
-        return self._make_loader(features, targets, batch_size, False, device)
+        return self._make_loader(split, np.arange(len(self.split_index[split])), batch_size, False, device)
+
+
+class WindowLoader:
+    """
+    Batches of sliding windows cut from a series kept once on the device: features series[i : i + W, :, :C_in]
+    [B, W, N, C_in] and target series[i + W, :, :C_out] [B, N, C_out] for the window indices i. The order of the
+    windows is drawn as torch.utils.data.DataLoader draws it (shuffle: RandomSampler, one permutation per epoch;
+    the same random numbers), so the batches are those of a DataLoader over the stored windows.
+    """
+
+    def __init__(self, series, windows, window_size, input_channels, target_channels, batch_size, shuffle, device):
+        self.series = torch.from_numpy(series).to(device)                 # [T + W, N, C]
+        self.windows = torch.as_tensor(windows, dtype=torch.long)
+        self.offsets = torch.arange(window_size)
+        self.window_size = window_size
+        self.input_channels, self.target_channels = input_channels, target_channels
+        self.batch_size = batch_size
+        self.sampler = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(self.windows),
+                                                   batch_size=batch_size, shuffle=shuffle, drop_last=False)
+
+    def __len__(self):
+        return len(self.sampler)
+
+    def __iter__(self):
+        device = self.series.device
+        for (starts,) in self.sampler:
+            rows = (starts[:, None] + self.offsets).to(device)           # [B, W]
+            features = self.series[rows][..., :self.input_channels]       # [B, W, N, C_in]
+            targets = self.series[(starts + self.window_size).to(device)][..., :self.target_channels]
+            yield features, targets
+
 
 # @hydra.main(config_path="../conf", config_name="config.yaml")
 # def main(cfg: DictConfig):
