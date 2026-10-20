@@ -3,7 +3,6 @@
 #SBATCH --nodes=1 # 1 node
 #SBATCH --ntasks-per-node=8
 #SBATCH --time=48:00:00 # time limit: 48 hours
-#SBATCH --mem=64G # the 4xx + 5xx subset has ~6,500 nodes: its windows need ~15-20 GB of RAM
 #SBATCH --error=combined_subset_%j.err # standard error file
 #SBATCH --output=combined_subset_%j.out # standard output file
 #SBATCH --gres=gpu:a100:1
