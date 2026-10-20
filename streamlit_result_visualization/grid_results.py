@@ -66,6 +66,26 @@ def _matches(subset, patterns):
     return any(fnmatch.fnmatch(subset, pattern) for pattern in patterns)
 
 
+def component_subsets(subset):
+    """The single subsets a combined subset is made of: 'no_group_5xx_4xx_count' -> ['no_group_5xx_count',
+    'no_group_4xx_count']; [] for a subset that is not combined."""
+    if not fnmatch.fnmatch(subset, COMBINED_SUBSETS):
+        return []
+    *codes, aggregation = subset.removeprefix('no_group_').split('_')
+    return [f'no_group_{code}_{aggregation}' for code in codes]
+
+
+def with_matching_single_subsets(files, all_files):
+    """files, plus the grid-search files of all_files of the single subsets of each combined subset of files with
+    the same configuration (window, fill NaN, model folder, score normalization): e.g. no_group_5xx_count and
+    no_group_4xx_count of the window / fill / model run on no_group_5xx_4xx_count, to compare them."""
+    config = ('window', 'fill_nan', 'model_folder', 'score_normalization')
+    wanted = {(component, *(f[k] for k in config)) for f in files for component in component_subsets(f['subset'])}
+    paths = {f['path'] for f in files}
+    extra = [f for f in all_files if (f['subset'], *(f[k] for k in config)) in wanted and f['path'] not in paths]
+    return files + extra
+
+
 def find_grid_files(root, include_ignored=False, subsets=None, exclude_subsets=None):
     """Experiment info of every grid-search CSV under root, but those of the ignored models (is_ignored_model)
     unless include_ignored; only the subsets matching one of the glob patterns of subsets when given (e.g.
@@ -190,6 +210,10 @@ def main():
     parser.add_argument('--subsets', nargs='+', metavar='PATTERN',
                         help=f"Only these subsets (glob patterns), e.g. '{COMBINED_SUBSETS}' for the subsets "
                              "combining two http codes (default: all)")
+    parser.add_argument('--with-matching-single-subsets', action='store_true',
+                        help='Also merge the single subsets of each combined subset merged (e.g. no_group_5xx_count '
+                             'and no_group_4xx_count for no_group_5xx_4xx_count) with the same window, fill NaN, '
+                             'model folder and score normalization')
     parser.add_argument('--exclude-subsets', nargs='+', metavar='PATTERN', default=[],
                         help='Leave out these subsets (glob patterns)')
     parser.add_argument('--exclude-combined-subsets', action='store_true',
@@ -201,6 +225,10 @@ def main():
     exclude_subsets = args.exclude_subsets + ([COMBINED_SUBSETS] if args.exclude_combined_subsets else [])
     files = find_grid_files(args.root, include_ignored=args.include_ignored, subsets=args.subsets,
                             exclude_subsets=exclude_subsets)
+    if args.with_matching_single_subsets:
+        selected = len(files)
+        files = with_matching_single_subsets(files, find_grid_files(args.root, include_ignored=args.include_ignored))
+        print(f'{selected} grid-search files selected, {len(files) - selected} of their single subsets added')
     if not files:
         raise SystemExit(f'No *_grid_search_*.csv found under {args.root}'
                          + (f' for the subsets {args.subsets}' if args.subsets else ''))
