@@ -670,6 +670,202 @@ def bubble_charts(values, measure, panel_dims, short_names):
     return paper_style(chart)
 
 
+# Detection matrix (as Table IV of the paper): one row per model (and strategy), the test anomalies as columns
+STRATEGY_SHORT_NAMES = {'likelihood': 'LF', 'likelihood_mahalanobis': 'LF-MD', 'mahalanobis': 'MD',
+                        'mean_reconstruction_errors': 'MRE'}
+NOT_DETECTED = 'Not detected'
+MATRIX_LABEL_SPACE = 95     # row labels left of the matrix, about
+MATRIX_ROW_HEIGHT = 11
+NAB_BAR_WIDTH = 62
+COUNTS_WIDTH = 46           # TP / FP column
+# Two strategies in one cell: the triangles of a unit square (Vega symbol paths in [-1, 1]), as in the paper
+TRIANGLE_PATHS = ('M -1 -1 L 1 -1 L -1 1 Z', 'M 1 -1 L 1 1 L -1 1 Z')   # upper-left, lower-right
+STRATEGY_BAR_COLORS = ['#616161', '#bdbdbd']   # bars of the first / second strategy (or of the only one)
+
+
+def confusion_counts(confusion_matrix):
+    """(TP, FP) of the point-based confusion matrix [TN, FP, FN, TP] of a grid-search row."""
+    try:
+        tn, fp, fn, tp = ast.literal_eval(confusion_matrix)
+        return int(tp), int(fp)
+    except (ValueError, SyntaxError, TypeError):
+        return None, None
+
+
+def detection_matrix(table, sources, row_order, blocks_order, strategies=None):
+    """
+    (D) The test anomalies detected by each row (a model, or a model and strategy) as a matrix colored by the
+    source of the anomaly, with its NAB scores (Standard, Low FN) and point-based TP / FP: Table IV of the
+    paper as a figure. One block per value of the column 'block' (e.g. the subset, when the rows are models),
+    in blocks_order. table: one row per (block, row[, strategy_shown]).
+    strategies: two strategies (strategy_shown values) drawn in the same cell, split along its diagonal (the
+    first one the upper-left triangle, as in the paper's detected-anomalies table), with two bars / counts per
+    row; None: one strategy per row.
+    """
+    ids = sorted(sources, key=lambda i: (list(ANOMALY_SOURCE_NAMES.values()).index(sources[i]), i))
+    anomalies = [f'#{i}' for i in ids]
+    source_names = list(ANOMALY_SOURCE_NAMES.values())
+    split = bool(strategies)
+    row_height = MATRIX_ROW_HEIGHT * (1.5 if split else 1)   # room for two bars per row
+    matrix_width = FIGURE_WIDTH - MATRIX_LABEL_SPACE - 2 * NAB_BAR_WIDTH - COUNTS_WIDTH - 3 * PANEL_SPACING
+    source_scale = alt.Scale(domain=source_names + [NOT_DETECTED],
+                             range=[ANOMALY_SOURCE_COLORS[s] for s in source_names] + ['white'])
+    # Short labels: the legends must not be wider than the matrix (they would push the bars away)
+    source_legend = alt.Legend(
+        orient='top', direction='horizontal', columns=2, titleOrient='left', titleAnchor='start',
+        titleBaseline='top', offset=LEGEND_OFFSET, symbolStrokeColor='#bdbdbd', symbolStrokeWidth=0.5,
+        labelExpr=' || '.join(f"(datum.label == '{name}' && '{short}')" for name, short in
+                              {**ANOMALY_SOURCE_SHORT, NOT_DETECTED: 'Missed'}.items()) + ' || datum.label')
+    blocks = []
+    for block_name in blocks_order:
+        rows = table[table['block'] == block_name]
+        if rows.empty:
+            continue
+        order = [r for r in row_order if r in set(rows['row'])]
+        height = row_height * len(order)
+        first = not blocks   # the legends once, above the first block
+        source_color = alt.Color('shown:N', title='Source', scale=source_scale,
+                                 legend=source_legend if first else None)
+        x = alt.X('anomaly:N', sort=anomalies, title='Ground-truth anomaly',
+                  axis=alt.Axis(labelAngle=-90, domain=False, ticks=False))
+        y = alt.Y('row:N', sort=order, title=None, axis=alt.Axis(domain=False, ticks=False, labelLimit=0))
+        no_y = alt.Y('row:N', sort=order, axis=None)
+        keys = ['row', 'strategy_shown'] if split else ['row']
+        detected = {(*k, i) for *k, found in zip(*(rows[c] for c in keys), rows['detected_ids'])
+                    for i in (found or [])}
+        cells = pd.DataFrame([(r, i) for r in order for i in ids], columns=['row', 'id'])
+        cells['anomaly'] = [f'#{i}' for i in cells['id']]
+        cells['source'] = [sources[i] for i in cells['id']]
+        if split:
+            halves = pd.DataFrame([(r, st_, i) for r in order for st_ in strategies for i in ids],
+                                  columns=['row', 'strategy_shown', 'id'])
+            halves = halves[[(r, st_, i) in detected for r, st_, i in
+                             zip(halves['row'], halves['strategy_shown'], halves['id'])]]
+            halves['anomaly'] = [f'#{i}' for i in halves['id']]
+            halves['shown'] = [sources[i] for i in halves['id']]
+            side = min(matrix_width / len(ids), row_height)
+            grid = alt.Chart(cells).mark_rect(fill='white', stroke='#bdbdbd', strokeWidth=0.5).encode(
+                x=x, y=y, tooltip=['row', 'anomaly', 'source'])
+            triangles = alt.Chart(halves).mark_point(filled=True, opacity=1, strokeWidth=0, size=side ** 2).encode(
+                x=x, y=y, color=source_color,
+                shape=alt.Shape('strategy_shown:N', title='Strategy', scale=alt.Scale(
+                    domain=strategies, range=list(TRIANGLE_PATHS)),
+                    legend=alt.Legend(orient='top', direction='horizontal', titleOrient='left',
+                                      titleAnchor='start', titleBaseline='top', offset=LEGEND_OFFSET,
+                                      symbolFillColor='#555555', symbolStrokeWidth=0) if first else None),
+                tooltip=['row', 'strategy_shown', 'anomaly', alt.Tooltip('shown:N', title='source')])
+            matrix = alt.layer(grid, triangles)
+        else:
+            cells['shown'] = [s if (r, i) in detected else NOT_DETECTED for r, i, s in
+                              zip(cells['row'], cells['id'], cells['source'])]
+            matrix = alt.Chart(cells).mark_rect(stroke='#bdbdbd', strokeWidth=0.5).encode(
+                x=x, y=y, color=source_color,
+                tooltip=['row', 'anomaly', 'source', alt.Tooltip('shown:N', title='detected as')])
+        parts = [matrix.properties(width=matrix_width, height=height)]
+        # Two strategies: two bars / counts per row, the first one darker (yOffset)
+        offset = dict(yOffset=alt.YOffset('strategy_shown:N', sort=strategies)) if split else {}
+        bar_color = (alt.Color('strategy_shown:N', scale=alt.Scale(domain=strategies, range=STRATEGY_BAR_COLORS),
+                               legend=None) if split else alt.value(STRATEGY_BAR_COLORS[1]))
+        for title, column in (('NAB Std.', 'standard_normalized'), ('NAB Low FN', 'reward_fn_normalized')):
+            base = alt.Chart(rows).encode(y=no_y, **offset)
+            bar = base.mark_bar(height=(row_height - 3) / (2 if split else 1)).encode(
+                x=alt.X(f'{column}:Q', title=title, axis=alt.Axis(domain=False, tickCount=2)), color=bar_color,
+                tooltip=['row', *(['strategy_shown'] if split else []),
+                         alt.Tooltip(f'{column}:Q', title=title, format='.2f')])
+            label = base.mark_text(align='left', dx=2, fontSize=TICK_FONT_SIZE - (2 if split else 0)).encode(
+                x=alt.X(f'{column}:Q'), text=alt.Text(f'{column}:Q', format='.1f'))
+            parts.append(alt.layer(bar, label).properties(width=NAB_BAR_WIDTH, height=height))
+        parts.append(alt.Chart(rows).mark_text(fontSize=TICK_FONT_SIZE - (2 if split else 0)).encode(
+            y=no_y, **offset, text='tp_fp:N').properties(
+            width=COUNTS_WIDTH, height=height,
+            title=alt.TitleParams('TP / FP', orient='bottom', fontSize=AXIS_LABEL_FONT_SIZE + FONT_SIZE_INCREASE,
+                                  fontWeight='bold')))
+        # The grey bars of the strategies must not share the color scale of the sources
+        block = alt.hconcat(*parts, spacing=PANEL_SPACING).resolve_scale(color='independent')
+        blocks.append(block.properties(title=alt.TitleParams(block_name, anchor='start'))
+                      if len(blocks_order) > 1 else block)
+    if not blocks:
+        return None
+    return paper_style(alt.vconcat(*blocks, spacing=2 * PANEL_SPACING) if len(blocks) > 1 else blocks[0])
+
+
+DETECTION_ROWS = ['Models', 'Subsets']
+
+
+def render_detection_matrix(rows, select_by, short_names):
+    """(D) Detection matrix of chosen configurations (a window and fill NaN): one row per model (and strategy), one
+    block per subset; or one row per subset, one block per model (as the paper's detected-anomalies table)."""
+    st.markdown('**(D) Detected anomalies, NAB and TP / FP of one configuration (Table IV of the paper)**: each '
+                'row with its setting picked as above.')
+    rows_by = st.segmented_control('Rows', DETECTION_ROWS, default='Models', required=True, key='det_matrix_rows',
+                                   help='Models: one row per model, one block per subset. Subsets: one row per '
+                                        'subset, one block per model.')
+    by_subset = rows_by == 'Subsets'
+    col_window, col_fill, col_subsets, col_models, col_strategies = st.columns([1, 1, 2, 2, 2])
+    windows = sorted(rows['window'].dropna().unique())
+    window = col_window.selectbox('Window size', windows, key='det_matrix_window')
+    fills = sorted(rows['fill_nan'].dropna().unique())
+    fill = col_fill.selectbox('Fill NaN', fills, key='det_matrix_fill',
+                              index=fills.index('zero') if 'zero' in fills else 0)
+    subsets = sorted(rows['subset'].dropna().unique())
+    chosen_subsets = col_subsets.multiselect(
+        'Subsets', subsets, key=f'det_matrix_subsets_{rows_by}', format_func=short_subset_name,
+        default=subsets if by_subset else
+        (['no_group_5xx_count'] if 'no_group_5xx_count' in subsets else subsets[:1]))
+    models = sorted(rows['model_folder'].dropna().unique(), key=model_order_key)
+    proposed = [m for m in models if short_model_name(m).startswith(PROPOSED_MODEL_PREFIX)]
+    chosen_models = col_models.multiselect(
+        'Models', models, key=f'det_matrix_models_{rows_by}', format_func=short_model_name,
+        default=proposed[:1] if by_subset else models, placeholder='Choose models')
+    strategies = sorted(rows['post_processing_strategy'].dropna().unique())
+    chosen_strategies = col_strategies.multiselect(
+        'Strategies (one row each)', strategies, key='det_matrix_strategies', placeholder='Best of all strategies',
+        format_func=lambda s: STRATEGY_SHORT_NAMES.get(s, s),
+        help='Empty: one row per model (or subset), its best setting over all the strategies.')
+    split = len(chosen_strategies) == 2 and st.toggle(
+        'Both strategies in one cell', value=True, key='det_matrix_split',
+        help='Each cell split along its diagonal: the first strategy the upper-left triangle, the second one the '
+             'lower-right one; two bars and counts per row.')
+    part = rows[(rows['window'] == window) & (rows['fill_nan'] == fill) & rows['subset'].isin(chosen_subsets)
+                & rows['model_folder'].isin(chosen_models)]
+    if chosen_strategies:
+        part = part[part['post_processing_strategy'].isin(chosen_strategies)]
+    keys = ['subset', 'model_folder'] + (['post_processing_strategy'] if chosen_strategies else [])
+    table = best_per_group(part.dropna(subset=[select_by]), keys, select_by)
+    if table.empty:
+        st.info('No setting for this configuration.')
+        return
+    model_name = short_model_name if short_names else str
+    subset_name = short_subset_name if short_names else str
+    table['strategy_shown'] = table['post_processing_strategy'].map(lambda s: STRATEGY_SHORT_NAMES.get(s, s))
+    if by_subset:
+        table['row'], table['block'] = table['subset'].map(subset_name), table['model_folder'].map(model_name)
+        row_order = [subset_name(s) for s in chosen_subsets]
+        blocks_order = [model_name(m) for m in models if m in chosen_models]
+    else:
+        table['row'], table['block'] = table['model_folder'].map(model_name), table['subset'].map(subset_name)
+        order_key = table['model_folder'].map(model_order_key)
+        row_order = list(dict.fromkeys(table.assign(_o=order_key).sort_values(['_o', 'row'], kind='stable')['row']))
+        blocks_order = [subset_name(s) for s in chosen_subsets]
+    if chosen_strategies and not split:
+        table['row'] = table['row'] + ' · ' + table['strategy_shown']
+        row_order = [f'{r} · {STRATEGY_SHORT_NAMES.get(s, s)}' for r in row_order for s in chosen_strategies]
+    counts = [confusion_counts(c) for c in table['confusion_matrix']]
+    table['tp_fp'] = [f'{tp} / {fp}' if tp is not None else '' for tp, fp in counts]
+    chart = detection_matrix(table, anomaly_sources(table), row_order, blocks_order,
+                             [STRATEGY_SHORT_NAMES.get(s, s) for s in chosen_strategies] if split else None)
+    if chart is None:
+        st.info('No setting for this configuration.')
+        return
+    st.altair_chart(chart, width='content')
+    export_buttons(chart, f'detection_matrix_by_{rows_by.lower()}_w{window}_{fill}', 'det_matrix')
+    with st.expander('Settings of the rows'):
+        shown = ['block', 'row', 'post_processing_strategy', 'threshold_type', 'topk', 'long_window',
+                 'short_window', 'anomaly_threshold', 'tp_fp', 'standard_normalized', 'reward_fn_normalized',
+                 'detected', select_by]
+        st.dataframe(table[[c for c in dict.fromkeys(shown) if c in table]], hide_index=True)
+
+
 def render_detections(rows, family_scale):
     """Detected test anomalies of the models, one panel per subset: (A) heatmap anomaly x model, (B) detected
     anomalies against false positives, (C) detected anomalies by source with the NAB score."""
@@ -712,6 +908,8 @@ def render_detections(rows, family_scale):
     chart = detection_bars(data, models, subsets, sources, nab_measure)
     st.altair_chart(chart, width='content')
     export_buttons(chart, 'detected_anomalies_by_source', 'det_bars')
+
+    render_detection_matrix(rows, select_by, short_names)
 
 
 def render_likelihood_windows(results, options, family_scale):

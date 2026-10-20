@@ -12,6 +12,7 @@ Merge a results folder (no Streamlit needed), from the project root:
     python streamlit_result_visualization/grid_results.py trained_models_log1p -o merged_results/hpc.csv.gz
 """
 import argparse
+import fnmatch
 import gzip
 import os
 import re
@@ -57,12 +58,14 @@ def parse_grid_path(path):
     }
 
 
-def find_grid_files(root, include_ignored=False):
+def find_grid_files(root, include_ignored=False, subsets=None):
     """Experiment info of every grid-search CSV under root, but those of the ignored models (is_ignored_model)
-    unless include_ignored."""
+    unless include_ignored; only the subsets matching one of the glob patterns of subsets when given (e.g.
+    'no_group_*xx_*xx_*': the subsets combining two http codes)."""
     found = (parse_grid_path(p) for p in sorted(Path(root).glob('window_*/*/fill_nan_with_*/*/*_grid_search_*.csv')))
     return [info for info in found
-            if info is not None and (include_ignored or not is_ignored_model(info['model_folder']))]
+            if info is not None and (include_ignored or not is_ignored_model(info['model_folder']))
+            and (not subsets or any(fnmatch.fnmatch(info['subset'], pattern) for pattern in subsets))]
 
 
 def grid_signature(files):
@@ -175,13 +178,17 @@ def main():
     parser.add_argument('root', help='Results folder, e.g. trained_models_log1p')
     parser.add_argument('-o', '--output', help=f'Merged file ({", ".join(MERGED_SUFFIXES)}); '
                                                'default: merged_results/<folder>_<timestamp>.csv.gz')
+    parser.add_argument('--subsets', nargs='+', metavar='PATTERN',
+                        help="Only these subsets (glob patterns), e.g. 'no_group_*xx_*xx_*' for the subsets "
+                             "combining two http codes (default: all)")
     parser.add_argument('--include-ignored', action='store_true',
                         help=f'Also merge the ignored models (families {sorted(IGNORED_MODEL_FAMILIES)}, '
                              f'folders {sorted(IGNORED_MODEL_FOLDERS)})')
     args = parser.parse_args()
-    files = find_grid_files(args.root, include_ignored=args.include_ignored)
+    files = find_grid_files(args.root, include_ignored=args.include_ignored, subsets=args.subsets)
     if not files:
-        raise SystemExit(f'No *_grid_search_*.csv found under {args.root}')
+        raise SystemExit(f'No *_grid_search_*.csv found under {args.root}'
+                         + (f' for the subsets {args.subsets}' if args.subsets else ''))
     path = Path(args.output or default_merged_path(args.root))
     paths = [f['path'] for f in files]
     if _suffix(path.name) == '.parquet':
