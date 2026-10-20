@@ -11,7 +11,7 @@
 #SBATCH --mail-user=thihoaithu.doan@gssi.it   # mail address
 
 # Merge the grid-search CSVs of the subsets combining two http codes (no_group_5xx_4xx_<aggregation>, run by
-# slurm_script_combined_subset.sh) into one file, apart from the other subsets.
+# slurm_script_train_combined_subset.sh) into one file, apart from the other subsets.
 # Usage (from the project root): sbatch slurm_script_merge_combined_subsets.sh [results folder] [output file]
 #   sbatch slurm_script_merge_combined_subsets.sh
 #   sbatch slurm_script_merge_combined_subsets.sh trained_models_log1p merged_results/hpc_combined.csv.gz
@@ -20,5 +20,5 @@ OUTPUT=${2:-merged_results/hpc_combined.csv.gz}
 
 module load python
 source torch210_new/bin/activate
-python streamlit_result_visualization/grid_results.py "$ROOT" -o "$OUTPUT" --subsets 'no_group_*xx_*xx_*'
+python streamlit_result_visualization/grid_results.py "$ROOT" -o "$OUTPUT" --subsets 'no_group_*xx_*xx_*'   # grid_results.COMBINED_SUBSETS
 deactivate

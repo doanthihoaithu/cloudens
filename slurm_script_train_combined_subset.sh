@@ -14,10 +14,10 @@
 # Train and score one model on the subset combining the 4xx and 5xx series of one aggregation
 # (data/massaged/extracted/no_group_5xx_4xx_<aggregation>/, results in .../no_group_5xx_4xx_<aggregation>/).
 # Usage (from the project root):
-#   sbatch slurm_script_combined_subset.sh <model> <window> <fill_nan> <null_padding_feature> <aggregation> [Hydra overrides...]
-#   sbatch slurm_script_combined_subset.sh GRU 6 zero false count
-#   sbatch slurm_script_combined_subset.sh BigST 6 zero true count model_configs.BigST.use_spatial=true
-#   sbatch slurm_script_combined_subset.sh A3TGCN 6 zero true count evaluation.retrain=true
+#   sbatch slurm_script_train_combined_subset.sh <model> <window> <fill_nan> <null_padding_feature> <aggregation> [Hydra overrides...]
+#   sbatch slurm_script_train_combined_subset.sh GRU 6 zero false count
+#   sbatch slurm_script_train_combined_subset.sh BigST 6 zero true count model_configs.BigST.use_spatial=true
+#   sbatch slurm_script_train_combined_subset.sh A3TGCN 6 zero true count evaluation.retrain=true
 MODEL=${1:-GRU}
 WINDOW=${2:-6}
 FILL_NAN=${3:-zero}
