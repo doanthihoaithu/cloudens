@@ -30,22 +30,36 @@ from PIL import Image
 from grid_results import (PROJECT_ROOT, TAG_COLUMNS, MERGED_DIR, MERGED_SUFFIXES, IGNORED_MODEL_FAMILIES,
                           IGNORED_MODEL_FOLDERS, find_grid_files, grid_signature, is_ignored_model,
                           read_grid_files, read_merged, write_merged, merged_bytes, find_merged_files,
-                          default_merged_path)
+                          default_merged_path, component_subsets, COST_KEYS, COST_COLUMNS, COSTS_SUFFIX,
+                          read_costs)
 
 sys.path.insert(0, str(PROJECT_ROOT / 'src'))
 from figure_style import TICK_FONT_SIZE, AXIS_LABEL_FONT_SIZE, LEGEND_FONT_SIZE  # noqa: E402
 
 NAB_COLUMNS = {'reward_fn': 'reward_fn_normalized', 'standard': 'standard_normalized'}
-# Test measures the charts can show: label -> (column, axis title, number format)
-MEASURES = {
-    'NAB reward_fn': ('reward_fn_normalized', 'NAB reward_fn (normalized)', '.2f'),
-    'NAB standard': ('standard_normalized', 'NAB standard (normalized)', '.2f'),
-    'AUC-PR': ('test_auc_pr', 'Test AUC-PR', '.4f'),
-    'VUS-PR': ('test_vus_pr', 'Test VUS-PR', '.4f'),
-    'F1': ('f1', 'Test F1', '.4f'),
-    'Precision': ('precision', 'Test precision', '.4f'),
-    'Recall': ('recall', 'Test recall', '.4f'),
+# Names of the measures shown in the app and the figures (column -> name); the NAB profiles as in the paper
+# (src/analysis_results.py NAB_PROFILE_DISPLAY_NAME_MAP: reward_fn -> Low FN)
+MEASURE_NAMES = {
+    'reward_fn_normalized': 'NAB Low FN',
+    'standard_normalized': 'NAB Standard',
+    'test_auc_pr': 'AUC-PR',
+    'test_vus_pr': 'VUS-PR',
+    'f1': 'F1',
+    'precision': 'Precision',
+    'recall': 'Recall',
+    'nab_tp': 'Detected anomalies',
 }
+NAB_LOW_FN, NAB_STANDARD = MEASURE_NAMES['reward_fn_normalized'], MEASURE_NAMES['standard_normalized']
+# Test measures the charts can show: name -> (column, axis title, number format)
+MEASURES = {MEASURE_NAMES[column]: (column, title, fmt) for column, title, fmt in [
+    ('reward_fn_normalized', f'{NAB_LOW_FN} (normalized)', '.2f'),
+    ('standard_normalized', f'{NAB_STANDARD} (normalized)', '.2f'),
+    ('test_auc_pr', 'Test AUC-PR', '.4f'),
+    ('test_vus_pr', 'Test VUS-PR', '.4f'),
+    ('f1', 'Test F1', '.4f'),
+    ('precision', 'Test precision', '.4f'),
+    ('recall', 'Test recall', '.4f'),
+]}
 # Metrics a setting can be selected by: NAB on test, or metrics on train / valid (no test labels)
 SELECTION_METRICS = [
     'reward_fn_normalized', 'standard_normalized', 'f1',
@@ -101,12 +115,19 @@ BORDER_DASHES = [[1, 0], [6, 3], [2, 2], [8, 3, 2, 3]]
 STRATEGY_SHAPES = ['circle', 'square', 'triangle-up', 'diamond', 'cross', 'triangle-down']
 LINE_SHADES = [1.0, 0.55, 0.3]
 LINE_DASHES = {False: [1, 0], True: [6, 3]}   # window charts of the results table: solid / dashed
+COMBINED_SUBSET_DASH = [2, 2]   # window charts of the results table: lines of a combined subset (e.g. 5xx 4xx count)
+# Window charts of the results table, groups in one chart: the dash of each group, solid for a single subset and
+# dotted for a combined one (then the next patterns for further groups of the same kind)
+GROUP_DASHES = {False: [[1, 0], [6, 3], [8, 3, 2, 3]], True: [COMBINED_SUBSET_DASH, [1, 3], [2, 4, 6, 4]]}
 CHART_BORDER = '#9e9e9e'   # border of the plots of the results-table charts
 # Window charts of the results table sized as a figure of the paper: chart units are points (1/72 in), so the
 # fonts have their size in points (src/figure_style.py) once the PNG is shown FIGURE_WIDTH_INCHES wide
 FIGURE_WIDTH_INCHES = 6.5
 POINTS_PER_INCH = 72
 FIGURE_WIDTH = FIGURE_WIDTH_INCHES * POINTS_PER_INCH
+# Figure of one column of the paper (IEEEtran journal, TNSM: \columnwidth = 3.5 in): the window charts of the results
+# table with all the groups in one chart
+COLUMN_FIGURE_WIDTH_INCHES = 3.5
 PNG_DPI = 600
 PANEL_COLUMNS = 4          # panels per row (one panel per group)
 PANEL_SPACING = 4          # between the panels
@@ -119,9 +140,6 @@ LEGEND_PADDING = 4         # between the frame of a legend and its entries
 PANEL_AXIS_SPACE = 28 + 4 * (FONT_SIZE_INCREASE - Y_TICK_FONT_SIZE_DECREASE)   # y tick labels left of a panel, about
 PANEL_TITLE_OFFSET = 4     # between the measure (left of the panels) and their y axes
 CHART_GROUPINGS = ['One panel per group', 'All groups in one chart']
-# Point shapes of the groups drawn in one chart: enough for the 8 subsets
-GROUP_SHAPES = ['circle', 'square', 'triangle-up', 'diamond', 'cross', 'triangle-down', 'triangle-left',
-                'triangle-right', 'wedge', 'arrow']
 
 
 # STGformer pooled over the whole window (temporal_kernel_size = slide_win) is saved as <model>_pool<window>,
@@ -452,6 +470,13 @@ def load_folder(files, loading_code):
     return prepare_results(merge_folder(files, loading_code))
 
 
+@st.cache_data(show_spinner='Loading costs file…', max_entries=8)
+def load_costs_path(path, mtime):
+    """Costs file on disk (grid_results.read_run_costs, e.g. merged_results/hpc_combined_costs.csv); mtime
+    refreshes the cache."""
+    return read_costs(path)
+
+
 @st.cache_data(show_spinner='Loading merged file…', max_entries=8)
 def load_merged_path(path, mtime, loading_code):
     """Rows of a merged file on disk; mtime refreshes the cache when it is rewritten."""
@@ -614,12 +639,8 @@ def detection_bars(data, models, subsets, sources, nab_measure):
 
 
 # Bubble chart of the likelihood windows: the measures it can show (label -> column, number format)
-BUBBLE_MEASURES = {
-    'NAB reward_fn': ('reward_fn_normalized', '.1f'),
-    'NAB standard': ('standard_normalized', '.1f'),
-    'Detected anomalies': ('nab_tp', '.0f'),
-    'F1': ('f1', '.3f'),
-}
+BUBBLE_MEASURES = {MEASURE_NAMES[column]: (column, fmt) for column, fmt in [
+    ('reward_fn_normalized', '.1f'), ('standard_normalized', '.1f'), ('nab_tp', '.0f'), ('f1', '.3f')]}
 BUBBLE_STATISTICS = ['Best setting', 'Max', 'Mean', 'Median']
 BUBBLE_SIZES = [15, 280]          # area of the smallest / largest bubble
 BUBBLE_AXIS_SPACE = 30            # y axis (labels and title) left of each panel, about
@@ -878,7 +899,7 @@ def render_detections(rows, family_scale):
         help='A configuration is a window, subset, fill NaN and model: its setting (strategy, threshold, ...) with '
              'the highest value of this metric. train_valid_* / valid_* pick without the test labels; NAB / F1 '
              'pick on the test split itself.')
-    nab_measures = [m for m in ('NAB reward_fn', 'NAB standard') if MEASURES[m][0] in rows]
+    nab_measures = [m for m in (NAB_LOW_FN, NAB_STANDARD) if MEASURES[m][0] in rows]
     nab_measure = col_nab.selectbox('NAB score (C)', nab_measures, key='det_nab')
     short_names = col_short.toggle('Short names', value=True, key='det_short_names')
     picked = best_per_group(rows.dropna(subset=[select_by]), CONFIGURATION_COLUMNS, select_by)
@@ -982,6 +1003,326 @@ def render_likelihood_windows(results, options, family_scale):
         st.dataframe(values.reset_index(), hide_index=True)
 
 
+# ── Deployment cost ───────────────────────────────────────────────────────────
+
+SAMPLING_INTERVAL_S = 300   # data/massaged/timestamps_and_labels.csv: one timestamp every 5 minutes
+BYTES_PER_MB = 2 ** 20
+# Costs a run can be compared by: label -> (column, axis title, number format)
+RUN_COSTS = {
+    'Inference per timestamp': ('latency_ms', 'Inference per timestamp (ms)', '.3f'),
+    'Training time': ('training_time', 'Training time (s)', '.0f'),
+    'Training time per epoch': ('epoch_time', 'Training time per epoch (s)', '.1f'),
+    'Model size': ('model_mb', 'Model size (MB)', '.3f'),
+    'Estimated memory': ('memory_mb', 'Estimated memory (MB)', '.1f'),
+}
+# Analytical memory of a deployed run (MB): label -> column; float32 inputs, float64 graph and covariance
+MEMORY_PARTS = {
+    'Model parameters': 'model_mb',
+    'Input window (W×N×C)': 'window_mb',
+    'Context graph (3×E)': 'graph_mb',
+    'Mahalanobis covariance ((N·F)²)': 'covariance_mb',
+}
+GRAPH_KIND = {True: 'Graph-based', False: 'Other'}
+HOLLOW = '(hollow)'   # fill value of the markers of the models that are not graph-based
+
+
+def run_cost_table(results, costs):
+    """
+    One row per run (COST_KEYS) of the results with its COST_COLUMNS (costs: a costs file, grid_results.
+    read_run_costs) and the derived costs: training time per epoch, inference time per test timestamp (test
+    timestamps: the confusion matrix of the run), model size and the analytical memory of MEMORY_PARTS. Also
+    returns the grid-search files of every run.
+    """
+    first = results.loc[~results['file'].duplicated(),
+                        ['file', *COST_KEYS, 'model_family',
+                         *(['confusion_matrix'] if 'confusion_matrix' in results else [])]]
+    runs = first.drop_duplicates(COST_KEYS).drop(columns='file').reset_index(drop=True)
+    if 'confusion_matrix' not in runs:
+        runs['confusion_matrix'] = None
+    costs = costs.assign(model_folder=[model_variant(m, w) for m, w in zip(costs['model_folder'], costs['window'])])
+    runs = runs.merge(costs.drop_duplicates(COST_KEYS)[COST_KEYS + COST_COLUMNS], on=COST_KEYS, how='left')
+    runs['test_timestamps'] = runs['confusion_matrix'].map(
+        lambda c: sum(ast.literal_eval(c)) if isinstance(c, str) else float('nan'))   # [tn, fp, fn, tp]
+    runs['latency_ms'] = runs['inference_time'] / runs['test_timestamps'] * 1000
+    runs['epoch_time'] = runs['training_time'] / runs['epochs']
+    runs['graph'] = runs['model_family'].isin(GRAPH_MODEL_FAMILIES)
+    channels = runs['num_node_features'] * (1 + runs['model_folder'].str.contains('null_padding_feature'))
+    runs['model_mb'] = runs['model_size_bytes'] / BYTES_PER_MB
+    runs['window_mb'] = runs['window'] * runs['num_nodes'] * channels * 4 / BYTES_PER_MB
+    runs['graph_mb'] = (runs['num_edges'] * 3 * 8 / BYTES_PER_MB).where(runs['graph'], 0)
+    runs['covariance_mb'] = (runs['num_nodes'] * runs['num_node_features']) ** 2 * 8 / BYTES_PER_MB
+    runs['memory_mb'] = runs[list(MEMORY_PARTS.values())].sum(axis=1, min_count=1)
+    return runs, first[['file', *COST_KEYS]]
+
+
+def _cost_axis(cost, log=False):
+    column, title, fmt = RUN_COSTS[cost]
+    return alt.Y(f'{column}:Q', title=title, axis=alt.Axis(format=fmt, tickSize=3, labelPadding=2, domain=False),
+                 scale=alt.Scale(type='log') if log else alt.Undefined)
+
+
+def latency_chart(runs, family_scale, models):
+    """Inference time per test timestamp of every run: one bar per model (and window), one panel per subset."""
+    windows = sorted(runs['window'].unique())
+    bars = alt.Chart().mark_bar().encode(
+        x=alt.X('model:N', sort=models, title=None, axis=alt.Axis(labelAngle=-40, labelLimit=0)),
+        xOffset=alt.XOffset('window:O', sort=windows),
+        y=_cost_axis('Inference per timestamp', log=True),
+        color=alt.Color('model_family:N', scale=family_scale, title='Model family', legend=alt.Legend(orient='top')),
+        opacity=alt.Opacity('window:O', sort=windows, title='Window size', legend=alt.Legend(orient='top'),
+                            scale=alt.Scale(domain=windows, range=_cycled(FILL_SHADES, len(windows)))),
+        tooltip=['model', 'subset_name', 'window', 'fill_nan',
+                 alt.Tooltip('latency_ms:Q', title='ms per timestamp', format='.3f'),
+                 alt.Tooltip('inference_time:Q', title='test inference (s)', format='.1f'),
+                 alt.Tooltip('test_timestamps:Q', title='test timestamps', format=',.0f')])
+    subsets = list(dict.fromkeys(runs['subset_name']))
+    columns = min(PANEL_COLUMNS, len(subsets))
+    width = panel_width(columns)
+    return paper_style(alt.layer(bars, data=runs).properties(width=width, height=width * PANEL_ASPECT).facet(
+        facet=alt.Facet('subset_name:N', sort=subsets, title=None), columns=columns, spacing=PANEL_SPACING))
+
+
+def cost_accuracy_chart(runs, family_scale, cost, measure):
+    """The best measure of every run against its cost (log scale): the marker by its subset (e.g. 5xx count,
+    5xx 4xx count); graph-based models filled, the others hollow."""
+    column = RUN_COSTS[cost][0]
+    data = runs.dropna(subset=[column, 'best'])
+    data = data[data[column] > 0]
+    # Fill by a column of its own, not alt.condition: Vega-Lite would draw the subset legend with the 'white' of
+    # the condition and no stroke, i.e. invisible markers
+    data = data.assign(fill_family=data['model_family'].where(data['graph'], HOLLOW))
+    colors = family_colors(family_scale)
+    families = [f for f in colors if f in set(data['model_family'])]
+    subsets = list(dict.fromkeys(data['subset_name']))
+    points = alt.Chart(data).mark_point(size=60, strokeWidth=1.5).encode(
+        x=alt.X(f'{column}:Q', title=RUN_COSTS[cost][1], scale=alt.Scale(type='log'),
+                axis=alt.Axis(tickSize=3, labelPadding=2, domain=False)),
+        y=alt.Y('best:Q', title=f'Best {measure}', scale=alt.Scale(zero=False, nice=False, padding=8),
+                axis=alt.Axis(tickSize=3, labelPadding=2, domain=False)),
+        color=alt.Color('model_family:N', scale=family_scale, legend=None),
+        fill=alt.Fill('fill_family:N', title='Model family', scale=alt.Scale(
+            domain=[*families, HOLLOW], range=[*(colors[f] for f in families), 'white']),
+                      legend=alt.Legend(orient='top', values=families, columns=2, labelLimit=0,
+                                        strokeColor='transparent')),
+        shape=alt.Shape('subset_name:N', title='Subset', sort=subsets, scale=alt.Scale(
+            domain=subsets, range=_cycled(STRATEGY_SHAPES, len(subsets))),
+                        legend=alt.Legend(orient='top', columns=2, labelLimit=0, symbolFillColor='black',
+                                          symbolStrokeColor='black', strokeColor='transparent')),
+        tooltip=['model', 'kind', 'subset_name', 'window', 'fill_nan',
+                 alt.Tooltip(f'{column}:Q', title=cost, format=RUN_COSTS[cost][2]),
+                 alt.Tooltip('best:Q', title=f'Best {measure}', format=MEASURES[measure][2])])
+    return paper_style(points.properties(width=FIGURE_WIDTH, height=FIGURE_WIDTH * CHART_ASPECT))
+
+
+def ensemble_cost_rows(runs):
+    """Runs of the combined subsets (one model on e.g. 5xx 4xx count) and the ensembles of their single subsets
+    (the models of 5xx count and 4xx count, same model, window and fill NaN): one row per (comparison, part),
+    the cost of an ensemble being the sum of those of its members (the fusion, an OR of their labels, costs
+    nothing next to them)."""
+    single = runs.set_index(COST_KEYS)
+    rows = []
+    for _, run in runs.iterrows():
+        components = component_subsets(run['subset'])
+        if not components:
+            continue
+        members = [(run['window'], c, run['fill_nan'], run['model_folder']) for c in components]
+        if not all(m in single.index for m in members):
+            continue
+        comparison = f'{run["model"]} · w={run["window"]} · {run["fill_nan"]}'
+        rows.append({**run, 'comparison': comparison, 'approach': 'One model (combined subset)',
+                     'part': run['subset_name']})
+        for member in members:
+            rows.append({**single.loc[member].to_dict(), **dict(zip(COST_KEYS, member)), 'comparison': comparison,
+                         'approach': f'Ensemble of {len(members)} models', 'part': short_subset_name(member[1]),
+                         'model': run['model']})
+    return pd.DataFrame(rows)
+
+
+def ensemble_cost_chart(rows, cost):
+    """Stacked bars: the cost of the combined-subset model next to the summed costs of the ensemble members."""
+    column, title, fmt = RUN_COSTS[cost]
+    comparisons = list(dict.fromkeys(rows['comparison']))
+    bars = alt.Chart().mark_bar(stroke='white', strokeWidth=0.5).encode(
+        x=alt.X('approach:N', title=None, axis=alt.Axis(labelAngle=0, labelLimit=0)),
+        y=alt.Y(f'sum({column}):Q', title=title, axis=alt.Axis(tickSize=3, labelPadding=2, domain=False)),
+        color=alt.Color('part:N', title='Subset', legend=alt.Legend(orient='top')),
+        order=alt.Order('part:N'),
+        tooltip=['comparison', 'approach', 'part', alt.Tooltip(f'{column}:Q', title=cost, format=fmt),
+                 alt.Tooltip('best:Q', title='best measure', format='.3f')])
+    columns = min(PANEL_COLUMNS, len(comparisons))
+    width = panel_width(columns)
+    return paper_style(alt.layer(bars, data=rows).properties(width=width, height=width * PANEL_ASPECT).facet(
+        facet=alt.Facet('comparison:N', sort=comparisons, title=None), columns=columns, spacing=PANEL_SPACING
+    ).resolve_scale(y='independent'))
+
+
+def memory_chart(runs, models):
+    """Analytical memory of the runs of one window: stacked MEMORY_PARTS per model, one panel per subset."""
+    long = runs.melt(id_vars=['model', 'subset_name'], value_vars=list(MEMORY_PARTS.values()),
+                     var_name='column', value_name='mb')
+    long['part'] = long['column'].map({c: p for p, c in MEMORY_PARTS.items()})
+    parts = list(MEMORY_PARTS)
+    bars = alt.Chart().mark_bar().encode(
+        x=alt.X('model:N', sort=models, title=None, axis=alt.Axis(labelAngle=-40, labelLimit=0)),
+        y=alt.Y('sum(mb):Q', title='Estimated memory (MB)', axis=alt.Axis(tickSize=3, labelPadding=2, domain=False)),
+        color=alt.Color('part:N', sort=parts, title=None, legend=alt.Legend(orient='top', columns=2, labelLimit=0)),
+        order=alt.Order('part_order:Q'),
+        tooltip=['model', 'subset_name', 'part', alt.Tooltip('mb:Q', title='MB', format='.3f')])
+    long['part_order'] = long['part'].map(parts.index)
+    subsets = list(dict.fromkeys(long['subset_name']))
+    columns = min(PANEL_COLUMNS, len(subsets))
+    width = panel_width(columns)
+    return paper_style(alt.layer(bars, data=long).properties(width=width, height=width * PANEL_ASPECT).facet(
+        facet=alt.Facet('subset_name:N', sort=subsets, title=None), columns=columns, spacing=PANEL_SPACING))
+
+
+def render_deployment_cost(results, family_scale):
+    """
+    'Deployment cost' tab: the cost of every run (training / inference time, model size, analytical memory, the
+    graph of its subset), against its accuracy, and of the ensembles of single subsets against one model on the
+    combined subset. Its filters are its own: the sidebar filters do not apply.
+    """
+    st.caption('This tab has its own filters: the filters of the sidebar do not apply here.')
+    costs_files = sorted(MERGED_DIR.glob(f'*{COSTS_SUFFIX}'), key=os.path.getmtime, reverse=True)
+    if not costs_files:
+        st.info(f'No costs file (`*{COSTS_SUFFIX}`) in `{os.path.relpath(MERGED_DIR, PROJECT_ROOT)}/`: write one on '
+                'the HPC server with `grid_results.py <results folder> -o <merged file> --costs-only` (it reads the '
+                'training / inference time files and the model file of every run, and the graph of every subset '
+                'from `data/massaged/extracted/`), e.g. `merged_results/hpc_combined_costs.csv`.')
+        return
+    names = [p.name for p in costs_files]
+    default = f'hpc_combined{COSTS_SUFFIX}'
+    costs_file = costs_files[st.selectbox('Costs file', range(len(names)), format_func=names.__getitem__,
+                                          index=names.index(default) if default in names else 0, key='cost_file',
+                                          help='Training / inference times, model sizes and graphs of the runs.')]
+    try:
+        costs = load_costs_path(str(costs_file), os.path.getmtime(costs_file))
+    except ValueError as e:
+        st.error(f'`{costs_file.name}`: {e}')
+        return
+    runs, run_files = run_cost_table(results, costs)
+    if runs['inference_time'].isna().all():
+        st.info('The costs file has no cost for the runs of these results.')
+        return
+    with st.expander('Filters', expanded=True, icon=':material/filter_alt:'):
+        filter_columns = st.columns(len(COST_KEYS))
+        chosen = {c: filter_columns[i].multiselect(DIMENSIONS[c], sorted(runs[c].unique(), key=str), default=[],
+                                                   placeholder='All', key=f'cost_filter_{c}')
+                  for i, c in enumerate(COST_KEYS)}
+    for column, values in chosen.items():
+        if values:
+            runs = runs[runs[column].isin(values)]
+    if runs.empty:
+        st.info('No run matches the filters.')
+        return
+
+    col_measure, col_interval, col_short = st.columns(3)
+    available = [m for m, (c, _, _) in MEASURES.items() if c in results and results[c].notna().any()]
+    measure = col_measure.selectbox('Accuracy', available, key='cost_measure',
+                                    help='Best test value of a run over its settings (strategies, thresholds, ...).')
+    interval = col_interval.number_input('Sampling interval (s)', min_value=1, value=SAMPLING_INTERVAL_S,
+                                         key='cost_interval', help='Time between two timestamps of the data: the '
+                                                                   'budget of the inference of one timestamp.')
+    short_names = col_short.toggle('Short names', value=True, key='cost_short_names')
+
+    # Best measure of every run shown, over the rows of its grid-search files only
+    column = MEASURES[measure][0]
+    files = run_files.merge(runs[COST_KEYS], on=COST_KEYS)['file']
+    best = results.loc[results['file'].isin(files)].groupby(COST_KEYS)[column].max().rename('best')
+    runs = runs.merge(best.reset_index(), on=COST_KEYS, how='left')
+    runs['model'] = runs['model_folder'].map(short_model_name) if short_names else runs['model_folder']
+    runs['subset_name'] = runs['subset'].map(short_subset_name) if short_names else runs['subset']
+    runs['kind'] = runs['graph'].map(GRAPH_KIND)
+    runs['realtime_factor'] = interval * 1000 / runs['latency_ms']
+    runs = runs.assign(_order=runs['model_folder'].map(model_order_key)).sort_values(
+        ['_order', 'subset', 'window'], kind='stable').drop(columns='_order')
+    models = list(dict.fromkeys(runs['model']))
+
+    st.subheader('Inference time per timestamp', divider='gray')
+    slowest = runs['latency_ms'].max()
+    if pd.notna(slowest):
+        st.caption(f'Test-split inference time divided by its number of timestamps (batched on the GPU of the run, '
+                   f'post-processing excluded). Slowest run: {slowest:.2f} ms per timestamp, '
+                   f'{interval * 1000 / slowest:,.0f}× below the sampling interval of {interval} s.')
+        chart = latency_chart(runs.dropna(subset=['latency_ms']), family_scale, models)
+        st.altair_chart(chart, width='content')
+        export_buttons(chart, 'deployment_inference_per_timestamp', 'cost_latency')
+    else:
+        st.info('No inference time for these runs.')
+
+    st.subheader('Cost against accuracy', divider='gray')
+    cost = st.segmented_control('Cost', list(RUN_COSTS), default='Inference per timestamp', required=True,
+                                key='cost_axis')
+    st.caption('Marker: the subset of the run; filled: graph-based model, hollow: the other models.')
+    chart = cost_accuracy_chart(runs, family_scale, cost, measure)
+    st.altair_chart(chart, width='content')
+    export_buttons(chart, f'deployment_{RUN_COSTS[cost][0]}_vs_{column}', 'cost_pareto')
+
+    st.subheader('Ensemble of single subsets vs. one model on the combined subset', divider='gray')
+    rows = ensemble_cost_rows(runs)
+    if rows.empty:
+        st.caption('No combined subset (e.g. 5xx 4xx count) with the runs of its single subsets (same model, window '
+                   'and fill NaN) among the filtered runs.')
+    else:
+        ensemble_cost = st.segmented_control('Cost', list(RUN_COSTS), default='Inference per timestamp',
+                                             required=True, key='ensemble_cost_axis')
+        st.caption('The cost of an ensemble is the sum of those of its members: its fusion (an OR of their labels '
+                   'per timestamp) costs nothing next to them. The accuracy of the ensembles is not in these '
+                   'results (src/run_ensemble_approach_new.py).')
+        chart = ensemble_cost_chart(rows, ensemble_cost)
+        st.altair_chart(chart, width='content')
+        export_buttons(chart, f'deployment_ensemble_{RUN_COSTS[ensemble_cost][0]}', 'cost_ensemble')
+        with st.expander('Values'):
+            st.dataframe(rows[['comparison', 'approach', 'part', *[c for c, _, _ in RUN_COSTS.values()], 'best']],
+                         hide_index=True, column_config={'best': st.column_config.NumberColumn(f'Best {measure}')})
+
+    st.subheader('Estimated memory', divider='gray')
+    windows = sorted(runs['window'].unique())
+    window = st.selectbox('Window size', windows, index=len(windows) - 1, key='cost_memory_window')
+    st.caption('Analytical estimate, not measured: model parameters (size of the saved model), the input window '
+               '(W×N×C float32, C = features plus the is_nan channel of the null-padded models), the context graph '
+               '(graph-based models: 3×E float64) and the covariance of the Mahalanobis strategies ((N·F)² float64).')
+    chart = memory_chart(runs[runs['window'] == window], models)
+    st.altair_chart(chart, width='content')
+    export_buttons(chart, f'deployment_memory_w{window}', 'cost_memory')
+
+    st.subheader('Context graph of the subsets', divider='gray')
+    graphs = runs.drop_duplicates('subset')[['subset_name', 'num_nodes', 'num_node_features', 'num_edges']].copy()
+    graphs['density'] = graphs['num_edges'] / (graphs['num_nodes'] * (graphs['num_nodes'] - 1))
+    graphs['graph_mb'] = graphs['num_edges'] * 3 * 8 / BYTES_PER_MB
+    graphs['covariance_mb'] = (graphs['num_nodes'] * graphs['num_node_features']) ** 2 * 8 / BYTES_PER_MB
+    st.caption('Built once, offline, from the names of the nodes (their service); rebuilt only when the topology '
+               'changes.')
+    st.dataframe(graphs, hide_index=True, column_config={
+        'subset_name': st.column_config.Column('Subset'),
+        'num_nodes': st.column_config.NumberColumn('Nodes N', format='%d'),
+        'num_node_features': st.column_config.NumberColumn('Features F', format='%d'),
+        'num_edges': st.column_config.NumberColumn('Edges E', format='%d'),
+        'density': st.column_config.NumberColumn('Density', format='%.5f'),
+        'graph_mb': st.column_config.NumberColumn('Graph (MB)', format='%.2f'),
+        'covariance_mb': st.column_config.NumberColumn('Mahalanobis covariance (MB)', format='%.1f')})
+
+    st.subheader('All runs', divider='gray')
+    table = runs[['model', 'subset_name', 'window', 'fill_nan', 'num_nodes', 'num_edges', 'epochs', 'training_time',
+                  'epoch_time', 'inference_time', 'test_timestamps', 'latency_ms', 'realtime_factor',
+                  *MEMORY_PARTS.values(), 'memory_mb', 'best']]   # MEMORY_PARTS starts with model_mb
+    st.dataframe(table, hide_index=True, column_config={
+        'subset_name': st.column_config.Column('Subset'),
+        'training_time': st.column_config.NumberColumn('Training (s)', format='%.0f'),
+        'epoch_time': st.column_config.NumberColumn('Per epoch (s)', format='%.1f'),
+        'inference_time': st.column_config.NumberColumn('Test inference (s)', format='%.1f'),
+        'latency_ms': st.column_config.NumberColumn('Per timestamp (ms)', format='%.3f'),
+        'realtime_factor': st.column_config.NumberColumn('× below interval', format='%.0f'),
+        'model_mb': st.column_config.NumberColumn('Model (MB)', format='%.3f'),
+        'window_mb': st.column_config.NumberColumn('Input window (MB)', format='%.2f'),
+        'graph_mb': st.column_config.NumberColumn('Graph (MB)', format='%.2f'),
+        'covariance_mb': st.column_config.NumberColumn('Covariance (MB)', format='%.1f'),
+        'memory_mb': st.column_config.NumberColumn('Memory est. (MB)', format='%.1f'),
+        'best': st.column_config.NumberColumn(f'Best {measure}', format=f'%{MEASURES[measure][2]}')})
+    st.download_button('Download as CSV', table.to_csv(index=False), file_name='deployment_cost.csv',
+                       mime='text/csv', icon=':material/download:')
+
+
 def render_explorer(results):
     """Filters (sidebar) and tabs of the explorer over the rows of a merged table, whatever its source."""
     family_scale = family_color_scale(results['model_family'].unique())
@@ -997,7 +1338,7 @@ def render_explorer(results):
         available_measures = [m for m, (c, _, _) in MEASURES.items() if c in results and results[c].notna().any()]
         measures = st.multiselect(
             'Measures (test)', available_measures,
-            default=[m for m in ('NAB reward_fn', 'AUC-PR', 'VUS-PR') if m in available_measures],
+            default=[m for m in (NAB_LOW_FN, 'AUC-PR', 'VUS-PR') if m in available_measures],
             help='Test measures shown by the charts (one chart each) and the tables. The first one sorts the tables.')
         if not measures:
             measures = available_measures[:1]
@@ -1019,15 +1360,17 @@ def render_explorer(results):
     # Nothing chosen: the whole table (millions of rows) would be filtered and charted on every rerun
     filtered = filter_rows(results, options, selected) if any(selected.values()) else None
 
-    tab_overview, tab_compare, tab_target, tab_windows, tab_rows, tab_table, tab_bubbles = st.tabs(
+    tab_overview, tab_compare, tab_target, tab_windows, tab_rows, tab_table, tab_bubbles, tab_cost = st.tabs(
         ['Overview', 'Compare', 'Target model', 'Strategies by window', 'All settings', 'Results table',
-         'Likelihood windows'])
+         'Likelihood windows', 'Deployment cost'])
 
     # ── Results table and likelihood windows: their own filters, shown whatever the sidebar filters ──
     with tab_table:
         render_results_table(results, family_scale, options)
     with tab_bubbles:
         render_likelihood_windows(results, options, family_scale)
+    with tab_cost:
+        render_deployment_cost(results, family_scale)
 
     if filtered is None or filtered.empty:
         for tab in (tab_overview, tab_compare, tab_target, tab_windows, tab_rows):
@@ -1467,6 +1810,15 @@ def _latex_text(value):
 
 
 PANEL_TITLE_SIZE = AXIS_LABEL_FONT_SIZE + FONT_SIZE_INCREASE   # the measure on the left of the panels
+# Plots of a one-column figure: the y axis (labels and the measure as title, estimated) on their left
+COLUMN_PLOT_HEIGHT = 110   # the plots of a one-column figure side by side, one per measure
+
+
+def column_plot_width(columns):
+    """Width of the plots of a one-column figure with `columns` plots side by side, each its y axis (estimated)
+    on its left and its measure as title above."""
+    return ((COLUMN_FIGURE_WIDTH_INCHES * POINTS_PER_INCH - PANEL_SPACING * (columns - 1)) / columns
+            - PANEL_AXIS_SPACE)
 
 
 def panel_width(columns, axis_space=PANEL_AXIS_SPACE):
@@ -1489,10 +1841,10 @@ def paper_style(chart):
                               labelPadding=2))
 
 
-def export_buttons(chart, name, key):
-    """PNG and PDF downloads of a chart, made only when clicked."""
+def export_buttons(chart, name, key, width_inches=FIGURE_WIDTH_INCHES):
+    """PNG and PDF downloads of a chart (a figure width_inches wide), made only when clicked."""
     col_png, col_pdf, _ = st.columns([1, 1, 3])
-    col_png.download_button('Export as PNG', lambda: chart_png(chart), file_name=f'{name}.png', mime='image/png',
+    col_png.download_button('Export as PNG', lambda: chart_png(chart, width_inches), file_name=f'{name}.png', mime='image/png',
                             key=f'png_{key}', icon=':material/image:', on_click='ignore')
     col_pdf.download_button('Export as PDF', lambda: chart_pdf(chart), file_name=f'{name}.pdf',
                             mime='application/pdf', key=f'pdf_{key}', icon=':material/picture_as_pdf:',
@@ -1506,12 +1858,12 @@ def chart_pdf(chart):
     return buffer.getvalue()
 
 
-def chart_png(chart):
-    """PNG bytes of an Altair chart at PNG_DPI, its resolution set so that it is FIGURE_WIDTH_INCHES wide."""
+def chart_png(chart, width_inches=FIGURE_WIDTH_INCHES):
+    """PNG bytes of an Altair chart at PNG_DPI, its resolution set so that it is width_inches wide."""
     buffer = io.BytesIO()
     chart.save(buffer, format='png', scale_factor=PNG_DPI / POINTS_PER_INCH)
     image = Image.open(io.BytesIO(buffer.getvalue()))
-    dpi = image.width / FIGURE_WIDTH_INCHES   # PNG_DPI, up to the width of the panel axes (estimated)
+    dpi = image.width / width_inches   # PNG_DPI, up to the width of the panel axes (estimated)
     buffer = io.BytesIO()
     image.save(buffer, format='png', dpi=(dpi, dpi))
     return buffer.getvalue()
@@ -1536,10 +1888,12 @@ def window_line_charts(values, measures, series_dims, facet_dims, family_scale, 
     """
     Line charts of the results table along the window size, one per measure: one line per series (the rows of
     the table, e.g. a model, and the other column dimensions), in its model family's color; ClouDens models are
-    solid with the sparsity indicator (*) and dashed without it, the other models solid. One panel per group of
-    rows of facet_dims (Group rows by, e.g. the subset), or the groups of overlay_dims all in the same chart, told
-    apart by their point shape. The series that still share a color and a dash are told apart by their point
-    shape (one panel per group) or by the shade of their color (groups in one chart).
+    solid with the sparsity indicator (*) and dashed without it, the other models solid; the lines of a combined
+    subset (grid_results.COMBINED_SUBSETS) dotted (COMBINED_SUBSET_DASH). One panel per group of rows of
+    facet_dims (Group rows by, e.g. the subset); or the groups of overlay_dims all in the same chart, told apart by
+    their dash (GROUP_DASHES: solid a single subset, dotted a combined one), the charts of the measures side by side
+    in a one-column figure of the paper with their legends on top. The series that still share a color and a dash
+    are told apart by their point shape.
     values: the cells of the table, one row per (row, column) key, one column per measure.
     """
     overlay_dims = list(overlay_dims)
@@ -1549,6 +1903,8 @@ def window_line_charts(values, measures, series_dims, facet_dims, family_scale, 
     dashed = (data['model_folder'].map(lambda f: short_model_name(f).startswith(PROPOSED_MODEL_PREFIX)
                                        and not NULL_PADDING_SUFFIX.search(str(f)))
               if 'model_folder' in data else pd.Series(False, index=data.index))
+    combined = (data['subset'].map(lambda s: bool(component_subsets(str(s))))
+                if 'subset' in data else pd.Series(False, index=data.index))
     if short_names and 'model_folder' in data:
         data['model_folder'] = data['model_folder'].map(short_model_name)
     if short_names and 'subset' in data:
@@ -1560,6 +1916,7 @@ def window_line_charts(values, measures, series_dims, facet_dims, family_scale, 
     data['window'] = data['window'].astype(str)
     windows = sorted(data['window'].unique(), key=float)
     # Series in the order of the table, each in its family's color and its model's dash
+    data['_dash'] = [COMBINED_SUBSET_DASH if c else LINE_DASHES[d] for d, c in zip(dashed, combined)]
     first = data.assign(_order=order_key, _family=family, _dashed=dashed).sort_values(['_order', 'series'],
                                                                                       kind='stable')
     first = first.drop_duplicates('series')
@@ -1568,52 +1925,69 @@ def window_line_charts(values, measures, series_dims, facet_dims, family_scale, 
     rank = first.groupby(['_family', '_dashed']).cumcount()
     legend_domain, legend_columns = family_legend_layout(first['series'], first['_family'])
     color_of = dict(zip(series, [colors.get(f, NO_FAMILY_COLOR) for f in first['_family']]))
-    dash_of = dict(zip(series, [LINE_DASHES[d] for d in first['_dashed']]))
+    dash_of = dict(zip(series, first['_dash']))
+    # The subset among the series: the dash of each series (in its legend); otherwise (the subset in the panels /
+    # groups) a series has lines of combined and of single subsets: the dash of each line, no dash in the legend
+    dash_by_line = combined.any() and 'subset' not in series_dims
+    data['panel_line'] = data['panel'] + ' · ' + data['line']   # a line is drawn in every panel
+    line_dash_of = dict(zip(data['panel_line'], data['_dash']))
     shape_of = dict(zip(series, [STRATEGY_SHAPES[r % len(STRATEGY_SHAPES)] for r in rank]))
     color_scale = alt.Scale(domain=legend_domain, range=[color_of.get(s, 'transparent') for s in legend_domain])
     dash_scale = alt.Scale(domain=legend_domain, range=[dash_of.get(s, LINE_DASHES[False]) for s in legend_domain])
     panels = list(dict.fromkeys(data['panel']))
     groups = list(dict.fromkeys(data['group']))
-    long = data.melt(id_vars=['series', 'panel', 'group', 'line', 'window'], value_vars=measures, var_name='measure')
-    # Legends compact (e.g. for a figure of a paper): the series above the chart, the groups drawn in one chart
-    # (point shapes) below it
+    long = data.melt(id_vars=['series', 'panel', 'group', 'line', 'panel_line', 'window'], value_vars=measures,
+                     var_name='measure')
+    # Legends compact (e.g. for a figure of a paper) above the chart: the series, then the groups drawn in one chart
     legend = alt.Legend(orient='top', direction='horizontal', columns=legend_columns, labelLimit=0,
                         symbolStrokeWidth=1.5, symbolSize=40, symbolOpacity=1, columnPadding=8, rowPadding=1,
                         titleOrient='left', titleAnchor='start', titleBaseline='top',   # title in the top left corner
                         offset=LEGEND_OFFSET)
+    if overlay_dims:   # one-column figure: the legend titles (Model, Subset) on a row of their own above the entries
+        legend = legend.copy()
+        legend.titleOrient = 'top'
+        legend.strokeColor = 'transparent'   # no frame (paper_style frames the legends)
     title = ' · '.join(DIMENSIONS[d] for d in series_dims) or None
+    shape = alt.Shape('series:N', scale=alt.Scale(domain=legend_domain,
+                                                  range=[shape_of.get(s, 'circle') for s in legend_domain]),
+                      title=title, legend=legend)
+    tooltip = ['series', 'group' if overlay_dims else 'panel', 'window']
     if overlay_dims:
-        # The shape tells apart the groups, the same for every series; the shade the series of a family and dash
-        shape = alt.Shape('group:N', scale=alt.Scale(domain=groups, range=_cycled(GROUP_SHAPES, len(groups))),
-                          title=' · '.join(DIMENSIONS[d] for d in overlay_dims),
-                          legend=alt.Legend(orient='bottom', direction='horizontal', columns=4, labelLimit=0,
-                                            symbolSize=40, columnPadding=8, rowPadding=1, titleOrient='left',
-                                            titleAnchor='start', titleBaseline='top', offset=LEGEND_OFFSET))
-        shade = alt.Opacity('series:N', scale=alt.Scale(domain=series, range=[LINE_SHADES[r % len(LINE_SHADES)]
-                                                                               for r in rank]), legend=None)
-        tooltip = ['series', 'group', 'window']
-    else:
-        shape = alt.Shape('series:N', scale=alt.Scale(domain=legend_domain,
-                                                      range=[shape_of.get(s, 'circle') for s in legend_domain]),
-                          title=title, legend=legend)
-        shade = alt.value(1)
-        tooltip = ['series', 'panel', 'window']
+        # The dash tells apart the groups, the same for every series (the series by their color and point shape):
+        # solid a single subset, dotted a combined one
+        group_combined = data.assign(_combined=combined).groupby('group', sort=False)['_combined'].any()
+        group_rank = group_combined.groupby(group_combined).cumcount()
+        group_dash = alt.StrokeDash('group:N', title=' · '.join(DIMENSIONS[d] for d in overlay_dims),
+                                    scale=alt.Scale(domain=groups, range=[
+                                        GROUP_DASHES[group_combined[g]][group_rank[g] % len(GROUP_DASHES[False])]
+                                        for g in groups]),
+                                    legend=alt.Legend(orient='top', direction='vertical', labelLimit=0,
+                                                      symbolType='stroke', symbolStrokeWidth=1.5, symbolSize=300,
+                                                      symbolStrokeColor='black', columnPadding=8, rowPadding=1,
+                                                      titleOrient='top', titleAnchor='start', strokeColor='transparent',
+                                                      offset=LEGEND_OFFSET))
     charts = []
     for m in measures:
         fmt = MEASURES[m][2]
         encodings = dict(
             x=alt.X('window:O', sort=windows, title='Window size', axis=alt.Axis(labelAngle=0, domain=False, tickSize=3, labelPadding=2)),
             # padding: the top / bottom grid lines inside the border instead of over it
-            # panels: the measure once on the left of all of them (the chart title) instead of on every y axis
-            y=alt.Y('value:Q', title=None if facet_dims else m, scale=alt.Scale(zero=False, nice=False, padding=8),
+            # panels: the measure once on the left of all of them (the chart title) instead of on every y axis;
+            # groups in one chart: the measure as title above each plot (side by side in one column)
+            y=alt.Y('value:Q', title=None if facet_dims or overlay_dims else m,
+                    scale=alt.Scale(zero=False, nice=False, padding=8),
                     axis=alt.Axis(tickSize=3, labelPadding=2, domain=False)),   # the border as axis line
             color=alt.Color('series:N', scale=color_scale, title=title, legend=legend),
-            opacity=shade,
             tooltip=[*tooltip, alt.Tooltip('value:Q', title=m, format=fmt)])
+        if overlay_dims:
+            stroke_dash = group_dash
+        elif dash_by_line:
+            stroke_dash = alt.StrokeDash('panel_line:N', legend=None, scale=alt.Scale(
+                domain=list(line_dash_of), range=list(line_dash_of.values())))
+        else:
+            stroke_dash = alt.StrokeDash('series:N', scale=dash_scale, title=title, legend=legend)
         layers = alt.layer(
-            alt.Chart().mark_line(strokeWidth=1.5).encode(
-                strokeDash=alt.StrokeDash('series:N', scale=dash_scale, title=title, legend=legend),
-                detail='line:N', **encodings),
+            alt.Chart().mark_line(strokeWidth=1.5).encode(strokeDash=stroke_dash, detail='line:N', **encodings),
             alt.Chart().mark_point(filled=True, size=20).encode(shape=shape, **encodings),
             data=long[long['measure'] == m])
         # FIGURE_WIDTH wide in all: a single chart fits it exactly, the panels share it (their axes estimated)
@@ -1625,11 +1999,20 @@ def window_line_charts(values, measures, series_dims, facet_dims, family_scale, 
             ).resolve_scale(y='independent').properties(   # each panel its own y range
                 title=alt.TitleParams(m, orient='left', anchor='middle', fontSize=PANEL_TITLE_SIZE,
                                       fontWeight='bold', offset=PANEL_TITLE_OFFSET))
+        elif overlay_dims:   # side by side in one figure: concatenated charts cannot fit a width (autosize)
+            chart = layers.properties(width=column_plot_width(len(measures)), height=COLUMN_PLOT_HEIGHT,
+                                      title=alt.TitleParams(m, fontSize=PANEL_TITLE_SIZE, fontWeight='bold',
+                                                            offset=PANEL_TITLE_OFFSET))
         else:
             chart = layers.properties(width=FIGURE_WIDTH, height=FIGURE_WIDTH * CHART_ASPECT,
                                       autosize=alt.AutoSizeParams(type='fit-x', contains='padding'))
-        charts.append(paper_style(chart))
-    return charts
+        charts.append(chart)
+    if overlay_dims:   # one figure, one chart per measure side by side, their legends shared (same scales)
+        figure = alt.hconcat(*charts, spacing=PANEL_SPACING).resolve_scale(
+            y='independent', color='shared', strokeDash='shared', shape='shared'
+        ).resolve_legend(color='shared', strokeDash='shared', shape='shared')
+        return [paper_style(figure)]
+    return [paper_style(chart) for chart in charts]
 
 
 def latex_tabular(row_headers, header, cells, rule_before=()):
@@ -1683,7 +2066,7 @@ def render_results_table(results, family_scale, options):
     column_dims = [d for d in column_dims if d not in row_dims]
     available_measures = [m for m, (c, _, _) in MEASURES.items() if c in results and results[c].notna().any()]
     measures = col_measures.multiselect('Measures (test)', available_measures, key='table_measures',
-                                        default=[m for m in ('F1', 'NAB standard', 'NAB reward_fn')
+                                        default=[m for m in ('F1', NAB_STANDARD, NAB_LOW_FN)
                                                  if m in available_measures])
     col_statistic, col_select, col_highlight = st.columns(3)
     statistic = col_statistic.segmented_control(
@@ -1870,13 +2253,17 @@ def render_results_table(results, family_scale, options):
         if group_dims:
             grouping = st.segmented_control(
                 'Groups', CHART_GROUPINGS, default=CHART_GROUPINGS[0], required=True, key='table_chart_groups',
-                help='One panel per group of rows, or the lines of every group in the same chart (one point shape '
-                     'per group).')
+                help='One panel per group of rows, or the lines of every group in the same chart (one dash per '
+                     'group: solid a single subset, dotted a combined one), the measures side by side in a figure '
+                     'one column of the paper wide.')
             if grouping == CHART_GROUPINGS[1]:
                 panel_dims, overlay_dims = [], group_dims
         charts = window_line_charts(values, measures, series_dims, panel_dims, family_scale, short_names,
                                     overlay_dims)
-        for measure, chart in zip(measures, charts):
+        if overlay_dims:   # one figure of all the measures, one column of the paper wide
+            st.altair_chart(charts[0], width='content')
+            export_buttons(charts[0], 'results_by_window', 'all_measures', COLUMN_FIGURE_WIDTH_INCHES)
+        for measure, chart in zip(measures, [] if overlay_dims else charts):
             st.altair_chart(chart, width='content')   # the widths set in window_line_charts, not the page width
             export_buttons(chart, f'results_by_window_{measure}'.replace(' ', '_'), measure)
     else:
