@@ -10,15 +10,22 @@ file holds everything the explorer needs without the folder.
 Merge a results folder (no Streamlit needed), from the project root:
     python streamlit_result_visualization/grid_results.py trained_models_log1p
     python streamlit_result_visualization/grid_results.py trained_models_log1p -o merged_results/hpc.csv.gz
+The deployment costs of the runs merged (training / inference times, model sizes, graphs of the subsets: one row
+per run) go to a file of their own next to the merged file, <merged file>_costs.csv (costs_path); --costs-only
+writes it alone, e.g. for a merged file made before:
+    python streamlit_result_visualization/grid_results.py trained_models_log1p -o merged_results/hpc.csv.gz --costs-only
 """
 import argparse
 import fnmatch
 import gzip
+import json
 import os
 import re
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent   # streamlit_result_visualization/ is at the project root
@@ -26,6 +33,15 @@ GRID_FILE_PATTERN = re.compile(r'^(?P<model>.+)_grid_search_(?P<normalization>gl
 # Experiment of every row, from the location of its grid-search file, and that file (relative to the
 # project root it was merged on) with its modification time
 TAG_COLUMNS = ['window', 'subset', 'fill_nan', 'model_folder', 'score_normalization', 'file', 'modified']
+# Deployment cost of a run (run_costs), in a costs file (costs_path) of one row per run (COST_KEYS, and its folder
+# relative to the project root): its training and inference (test split) times, the size of its saved model, and
+# the size of the graph of its subset
+COST_KEYS = ['window', 'subset', 'fill_nan', 'model_folder']
+COSTS_SUFFIX = '_costs.csv'
+COST_COLUMNS = ['training_time', 'epochs', 'inference_time', 'model_size_bytes', 'num_nodes', 'num_node_features',
+                'num_edges']
+MODEL_FILE_SUFFIXES = ('.pt', '.pth', '.h5')
+SUBSETS_DIR = PROJECT_ROOT / 'data' / 'massaged' / 'extracted'   # <subset>/meta_data.json, adjacency_matrix.npy
 MERGED_DIR = PROJECT_ROOT / 'merged_results'
 MERGED_SUFFIXES = ('.csv.gz', '.csv', '.parquet')
 # Models left out of the merged files and of the explorer: whole model families (the folder name before its
@@ -102,6 +118,48 @@ def grid_signature(files):
     return tuple((f['path'], f['modified'].value) for f in files)
 
 
+@lru_cache(maxsize=None)
+def subset_graph(subset):
+    """(nodes, node features, edges) of the graph of a subset (data/massaged/extracted/<subset>/); NaN for what
+    is not there (e.g. merged on a machine without the data)."""
+    directory = SUBSETS_DIR / subset
+    nodes = features = edges = float('nan')
+    try:
+        meta = json.loads((directory / 'meta_data.json').read_text())
+        nodes, features = meta['num_nodes'], len(meta['node_feature_names'])
+    except (OSError, KeyError, ValueError):
+        pass
+    try:
+        edges = np.load(directory / 'adjacency_matrix.npy', mmap_mode='r').shape[1]   # [source, target, weight] x E
+    except (OSError, ValueError, IndexError):
+        pass
+    return nodes, features, edges
+
+
+def _first_value(path, column):
+    try:
+        return float(pd.read_csv(path)[column].iloc[0])
+    except (OSError, KeyError, IndexError, ValueError):
+        return float('nan')
+
+
+def run_costs(model_dir, subset):
+    """COST_COLUMNS of the run saved in model_dir (run_training_single_model.py): <model>_training_time.csv
+    (training time in s, epochs), inference_time.csv (prediction of the test split, s), the size of the model
+    file (*.pt / *.h5) and the graph of the subset (subset_graph); NaN for a missing file."""
+    model_dir = Path(model_dir)
+    training = next(iter(sorted(model_dir.glob('*_training_time.csv'))), None)
+    model_files = [p for p in model_dir.iterdir() if p.suffix in MODEL_FILE_SUFFIXES] if model_dir.is_dir() else []
+    nodes, features, edges = subset_graph(subset)
+    return {
+        'training_time': _first_value(training, 'training_time') if training else float('nan'),
+        'epochs': _first_value(training, 'epochs') if training else float('nan'),
+        'inference_time': _first_value(model_dir / 'inference_time.csv', 'inference_time'),
+        'model_size_bytes': max((p.stat().st_size for p in model_files), default=float('nan')),
+        'num_nodes': nodes, 'num_node_features': features, 'num_edges': edges,
+    }
+
+
 def read_grid_files(paths):
     """Rows of the grid-search CSVs at paths, tagged with TAG_COLUMNS: the table a merged file holds."""
     frames = []
@@ -114,6 +172,35 @@ def read_grid_files(paths):
         frame['file'] = os.path.relpath(path, PROJECT_ROOT)
         frames.append(frame)
     return pd.concat(frames, ignore_index=True)
+
+
+def read_run_costs(paths):
+    """Costs of the runs of the grid-search CSVs at paths: one row per run folder (COST_KEYS, 'run' its folder
+    relative to the project root, COST_COLUMNS), whatever its number of grid-search files."""
+    rows = {}
+    for path in paths:
+        info = parse_grid_path(path)
+        run = Path(path).parent
+        if run not in rows:
+            rows[run] = {**{k: info[k] for k in COST_KEYS}, 'run': os.path.relpath(run, PROJECT_ROOT),
+                         **run_costs(run, info['subset'])}
+    return pd.DataFrame(list(rows.values()), columns=[*COST_KEYS, 'run', *COST_COLUMNS])
+
+
+def costs_path(merged_path):
+    """Costs file of a merged file: merged_results/hpc.csv.gz -> merged_results/hpc_costs.csv."""
+    merged_path = Path(merged_path)
+    suffix = _suffix(merged_path.name) or merged_path.suffix
+    return merged_path.with_name(merged_path.name[:len(merged_path.name) - len(suffix)] + COSTS_SUFFIX)
+
+
+def read_costs(source):
+    """Costs file (a path or a file-like object, read_run_costs); raises ValueError when it is not one."""
+    costs = pd.read_csv(source)
+    missing = [c for c in COST_KEYS + COST_COLUMNS if c not in costs]
+    if missing:
+        raise ValueError(f'Not a costs file, missing columns: {", ".join(missing)}')
+    return costs
 
 
 def _suffix(name):
@@ -161,7 +248,8 @@ def read_merged(source, name=None):
 
 def find_merged_files(directory=MERGED_DIR):
     """Merged files in directory, most recent first."""
-    files = [p for p in Path(directory).glob('*') if p.is_file() and _suffix(p.name)]
+    files = [p for p in Path(directory).glob('*')
+             if p.is_file() and _suffix(p.name) and not p.name.endswith(COSTS_SUFFIX)]   # not the costs files
     return sorted(files, key=os.path.getmtime, reverse=True)
 
 
@@ -221,6 +309,9 @@ def main():
     parser.add_argument('--include-ignored', action='store_true',
                         help=f'Also merge the ignored models (families {sorted(IGNORED_MODEL_FAMILIES)}, '
                              f'folders {sorted(IGNORED_MODEL_FOLDERS)})')
+    parser.add_argument('--costs-only', action='store_true',
+                        help=f'Write only the costs file of the runs (<merged file>{COSTS_SUFFIX}), not the merged '
+                             'file itself (e.g. kept from a merge made before)')
     args = parser.parse_args()
     exclude_subsets = args.exclude_subsets + ([COMBINED_SUBSETS] if args.exclude_combined_subsets else [])
     files = find_grid_files(args.root, include_ignored=args.include_ignored, subsets=args.subsets,
@@ -234,6 +325,12 @@ def main():
                          + (f' for the subsets {args.subsets}' if args.subsets else ''))
     path = Path(args.output or default_merged_path(args.root))
     paths = [f['path'] for f in files]
+    costs = read_run_costs(paths)
+    costs_path(path).parent.mkdir(parents=True, exist_ok=True)
+    costs.to_csv(costs_path(path), index=False)
+    print(f'Costs of {len(costs)} runs written to {costs_path(path)}')
+    if args.costs_only:
+        return
     if _suffix(path.name) == '.parquet':
         results = read_grid_files(paths)
         write_merged(results, path)
