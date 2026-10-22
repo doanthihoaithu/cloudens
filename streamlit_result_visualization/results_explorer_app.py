@@ -17,6 +17,8 @@ import hashlib
 import inspect
 import io
 import itertools
+import json
+import math
 import os
 import re
 import sys
@@ -111,6 +113,29 @@ def family_colors(family_scale):
 # dimensions are told apart by the fill shade and by the border style of the bars / boxes
 FILL_SHADES = [1.0, 0.55, 0.25, 0.8, 0.4]
 BORDER_DASHES = [[1, 0], [6, 3], [2, 2], [8, 3, 2, 3]]
+# Bars of the subsets in one chart (Inference time per timestamp): the pattern of each subset, in their order
+# (drawn in PATTERN_COLOR over the color of the bar: all the bars of a color equally dark), and its geometry in
+# pixels
+SUBSET_PATTERNS = ['solid', 'hatch', 'dots', 'crosshatch']
+PATTERN_COLOR = 'white'
+BAR_BORDER = ('#666666', 0.6)   # border of every bar (color, width), drawn over its pattern
+PATTERN_SPACING = 4
+PATTERN_STROKE = 0.9
+PATTERN_DOT_SIZE = 3   # area (px²)
+BAR_MIN_WIDTH = 8
+BAR_GROUP_PADDING = 0.04   # of the width of the bars of a model, on each side
+GRAPH_BAR_GROUP_PADDING = 0.25   # graph construction chart: of the width of the bars of a subset, on each side
+LEGEND_SYMBOL_COLOR = '#555555'
+LATENCY_LABEL_WINDOW = 30   # its bars show their value on top
+MINUTES_FROM_SECONDS = 600   # cost bars of times in s: in minutes when the longest is at least that long
+MODEL_LABEL_ANGLE = 35   # the model names of the cost bars, tilted when they would overlap
+# y axes of the inference and graph construction charts: little room around their labels, a larger title (not
+# bold)
+COMPACT_Y_AXIS = dict(tickSize=3, labelPadding=1, titlePadding=2, domain=False, grid=False, titleFontWeight='normal')
+Y_TITLE_FONT_INCREASE = 2   # their titles over the other text
+BAR_LEGEND_FONT_INCREASE = 2   # their legend (bar_style_legend) over the other text
+BAR_ANNOTATION_FONT_INCREASE = 1   # the values and graphs written over their bars, over the tick labels
+WINDOW_TINTS = (0.35, 1.0)   # same chart: the family color of the smallest window mixed with white, of the largest
 # Lines (Strategies by window tab): strategies by their point shape and dash, models of a family by their shade
 STRATEGY_SHAPES = ['circle', 'square', 'triangle-up', 'diamond', 'cross', 'triangle-down']
 LINE_SHADES = [1.0, 0.55, 0.3]
@@ -122,7 +147,7 @@ GROUP_DASHES = {False: [[1, 0], [6, 3], [8, 3, 2, 3]], True: [COMBINED_SUBSET_DA
 CHART_BORDER = '#9e9e9e'   # border of the plots of the results-table charts
 # Window charts of the results table sized as a figure of the paper: chart units are points (1/72 in), so the
 # fonts have their size in points (src/figure_style.py) once the PNG is shown FIGURE_WIDTH_INCHES wide
-FIGURE_WIDTH_INCHES = 6.5
+FIGURE_WIDTH_INCHES = 4
 POINTS_PER_INCH = 72
 FIGURE_WIDTH = FIGURE_WIDTH_INCHES * POINTS_PER_INCH
 # Figure of one column of the paper (IEEEtran journal, TNSM: \columnwidth = 3.5 in): the window charts of the results
@@ -475,6 +500,12 @@ def load_costs_path(path, mtime):
     """Costs file on disk (grid_results.read_run_costs, e.g. merged_results/hpc_combined_costs.csv); mtime
     refreshes the cache."""
     return read_costs(path)
+
+
+@st.cache_data(show_spinner='Loading graph construction times…', max_entries=2)
+def load_graph_times(path, mtime):
+    """Graph construction times (src/time_graph_construction.py); mtime refreshes the cache."""
+    return pd.read_csv(path)
 
 
 @st.cache_data(show_spinner='Loading merged file…', max_entries=8)
@@ -1015,6 +1046,13 @@ RUN_COSTS = {
     'Model size': ('model_mb', 'Model size (MB)', '.3f'),
     'Estimated memory': ('memory_mb', 'Estimated memory (MB)', '.1f'),
 }
+# The costs of a run in the tooltips of its bars (run_cost_bars)
+COST_TOOLTIPS = [alt.Tooltip('latency_ms:Q', title='inference per timestamp (ms)', format='.3f'),
+                 alt.Tooltip('inference_time:Q', title='test inference (s)', format='.1f'),
+                 alt.Tooltip('test_timestamps:Q', title='test timestamps', format=',.0f'),
+                 alt.Tooltip('training_time:Q', title='training (s)', format=',.0f'),
+                 alt.Tooltip('epochs:Q', title='epochs', format='.0f'),
+                 alt.Tooltip('epoch_time:Q', title='per epoch (s)', format='.1f')]
 # Analytical memory of a deployed run (MB): label -> column; float32 inputs, float64 graph and covariance
 MEMORY_PARTS = {
     'Model parameters': 'model_mb',
@@ -1023,7 +1061,18 @@ MEMORY_PARTS = {
     'Mahalanobis covariance ((N·F)²)': 'covariance_mb',
 }
 GRAPH_KIND = {True: 'Graph-based', False: 'Other'}
+DEPLOYMENT_FONT_SIZE_INCREASE = FONT_SIZE_INCREASE + 3   # inference and graph construction charts
+# Widths of the charts merged in one figure, left to right (the training one when shown), within
+# MERGED_FIGURE_WIDTH
+MERGED_WIDTHS = {'graph': 4, 'training': 5, 'inference': 5}
+MERGED_FIGURE_WIDTH = FIGURE_WIDTH * 10 / 7
 HOLLOW = '(hollow)'   # fill value of the markers of the models that are not graph-based
+# Build times of the graph of every subset (src/time_graph_construction.py), by implementation: label -> its column
+GRAPH_TIMES_FILE = MERGED_DIR / 'graph_construction' / 'graph_construction_times.csv'
+GRAPH_BUILDS = {'Naive (utils.py, used for the paper)': 'build_time_naive_mean_s',
+                'Grouped by component and endpoint': 'build_time_grouped_mean_s'}
+GRAPH_BUILD_COLORS = ['#d9d9d9', '#b3cde3']   # light: the graph of the subset is written in its bars
+GRAPH_TEXT_COLOR = '#333333'
 
 
 def run_cost_table(results, costs):
@@ -1055,31 +1104,309 @@ def run_cost_table(results, costs):
     return runs, first[['file', *COST_KEYS]]
 
 
-def _cost_axis(cost, log=False):
+def log_bar_base(values):
+    """Where the bars of a log scale start: the power of 10 below the smallest value (Vega-Lite draws no bar
+    from 0 on a log scale). Give it to the scale (domainMin) and to the bars (y2=alt.datum(base))."""
+    return 10 ** math.floor(math.log10(values[values > 0].min()))
+
+
+def _cost_axis(cost, log_base=None):
+    """y of a cost of RUN_COSTS; log scale from log_base when given (log_bar_base)."""
     column, title, fmt = RUN_COSTS[cost]
     return alt.Y(f'{column}:Q', title=title, axis=alt.Axis(format=fmt, tickSize=3, labelPadding=2, domain=False),
-                 scale=alt.Scale(type='log') if log else alt.Undefined)
+                 scale=alt.Scale(type='log', domainMin=log_base) if log_base else alt.Undefined)
 
 
-def latency_chart(runs, family_scale, models):
-    """Inference time per test timestamp of every run: one bar per model (and window), one panel per subset."""
+def latency_legend_groups(runs, family_scale):
+    """The groups of the legend of latency_chart (bar_style_legend): model families, subsets, windows."""
+    subsets = subset_order(runs['subset_name'])
     windows = sorted(runs['window'].unique())
-    bars = alt.Chart().mark_bar().encode(
-        x=alt.X('model:N', sort=models, title=None, axis=alt.Axis(labelAngle=-40, labelLimit=0)),
-        xOffset=alt.XOffset('window:O', sort=windows),
-        y=_cost_axis('Inference per timestamp', log=True),
-        color=alt.Color('model_family:N', scale=family_scale, title='Model family', legend=alt.Legend(orient='top')),
-        opacity=alt.Opacity('window:O', sort=windows, title='Window size', legend=alt.Legend(orient='top'),
-                            scale=alt.Scale(domain=windows, range=_cycled(FILL_SHADES, len(windows)))),
-        tooltip=['model', 'subset_name', 'window', 'fill_nan',
-                 alt.Tooltip('latency_ms:Q', title='ms per timestamp', format='.3f'),
-                 alt.Tooltip('inference_time:Q', title='test inference (s)', format='.1f'),
-                 alt.Tooltip('test_timestamps:Q', title='test timestamps', format=',.0f')])
-    subsets = list(dict.fromkeys(runs['subset_name']))
-    columns = min(PANEL_COLUMNS, len(subsets))
-    width = panel_width(columns)
-    return paper_style(alt.layer(bars, data=runs).properties(width=width, height=width * PANEL_ASPECT).facet(
-        facet=alt.Facet('subset_name:N', sort=subsets, title=None), columns=columns, spacing=PANEL_SPACING))
+    patterns = subset_patterns(subsets)
+    colors = family_colors(family_scale)
+    families = sorted(runs['model_family'].dropna().unique())
+    groups = [('Model family', [(f, colors.get(f, NO_FAMILY_COLOR), 'solid') for f in families]),
+              ('Subset', [(s, LEGEND_SYMBOL_COLOR, patterns[s]) for s in subsets])]
+    if len(windows) > 1:
+        tints = dict(zip(windows, window_tints(len(windows))))
+        groups.append(('Window size', [(str(w), _tint(LEGEND_SYMBOL_COLOR, tints[w]), 'solid') for w in windows]))
+    return groups
+
+
+SUPERSCRIPTS = str.maketrans('0123456789', '⁰¹²³⁴⁵⁶⁷⁸⁹')
+# Vega label of a power of ten on a log axis, short: 0.01, 0.1, 1, 10, then 10², 10³ (the fonts have no superscript
+# minus: below 1 as decimals)
+POWER_OF_TEN_LABEL = (json.dumps({str(e): (f'{10.0 ** e:.{-e}f}' if e < 0 else '10' + str(e).translate(SUPERSCRIPTS)
+                                           if e > 1 else str(10 ** e)) for e in range(-12, 13)})
+                      + "['' + round(log(datum.value) / LN10)]")   # '' +: '-1' (format would give a '−')
+
+
+def subplot_letters(charts, widths, spacing):
+    """The charts of a figure side by side with (a), (b), ... below each, as the subfigures of the paper: a grid
+    whose second row (the letters, centered under the plots widths wide) starts below the tallest chart."""
+    size = AXIS_LABEL_FONT_SIZE + DEPLOYMENT_FONT_SIZE_INCREASE + Y_TITLE_FONT_INCREASE
+    letters = [alt.Chart(pd.DataFrame({'text': [f'({chr(ord("a") + i)})']})).mark_text(
+        fontSize=size, baseline='top').encode(x=alt.value(width / 2), y=alt.value(0), text='text:N')
+        .properties(width=width, height=size, view=alt.ViewBackground(stroke=None))
+        for i, width in enumerate(widths)]
+    return alt.concat(*charts, *letters, columns=len(charts), spacing=alt.RowColnumber(row=2, column=spacing))
+
+
+def scale_title(note):
+    """The unit and scale of the y axis of a plot (e.g. '(ms, log scale)'), above its top-left corner."""
+    return alt.TitleParams(note, anchor='start', frame='group', orient='top', offset=4, fontWeight='normal',
+                           fontSize=TICK_FONT_SIZE + DEPLOYMENT_FONT_SIZE_INCREASE)
+
+
+def run_cost_bars(runs, family_scale, models, cost='Inference per timestamp', width=FIGURE_WIDTH, legend=True):
+    """
+    A cost of RUN_COSTS of every run (log scale), in one chart: one bar per model, subset and window side by
+    side, in the color of the model family; the subset by the pattern of its bars (SUBSET_PATTERNS), the window by
+    the tint of the color, darker for larger windows (WINDOW_TINTS).
+    Vega-Lite has no fill patterns: the bars are laid out in pixels along x (an identity scale), and the hatches
+    and dots drawn over them as marks of their own. Without paper_style (to concatenate it), width wide at least;
+    without its legend (latency_legend_groups) when not legend.
+    """
+    cost_column, title, fmt = RUN_COSTS[cost]
+    runs = runs[runs[cost_column] > 0]   # a log scale
+    # Long times in minutes (10, 100 rather than 1,000, 10,000 s on the axis), in a column of their own
+    column = 'shown_value'
+    if title.endswith('(s)') and runs[cost_column].max() >= MINUTES_FROM_SECONDS:
+        runs = runs.assign(shown_value=runs[cost_column] / 60)
+        title, fmt = title.replace('(s)', '(min)'), '.0f'
+    else:
+        runs = runs.assign(shown_value=runs[cost_column])
+    unit = title[title.rindex('(') + 1:-1]   # e.g. 'ms'
+    title, scale_note = title[:title.rindex('(')].strip(), f'({unit}, log scale)'   # the note above the plot
+    subsets = subset_order(runs['subset_name'])
+    windows = sorted(runs['window'].unique())
+    models = [m for m in models if m in set(runs['model'])]
+    patterns = subset_patterns(subsets)
+    tints = dict(zip(windows, window_tints(len(windows))))
+    colors = family_colors(family_scale)
+    slots = {(s, w): i for i, (s, w) in enumerate(itertools.product(subsets, windows))}
+    # Pixels along x: a group of bars per model, BAR_GROUP_PADDING of it around its bars, bars never narrower
+    # than BAR_MIN_WIDTH (the chart widens instead)
+    group = max(width / len(models), len(slots) * BAR_MIN_WIDTH / (1 - 2 * BAR_GROUP_PADDING))
+    width, bar = group * len(models), group * (1 - 2 * BAR_GROUP_PADDING) / len(slots)
+    height = FIGURE_WIDTH * CHART_ASPECT
+    base = log_bar_base(runs[column])
+    # The values of the bars of LATENCY_LABEL_WINDOW written on top of them: upright when they fit the width of a
+    # bar, else rotated (taller)
+    font_size = TICK_FONT_SIZE + DEPLOYMENT_FONT_SIZE_INCREASE + BAR_ANNOTATION_FONT_INCREASE
+    labelled = runs[runs['window'] == LATENCY_LABEL_WINDOW]
+    longest = max((len(f'{v:{fmt}}') for v in labelled[column]), default=0) * 0.55 * font_size
+    upright = longest <= bar + 2
+    room = (font_size if upright else longest) + 8 if not labelled.empty else 4   # pixels above the tallest bar
+    # The top of the axis just above the tallest bar, room pixels left for its label (on a log scale, the share f
+    # of the height above the tallest bar m: log top = (log m - f log base) / (1 - f))
+    tallest, share = math.log10(runs[column].max()), room / height
+    top = max(10 ** ((tallest - share * math.log10(base)) / (1 - share)), base * 10)   # a decade at least
+    low, high = math.log10(base), math.log10(top)
+
+    def y_pixel(value):
+        return height * (1 - (math.log10(value) - low) / (high - low))
+
+    def y_value(pixel):   # the value at a pixel row of the log scale
+        return 10 ** (low + (height - pixel) / height * (high - low))
+
+    bars, boxes = [], []
+    for row in runs.itertuples():
+        x0 = models.index(row.model) * group + group * BAR_GROUP_PADDING + slots[(row.subset_name, row.window)] * bar
+        color = _tint(colors.get(row.model_family, NO_FAMILY_COLOR), tints[row.window])
+        pattern = patterns[row.subset_name]
+        bars.append({**row._asdict(), 'x0': x0, 'x1': x0 + bar, 'color': _behind_pattern(color, pattern)})
+        boxes.append((pattern, x0, x0 + bar, y_pixel(getattr(row, column)), height))
+    bars = pd.DataFrame(bars)
+
+    x_scale = alt.Scale(domain=[0, width], nice=False, zero=False)   # identity: one unit a pixel
+    y_scale = alt.Scale(type='log', domain=[base, top], nice=False)
+    tick_size = TICK_FONT_SIZE + DEPLOYMENT_FONT_SIZE_INCREASE
+    bold = ['bold' if str(m).startswith(PROPOSED_MODEL_PREFIX) else 'normal' for m in models]   # the proposed models
+    # The model names tilted when one is wider than its group of bars (they would overlap)
+    tilted = max(len(str(m)) for m in models) * 0.55 * tick_size > 0.95 * group
+    # tickCount: else Vega keeps every other of the values on a narrow chart (ceil(width / 40) ticks)
+    x_axis = alt.Axis(values=[group * (i + 0.5) for i in range(len(models))], tickCount=len(models), title=None,
+                      grid=False, labelAngle=-MODEL_LABEL_ANGLE if tilted else 0,
+                      labelAlign='right' if tilted else 'center', labelBaseline='top', labelLimit=0,
+                      labelOverlap=False, domain=False,
+                      labelFontWeight={'expr': json.dumps(bold) + f'[round((datum.value - {group / 2}) / {group})]'},
+                      labelExpr=f'{json.dumps(models)}[round((datum.value - {group / 2}) / {group})]')
+    rects = alt.Chart(bars).mark_rect(strokeWidth=1).encode(
+        x=alt.X('x0:Q', scale=x_scale, axis=x_axis), x2='x1:Q',
+        y=alt.Y(f'{column}:Q', title=title, scale=y_scale,
+                # labels at the powers of ten only, as powers (10⁻¹, 10⁰, 10¹ rather than 0.1, 1, 10)
+                axis=alt.Axis(values=[10 ** e for e in range(round(low), math.floor(high) + 1)],
+                              labelExpr=POWER_OF_TEN_LABEL,
+                              titleFontSize=AXIS_LABEL_FONT_SIZE + DEPLOYMENT_FONT_SIZE_INCREASE + Y_TITLE_FONT_INCREASE,
+                              **COMPACT_Y_AXIS)),
+        y2=alt.datum(base),
+        fill=alt.Fill('color:N', scale=None), stroke=alt.Stroke('color:N', scale=None),
+        tooltip=['model', 'subset_name', 'window', 'fill_nan', *COST_TOOLTIPS])
+    layers = [rects, *pattern_layers(boxes, y_value)]
+    layers.append(alt.Chart(bars).mark_rect(filled=False, stroke=BAR_BORDER[0], strokeWidth=BAR_BORDER[1]).encode(
+        x='x0:Q', x2='x1:Q', y=f'{column}:Q', y2=alt.datum(base)))   # over the patterns
+    # The value of the bars of LATENCY_LABEL_WINDOW on top of them (the highest of a bar drawn several times, e.g.
+    # for several fill NaN)
+    labelled = bars[bars['window'] == LATENCY_LABEL_WINDOW]
+    if not labelled.empty:
+        labelled = labelled.loc[labelled.groupby(['x0'])[column].idxmax()].copy()
+        labelled['label'] = [f'{v:{fmt}}' for v in labelled[column]]   # in the unit of the axis title
+        labelled['x_mid'] = labelled['x0'] + bar / 2
+        labelled['y_label'] = [y_value(y_pixel(v) - 3) for v in labelled[column]]   # 3 px above the bar
+        text = dict(align='center', baseline='bottom') if upright else dict(align='left', baseline='middle', angle=270)
+        layers.append(alt.Chart(labelled).mark_text(fontSize=font_size, **text).encode(
+            x='x_mid:Q', y='y_label:Q', text='label:N'))
+    chart = alt.layer(*layers).properties(width=width, height=height, title=scale_title(scale_note))
+    if not legend:
+        return chart
+    return alt.vconcat(bar_style_legend(latency_legend_groups(runs, family_scale), max_width=width), chart, spacing=2)
+
+
+def is_combined_subset(name):
+    """True for the short name of a subset combining several http codes (e.g. 5xx 4xx count)."""
+    return sum(token.endswith('xx') for token in str(name).split()) > 1
+
+
+def subset_order(subsets):
+    """Subsets (short names) in the order of every chart: the single subsets (e.g. 4xx count, 5xx count) by name,
+    then the combined ones (e.g. 5xx 4xx count)."""
+    return sorted(dict.fromkeys(subsets), key=lambda s: (is_combined_subset(s), str(s)))
+
+
+def subset_patterns(subsets):
+    """{subset: pattern of SUBSET_PATTERNS}, the same in every chart, in the order of subset_order."""
+    return {s: SUBSET_PATTERNS[i % len(SUBSET_PATTERNS)] for i, s in enumerate(subset_order(subsets))}
+
+
+def pattern_layers(boxes, y_value):
+    """Layers drawing the patterns of bars over them, boxes [(pattern, x0, x1, y0, y1)] in pixels (y down) on a
+    chart whose x is in pixels and whose y_value(pixel) gives its y at a pixel row."""
+    lines, dots = [], []
+    for pattern, *box in boxes:
+        lines += [{'xa': xa, 'xb': xb, 'ya': y_value(ya), 'yb': y_value(yb)}
+                  for xa, ya, xb, yb in pattern_lines(pattern, *box)]
+        dots += [{'x': xd, 'y': y_value(yd)} for xd, yd in pattern_dots(pattern, *box)]
+    layers = []
+    if lines:
+        layers.append(alt.Chart(pd.DataFrame(lines)).mark_rule(strokeWidth=PATTERN_STROKE).encode(
+            x='xa:Q', x2='xb:Q', y='ya:Q', y2='yb:Q', stroke=alt.value(PATTERN_COLOR)))
+    if dots:
+        layers.append(alt.Chart(pd.DataFrame(dots)).mark_circle(size=PATTERN_DOT_SIZE, opacity=1).encode(
+            x='x:Q', y='y:Q', color=alt.value(PATTERN_COLOR)))
+    return layers
+
+
+def pattern_lines(pattern, x0, x1, y0, y1, spacing=PATTERN_SPACING):
+    """Segments (xa, ya, xb, yb) of the hatches of a pattern in the box [x0, x1] x [y0, y1] (pixels, y down):
+    'hatch' diagonal lines going up to the right, 'crosshatch' both diagonals."""
+    directions = {'hatch': [1], 'crosshatch': [1, -1]}.get(pattern, [])
+    segments = []
+    for d in directions:   # d = 1: x + y = c; d = -1: x - y = c
+        low, high = (x0 + y0, x1 + y1) if d == 1 else (x0 - y1, x1 - y0)
+        c = low + spacing / 2
+        while c < high:
+            if d == 1:
+                xa, xb = max(x0, c - y1), min(x1, c - y0)
+                segments.append((xa, c - xa, xb, c - xb))
+            else:
+                xa, xb = max(x0, c + y0), min(x1, c + y1)
+                segments.append((xa, xa - c, xb, xb - c))
+            c += spacing
+    return [s for s in segments if s[2] - s[0] > 0.5]
+
+
+def pattern_dots(pattern, x0, x1, y0, y1, spacing=PATTERN_SPACING):
+    """Centers (x, y) of the dots of the 'dots' pattern in the box [x0, x1] x [y0, y1] (pixels): staggered rows."""
+    if pattern != 'dots':
+        return []
+    dots, row, y = [], 0, y0 + spacing / 2
+    while y < y1 - spacing / 4:
+        x = x0 + spacing / 2 + (row % 2) * spacing / 2
+        while x < x1 - spacing / 4:
+            dots.append((x, y))
+            x += spacing
+        row, y = row + 1, y + spacing
+    return dots
+
+
+def pattern_coverage(pattern, spacing=PATTERN_SPACING):
+    """Share of the area of a bar under the marks of its pattern (PATTERN_COLOR)."""
+    line = PATTERN_STROKE / (spacing / math.sqrt(2))   # diagonal lines, spacing / sqrt(2) apart
+    return {'hatch': line, 'crosshatch': 2 * line - line ** 2, 'dots': PATTERN_DOT_SIZE / spacing ** 2}.get(pattern, 0)
+
+
+def _behind_pattern(color, pattern):
+    """The fill of a bar under its white pattern for the bar to look as dark as a solid one of color: darker by
+    the share of white of the pattern (as far as black allows)."""
+    white = pattern_coverage(pattern)
+    rgb = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+    return '#' + ''.join(f'{min(255, max(0, round((c - white * 255) / (1 - white)))):02x}' for c in rgb)
+
+
+def window_tints(n):
+    """Tints of n windows, smallest first: from WINDOW_TINTS[0] (light) to WINDOW_TINTS[1] (the full color)."""
+    low, high = WINDOW_TINTS
+    return [high] if n == 1 else [low + (high - low) * i / (n - 1) for i in range(n)]
+
+
+def _tint(color, amount):
+    """color mixed with white: amount 1 the color itself, 0 white."""
+    rgb = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+    return '#' + ''.join(f'{round(255 - amount * (255 - c)):02x}' for c in rgb)
+
+
+def bar_style_legend(groups, max_width=None):
+    """
+    Legend of the styles of the bars of a chart, drawn as a chart of its own, its groups side by side (on rows of
+    max_width pixels at most when given): groups [(title, [(label, color, pattern of SUBSET_PATTERNS), ...]), ...].
+    Vega-Lite has no fill patterns, nor a legend for colors given without a scale.
+    """
+    font_size = LEGEND_FONT_SIZE + DEPLOYMENT_FONT_SIZE_INCREASE + BAR_LEGEND_FONT_INCREASE
+    # symbol side, space after a label, width of a character (px)
+    side, gap, char = round(1.1 * font_size), font_size, 0.55 * font_size
+    top, row_height = 3, side + 8
+
+    def group_width(title, entries):
+        return len(title) * char * 1.1 + gap + sum(side + 4 + len(label) * char + gap for label, _, _ in entries)
+
+    x, y, widest, headings, items, lines, dots = 0, top, 0, [], [], [], []
+    for title, entries in groups:
+        if max_width and x > 0 and x + group_width(title, entries) > max_width:   # on a row of its own
+            x, y = 0, y + row_height
+        headings.append({'text': title, 'x': x, 'y': y + side / 2})
+        x += len(title) * char * 1.1 + gap
+        for label, color, pattern in entries:
+            items.append({'text': label, 'x': x, 'x_end': x + side, 'label_x': x + side + 4, 'y': y,
+                          'y_end': y + side, 'y_mid': y + side / 2, 'color': _behind_pattern(color, pattern)})
+            box = (x, x + side, y, y + side)
+            lines += [{'xa': xa, 'ya': ya, 'xb': xb, 'yb': yb}
+                      for xa, ya, xb, yb in pattern_lines(pattern, *box)]
+            dots += [{'x': xd, 'y': yd} for xd, yd in pattern_dots(pattern, *box)]
+            x += side + 4 + len(label) * char + gap
+        widest = max(widest, x)
+        x += gap
+    pixels = dict(scale=None)
+    items = pd.DataFrame(items)
+    layers = [
+        alt.Chart(pd.DataFrame(headings)).mark_text(
+            align='left', baseline='middle', fontSize=font_size, fontWeight='bold').encode(
+            x=alt.X('x:Q', **pixels), y=alt.Y('y:Q', **pixels), text='text:N'),
+        alt.Chart(items).mark_rect(strokeWidth=1).encode(
+            x=alt.X('x:Q', **pixels), x2='x_end:Q', y=alt.Y('y:Q', **pixels), y2='y_end:Q',
+            fill=alt.Fill('color:N', **pixels), stroke=alt.Stroke('color:N', **pixels)),
+        alt.Chart(items).mark_text(align='left', baseline='middle', fontSize=font_size).encode(
+            x=alt.X('label_x:Q', **pixels), y=alt.Y('y_mid:Q', **pixels), text='text:N')]
+    if lines:
+        layers.append(alt.Chart(pd.DataFrame(lines)).mark_rule(strokeWidth=PATTERN_STROKE).encode(
+            x=alt.X('xa:Q', **pixels), x2='xb:Q', y=alt.Y('ya:Q', **pixels), y2='yb:Q',
+            stroke=alt.value(PATTERN_COLOR)))
+    if dots:
+        layers.append(alt.Chart(pd.DataFrame(dots)).mark_circle(size=PATTERN_DOT_SIZE, opacity=1).encode(
+            x=alt.X('x:Q', **pixels), y=alt.Y('y:Q', **pixels), color=alt.value(PATTERN_COLOR)))
+    layers.append(alt.Chart(items).mark_rect(filled=False, stroke=BAR_BORDER[0], strokeWidth=BAR_BORDER[1]).encode(
+        x=alt.X('x:Q', **pixels), x2='x_end:Q', y=alt.Y('y:Q', **pixels), y2='y_end:Q'))
+    return alt.layer(*layers).properties(   # no frame (paper_style frames every plot)
+        width=max(widest, 1), height=y + row_height - 5, view=alt.ViewBackground(stroke=None))
 
 
 def cost_accuracy_chart(runs, family_scale, cost, measure):
@@ -1154,6 +1481,133 @@ def ensemble_cost_chart(rows, cost):
     return paper_style(alt.layer(bars, data=rows).properties(width=width, height=width * PANEL_ASPECT).facet(
         facet=alt.Facet('comparison:N', sort=comparisons, title=None), columns=columns, spacing=PANEL_SPACING
     ).resolve_scale(y='independent'))
+
+
+def _thousands(count):
+    """A count in thousands: 2406 -> '2.4k', 170644 -> '171k'; below a thousand as it is."""
+    if count < 1000:
+        return f'{count:.0f}'
+    return f'{count / 1000:.1f}k' if count < 10000 else f'{count / 1000:.0f}k'
+
+
+def graph_build_chart(times, width=FIGURE_WIDTH, legend=True):
+    """Build time of the graph of every subset, one bar per implementation (GRAPH_BUILDS, by its color), the subset
+    by the pattern of its bars as in the inference chart (subset_patterns); above the tallest bar of each subset
+    (and its label), the nodes, edges and sparsity (the share of the N·(N-1) directed pairs without an edge) of its
+    graph, in a smaller font when the subsets are too narrow for it. The bars are laid out in pixels along x (an
+    identity scale) for their patterns. Without paper_style (to concatenate it); without its subset legend when
+    not legend (e.g. next to the inference chart, which has it)."""
+    times = times.assign(sparsity=1 - times['num_edges'] / (times['num_nodes'] * (times['num_nodes'] - 1)))
+    long = times.melt(id_vars=['subset_name', 'num_nodes', 'num_edges', 'sparsity', 'repeats'],
+                      value_vars=[c for c in GRAPH_BUILDS.values() if c in times], var_name='column',
+                      value_name='seconds').dropna(subset=['seconds'])
+    long['implementation'] = long['column'].map({c: label for label, c in GRAPH_BUILDS.items()})
+    # The axis in ms below a second, else in s: short tick labels (5, 10, 15 ms rather than 0.005, 0.01, 0.015 s);
+    # the labels of the bars in its unit too (in its title)
+    unit, factor = ('ms', 1000) if long['seconds'].max() < 1 else ('s', 1)
+    long['value'] = long['seconds'] * factor
+    long['label'] = [f'{v:.3g}' for v in long['value']]
+    subsets = subset_order(times['subset_name'])
+    implementations = [i for i in GRAPH_BUILDS if i in set(long['implementation'])]
+    patterns = subset_patterns(subsets)
+    build_colors = dict(zip(GRAPH_BUILDS, GRAPH_BUILD_COLORS))
+    graphs = long.loc[long.groupby('subset_name')['value'].idxmax()].copy()   # over the tallest bar of a subset
+    # Short lines (counts in thousands, e.g. N=6.5k, E=171k): a larger font within the width of a subset
+    graphs['graph'] = [f'N={_thousands(n)}\nE={_thousands(e)}\n{p:.2%}\nsparse'
+                       for n, e, p in zip(graphs['num_nodes'], graphs['num_edges'], graphs['sparsity'])]
+    lines = 4
+    font_size = TICK_FONT_SIZE + DEPLOYMENT_FONT_SIZE_INCREASE + BAR_ANNOTATION_FONT_INCREASE
+    group = width / len(subsets)
+    widest = max(len(line) for text in graphs['graph'] for line in text.split('\n')) * 0.55 * font_size
+    graph_font = min(font_size, font_size * 0.92 * group / widest)   # within the width of a subset
+    line_height = 1.2 * graph_font
+    height = FIGURE_WIDTH * CHART_ASPECT
+    # The graph above the label of its bar: label and block heights in pixels, turned into values by the scale
+    # (y_max over height), which leaves room for them above the tallest bar
+    padding, block, label = 4, lines * line_height, font_size + 7
+    y_max = (graphs['value'] / (1 - (label + 2 * padding + block) / height)).max()   # padding under the frame
+    pixel = y_max / height
+    graphs['y_text'] = graphs['value'] + (label + padding + block / 2) * pixel
+
+    # Pixels along x: a group of bars per subset, GRAPH_BAR_GROUP_PADDING of it around its bars
+    bar = group * (1 - 2 * GRAPH_BAR_GROUP_PADDING) / len(implementations)
+    long['x0'] = [subsets.index(s) * group + group * GRAPH_BAR_GROUP_PADDING + implementations.index(i) * bar
+                  for s, i in zip(long['subset_name'], long['implementation'])]
+    long['x1'] = long['x0'] + bar
+    long['x_mid'] = long['x0'] + bar / 2
+    long['color'] = [_behind_pattern(build_colors[i], patterns[s])
+                     for s, i in zip(long['subset_name'], long['implementation'])]
+    graphs[['x_mid']] = long.loc[graphs.index, ['x_mid']]
+    boxes = [(patterns[s], x0, x1, height * (1 - v / y_max), height)
+             for s, x0, x1, v in zip(long['subset_name'], long['x0'], long['x1'], long['value'])]
+
+    x_scale = alt.Scale(domain=[0, width], nice=False, zero=False)   # identity: one unit a pixel
+    y_scale = alt.Scale(domain=[0, y_max], nice=False)
+    x_axis = alt.Axis(values=[group * (i + 0.5) for i in range(len(subsets))], tickCount=len(subsets), title=None,
+                      grid=False,
+                      labelAngle=-MODEL_LABEL_ANGLE, labelAlign='right', labelBaseline='top',   # as the cost bars
+                      labelLimit=0, labelOverlap=False, domain=False,
+                      labelExpr=f'{json.dumps(subsets)}[round((datum.value - {group / 2}) / {group})]')
+    bars = alt.Chart(long).mark_rect().encode(
+        x=alt.X('x0:Q', scale=x_scale, axis=x_axis), x2='x1:Q',
+        y=alt.Y('value:Q', title='Graph construction time', scale=y_scale,
+                axis=alt.Axis(format='.4~g', **COMPACT_Y_AXIS,
+                              titleFontSize=AXIS_LABEL_FONT_SIZE + DEPLOYMENT_FONT_SIZE_INCREASE + Y_TITLE_FONT_INCREASE)),
+        y2=alt.datum(0),
+        fill=alt.Fill('color:N', scale=None),   # GRAPH_BUILDS; no legend for now
+        tooltip=['subset_name', 'implementation', alt.Tooltip('seconds:Q', title='mean (s)', format='.4f'),
+                 alt.Tooltip('repeats:Q', title='builds'), alt.Tooltip('num_nodes:Q', title='nodes N', format=','),
+                 alt.Tooltip('num_edges:Q', title='edges E', format=','),
+                 alt.Tooltip('sparsity:Q', title='sparsity', format='.2%')])
+    borders = alt.Chart(long).mark_rect(filled=False, stroke=BAR_BORDER[0], strokeWidth=BAR_BORDER[1]).encode(
+        x='x0:Q', x2='x1:Q', y='value:Q', y2=alt.datum(0))   # over the patterns
+    labels = alt.Chart(long).mark_text(dy=-7, fontSize=font_size).encode(
+        x='x_mid:Q', y='value:Q', text='label:N')
+    graph_labels = alt.Chart(graphs).mark_text(   # Vega places the first line at y: up half the others
+        fontSize=graph_font, lineBreak='\n', lineHeight=line_height, baseline='middle',
+        dy=-(lines - 1) / 2 * line_height,
+        color=GRAPH_TEXT_COLOR).encode(x='x_mid:Q', y='y_text:Q', text='graph:N')
+    layers = [bars, *pattern_layers(boxes, lambda px: (height - px) / height * y_max), borders, labels,
+              graph_labels]
+    chart = alt.layer(*layers).properties(width=width, height=height, title=scale_title(f'({unit}, linear scale)'))
+    if not legend:
+        return chart
+    legend = bar_style_legend([('Subset', [(s, LEGEND_SYMBOL_COLOR, patterns[s]) for s in subsets])], max_width=width)
+    return alt.vconcat(legend, chart, spacing=2)
+
+
+def graph_build_times(graphs):
+    """Build times of the graphs of the subsets of graphs (a row per subset) in GRAPH_TIMES_FILE, with their
+    checks shown; None (and how to write them) without the file."""
+    if not GRAPH_TIMES_FILE.is_file():
+        st.info(f'No graph construction times (`{os.path.relpath(GRAPH_TIMES_FILE, PROJECT_ROOT)}`): write them '
+                'with `python src/time_graph_construction.py` on the HPC server (`--skip-naive`: the grouped '
+                'implementation only, in seconds).')
+        return None
+    times = load_graph_times(str(GRAPH_TIMES_FILE), os.path.getmtime(GRAPH_TIMES_FILE))
+    times = times[times['subset'].isin(graphs['subset'])] if times['subset'].isin(graphs['subset']).any() else times
+    times = times.assign(subset_name=times['subset'].map(short_subset_name))
+    naive, grouped = GRAPH_BUILDS.values()
+    times['speedup'] = times[naive] / times[grouped]
+    checks = {'same_as_naive': 'the naive implementation', 'same_as_existing': 'the adjacency_matrix.npy of the subset'}
+    for column, what in checks.items():
+        checked = times[column].dropna() if column in times else pd.Series(dtype=bool)
+        if not checked.empty and not checked.astype(str).eq('True').all():
+            st.warning(f'The grouped graph differs from {what} for: '
+                       f'{", ".join(times.loc[checked.index[~checked.astype(str).eq("True")], "subset_name"])}.')
+    return times
+
+
+GRAPH_BUILD_CAPTION = ('**Graph construction time**: built from the names of the nodes alone, once per subset. The '
+                       'naive implementation compares every pair of nodes through an N×N matrix; the grouped one only '
+                       'the nodes of a same component and endpoint (the only ones with an edge), with the same edges.')
+
+
+def graph_times_caption(times):
+    naive = GRAPH_BUILDS[next(iter(GRAPH_BUILDS))]
+    skipped = ' No naive build time in the file (written with `--skip-naive`).' if times[naive].isna().all() else ''
+    return (f'Mean over the builds of `{os.path.relpath(GRAPH_TIMES_FILE, PROJECT_ROOT)}` (written '
+            f'{datetime.fromtimestamp(os.path.getmtime(GRAPH_TIMES_FILE)):%Y-%m-%d %H:%M}).{skipped}')
 
 
 def memory_chart(runs, models):
@@ -1239,16 +1693,106 @@ def render_deployment_cost(results, family_scale):
     models = list(dict.fromkeys(runs['model']))
 
     st.subheader('Inference time per timestamp', divider='gray')
-    slowest = runs['latency_ms'].max()
-    if pd.notna(slowest):
+    timed = runs.dropna(subset=['latency_ms'])
+    windows = sorted(int(w) for w in timed['window'].unique())
+    col_windows, col_merge, col_training = st.columns([2, 1, 1])
+    shown_windows = col_windows.multiselect(
+        'Window sizes', windows, key='cost_latency_windows', help='Window sizes of the bars of this chart only.',
+        default=[LATENCY_LABEL_WINDOW] if LATENCY_LABEL_WINDOW in windows else windows)
+    graphs = runs.drop_duplicates('subset')[['subset', 'subset_name', 'num_nodes', 'num_node_features',
+                                              'num_edges']].copy()
+    times = graph_build_times(graphs)
+    merged = col_merge.toggle('With the graph construction time', value=True, key='cost_merge_graph',
+                              disabled=times is None, help='One figure: the graph construction chart on the left '
+                              'of the inference chart.')
+    merged = merged and times is not None
+    training_cost = col_training.selectbox(
+        'With the training time', ['None', 'Training time', 'Training time per epoch'], index=2,
+        key='cost_merge_training', disabled=not merged,
+        help='A chart of the training time of the runs between the two (same windows).')
+    with_training = merged and training_cost != 'None'
+    timed = timed[timed['window'].isin(shown_windows)]
+    slowest = timed['latency_ms'].max()
+    if not shown_windows and windows:
+        st.info('Choose at least one window size.')
+    elif pd.notna(slowest):
         st.caption(f'Test-split inference time divided by its number of timestamps (batched on the GPU of the run, '
                    f'post-processing excluded). Slowest run: {slowest:.2f} ms per timestamp, '
                    f'{interval * 1000 / slowest:,.0f}× below the sampling interval of {interval} s.')
-        chart = latency_chart(runs.dropna(subset=['latency_ms']), family_scale, models)
+        chart = run_cost_bars(timed, family_scale, models)
+        name = 'deployment_inference_per_timestamp'
+        if merged:   # MERGED_WIDTHS of MERGED_FIGURE_WIDTH
+            st.caption(GRAPH_BUILD_CAPTION + ' ' + graph_times_caption(times))
+            parts = ['graph', 'training', 'inference'] if with_training else ['graph', 'inference']
+            unit = MERGED_FIGURE_WIDTH / sum(MERGED_WIDTHS[p] for p in parts)
+            # Graph construction, training, inference, left to right; one legend above them (the plots aligned)
+            plots = [graph_build_chart(times, width=MERGED_WIDTHS['graph'] * unit, legend=False)]
+            name = 'deployment_graph_construction_time'
+            if with_training:
+                trained = timed.dropna(subset=[RUN_COSTS[training_cost][0]])
+                plots.append(run_cost_bars(trained, family_scale, models, cost=training_cost,
+                                           width=MERGED_WIDTHS['training'] * unit, legend=False))
+                name += f'_{RUN_COSTS[training_cost][0]}'
+            plots.append(run_cost_bars(timed, family_scale, models, width=MERGED_WIDTHS['inference'] * unit,
+                                       legend=False))
+            legend = bar_style_legend(latency_legend_groups(timed, family_scale), max_width=MERGED_FIGURE_WIDTH)
+            widths = [MERGED_WIDTHS[p] * unit for p in parts]
+            chart = alt.vconcat(legend, subplot_letters(plots, widths, 3 * PANEL_SPACING), spacing=2)
+            name += '_and_inference_per_timestamp'
+        chart = paper_style(chart, DEPLOYMENT_FONT_SIZE_INCREASE)
         st.altair_chart(chart, width='content')
-        export_buttons(chart, 'deployment_inference_per_timestamp', 'cost_latency')
+        export_buttons(chart, name, 'cost_latency')
     else:
         st.info('No inference time for these runs.')
+
+    st.subheader('Context graph of the subsets', divider='gray')
+    graphs['density'] = graphs['num_edges'] / (graphs['num_nodes'] * (graphs['num_nodes'] - 1))
+    graphs['graph_mb'] = graphs['num_edges'] * 3 * 8 / BYTES_PER_MB
+    graphs['covariance_mb'] = (graphs['num_nodes'] * graphs['num_node_features']) ** 2 * 8 / BYTES_PER_MB
+    st.caption('Built once, offline, from the names of the nodes (their service); rebuilt only when the topology '
+               'changes.')
+    if times is not None:
+        if not merged:   # else next to the inference chart
+            st.markdown(GRAPH_BUILD_CAPTION)
+            chart = paper_style(graph_build_chart(times), DEPLOYMENT_FONT_SIZE_INCREASE)
+            st.altair_chart(chart, width='content')
+            export_buttons(chart, 'deployment_graph_construction_time', 'cost_graph_build')
+            st.caption(graph_times_caption(times))
+        naive, grouped = GRAPH_BUILDS.values()
+        graphs = graphs.merge(times[['subset', naive, grouped, 'speedup', 'naive_dense_matrix_mb']], on='subset',
+                              how='left')
+    st.dataframe(graphs.drop(columns='subset'), hide_index=True, column_config={
+        'subset_name': st.column_config.Column('Subset'),
+        'num_nodes': st.column_config.NumberColumn('Nodes N', format='%d'),
+        'num_node_features': st.column_config.NumberColumn('Features F', format='%d'),
+        'num_edges': st.column_config.NumberColumn('Edges E', format='%d'),
+        'density': st.column_config.NumberColumn('Density', format='%.5f'),
+        'graph_mb': st.column_config.NumberColumn('Graph (MB)', format='%.2f'),
+        'covariance_mb': st.column_config.NumberColumn('Mahalanobis covariance (MB)', format='%.1f'),
+        'build_time_naive_mean_s': st.column_config.NumberColumn('Build naive (s)', format='%.2f'),
+        'build_time_grouped_mean_s': st.column_config.NumberColumn('Build grouped (s)', format='%.4f'),
+        'speedup': st.column_config.NumberColumn('Speed-up', format='%.0f×'),
+        'naive_dense_matrix_mb': st.column_config.NumberColumn('Naive N×N matrix (MB)', format='%.0f')})
+
+    st.subheader('Training time', divider='gray')
+    trained = runs.dropna(subset=['training_time'])
+    train_windows = sorted(int(w) for w in trained['window'].unique())
+    col_cost, col_windows = st.columns([1, 2])
+    training_cost = col_cost.segmented_control('Time', ['Training time', 'Training time per epoch'],
+                                               default='Training time per epoch', required=True, key='cost_training')
+    shown_windows = col_windows.multiselect(
+        'Window sizes', train_windows, key='cost_training_windows', help='Window sizes of the bars of this chart only.',
+        default=[LATENCY_LABEL_WINDOW] if LATENCY_LABEL_WINDOW in train_windows else train_windows)
+    trained = trained[trained['window'].isin(shown_windows)]
+    if trained.empty:
+        st.info('Choose at least one window size.' if train_windows else 'No training time for these runs.')
+    else:
+        st.caption('Training time of each run as measured during its training (its <model>_training_time.csv). '
+                   'Per epoch: that time over the epochs the run trained (the length of its training history).')
+        chart = paper_style(run_cost_bars(trained, family_scale, models, cost=training_cost),
+                            DEPLOYMENT_FONT_SIZE_INCREASE)
+        st.altair_chart(chart, width='content')
+        export_buttons(chart, f'deployment_{RUN_COSTS[training_cost][0]}', 'cost_training')
 
     st.subheader('Cost against accuracy', divider='gray')
     cost = st.segmented_control('Cost', list(RUN_COSTS), default='Inference per timestamp', required=True,
@@ -1286,22 +1830,6 @@ def render_deployment_cost(results, family_scale):
     st.altair_chart(chart, width='content')
     export_buttons(chart, f'deployment_memory_w{window}', 'cost_memory')
 
-    st.subheader('Context graph of the subsets', divider='gray')
-    graphs = runs.drop_duplicates('subset')[['subset_name', 'num_nodes', 'num_node_features', 'num_edges']].copy()
-    graphs['density'] = graphs['num_edges'] / (graphs['num_nodes'] * (graphs['num_nodes'] - 1))
-    graphs['graph_mb'] = graphs['num_edges'] * 3 * 8 / BYTES_PER_MB
-    graphs['covariance_mb'] = (graphs['num_nodes'] * graphs['num_node_features']) ** 2 * 8 / BYTES_PER_MB
-    st.caption('Built once, offline, from the names of the nodes (their service); rebuilt only when the topology '
-               'changes.')
-    st.dataframe(graphs, hide_index=True, column_config={
-        'subset_name': st.column_config.Column('Subset'),
-        'num_nodes': st.column_config.NumberColumn('Nodes N', format='%d'),
-        'num_node_features': st.column_config.NumberColumn('Features F', format='%d'),
-        'num_edges': st.column_config.NumberColumn('Edges E', format='%d'),
-        'density': st.column_config.NumberColumn('Density', format='%.5f'),
-        'graph_mb': st.column_config.NumberColumn('Graph (MB)', format='%.2f'),
-        'covariance_mb': st.column_config.NumberColumn('Mahalanobis covariance (MB)', format='%.1f')})
-
     st.subheader('All runs', divider='gray')
     table = runs[['model', 'subset_name', 'window', 'fill_nan', 'num_nodes', 'num_edges', 'epochs', 'training_time',
                   'epoch_time', 'inference_time', 'test_timestamps', 'latency_ms', 'realtime_factor',
@@ -1321,6 +1849,197 @@ def render_deployment_cost(results, family_scale):
         'best': st.column_config.NumberColumn(f'Best {measure}', format=f'%{MEASURES[measure][2]}')})
     st.download_button('Download as CSV', table.to_csv(index=False), file_name='deployment_cost.csv',
                        mime='text/csv', icon=':material/download:')
+
+
+# OR ensembles of the subsets of a model (src/ensemble_subsets.py): the members share the scoring strategy and the
+# threshold type; ensemble_results.csv (exact, written on the HPC) or window_union_preview.csv (from the merged
+# table alone: detected windows exact, the false positives only bounded)
+ENSEMBLE_DIR = MERGED_DIR / 'ensemble_subsets'
+ENSEMBLE_SOURCES = {'Exact (ensemble_results.csv)': 'ensemble_results.csv',
+                    'Preview (window_union_preview.csv)': 'window_union_preview.csv'}
+ENSEMBLE_SELECTIONS = {'train_valid': 'Train + valid NAB Low FN (no test label)', 'test': 'Test NAB Low FN (oracle)'}
+ENSEMBLE_KEY = ['post_processing_strategy', 'threshold_type']
+# Measures of each source: name -> (column, axis title, number format)
+ENSEMBLE_MEASURES = {
+    'ensemble_results.csv': {
+        NAB_LOW_FN: ('reward_fn_normalized', f'{NAB_LOW_FN} (normalized)', '.2f'),
+        NAB_STANDARD: ('standard_normalized', f'{NAB_STANDARD} (normalized)', '.2f'),
+        'F1': ('f1', 'Test F1', '.3f'),
+        'Detected anomalies': ('windows_detected', 'Detected anomaly windows', 'd'),
+        'NAB false positives': ('nab_fp', 'NAB false positives', 'd')},
+    'window_union_preview.csv': {
+        'Detected anomalies': ('windows_detected', 'Detected anomaly windows', 'd'),
+        'NAB false positives (upper bound)': ('nab_fp_max', 'NAB false positives (≤)', 'd'),
+        'NAB false positives (lower bound)': ('nab_fp_min', 'NAB false positives (≥)', 'd')},
+}
+ENSEMBLE_COUNT_COLUMNS = ('nab_fp', 'nab_fp_max', 'nab_fp_min')   # drawn on a symlog scale (up to tens of thousands)
+
+
+@st.cache_data(show_spinner='Loading ensemble results…', max_entries=6)
+def load_ensemble_file(path, mtime):
+    """A CSV of src/ensemble_subsets.py; mtime refreshes the cache."""
+    return pd.read_csv(path)
+
+
+def ensemble_scoring_label(strategy, threshold_type):
+    """('likelihood', 'percentile') -> 'LF · percentile'."""
+    return f'{STRATEGY_SHORT_NAMES.get(strategy, strategy)} · {threshold_type}'
+
+
+def ensemble_size_chart(combos, column, title, fmt, family_scale):
+    """Every combination (dots) and the best one of each size (tick) against the number of subsets ensembled,
+    one panel per scoring (row) and window (column), the models side by side."""
+    data = combos.assign(size=combos['size'].astype(str))
+    sizes = [str(s) for s in sorted(combos['size'].unique())]
+    y_scale = alt.Scale(type='symlog') if column in ENSEMBLE_COUNT_COLUMNS else alt.Scale(zero=False, nice=False, padding=6)
+    # x title once, in the column header: repeated under every panel, the titles overlapped
+    x = alt.X('size:O', title=None, sort=sizes, axis=alt.Axis(labelAngle=0, tickSize=3))
+    models = list(dict.fromkeys(data.sort_values('model_folder', key=lambda s: s.map(model_order_key))['model']))
+    family_of = dict(zip(data['model'], data['model_family']))
+    colors = family_colors(family_scale)
+    color = alt.Color('model:N', title='Model', sort=models, scale=alt.Scale(
+        domain=models, range=[colors.get(family_of[m], NO_FAMILY_COLOR) for m in models]),
+                      legend=alt.Legend(orient='top', labelLimit=0, strokeColor='transparent', symbolOpacity=1))
+    base = alt.Chart().encode(x=x, xOffset=alt.XOffset('model:N', sort=models), color=color)
+    dots = base.mark_circle(size=14, opacity=0.35).encode(
+        y=alt.Y(f'{column}:Q', title=title, scale=y_scale, axis=alt.Axis(tickSize=3, labelPadding=2, domain=False)),
+        tooltip=['model', 'scoring', 'window', 'size', 'combination',
+                 alt.Tooltip(f'{column}:Q', title=title, format=fmt)])
+    best = base.transform_aggregate(best=f'max({column})', groupby=['model', 'model_family', 'scoring', 'window', 'size']
+                                    ).mark_tick(thickness=2, size=10).encode(
+        y=alt.Y('best:Q', scale=y_scale), tooltip=['model', 'scoring', 'window', 'size',
+                                                   alt.Tooltip('best:Q', title=f'Best {title}', format=fmt)])
+    panel_width = max(70, 13 * len(sizes) * len(models))
+    chart = alt.layer(dots, best, data=data).properties(width=panel_width, height=150).facet(
+        row=alt.Row('scoring:N', title=None, header=alt.Header(labelAngle=0, labelAlign='left')),
+        column=alt.Column('window:O', title='Sliding window (x: subsets in the ensemble)'), spacing=PANEL_SPACING)
+    return paper_style(chart)
+
+
+def render_subset_ensembles(family_scale):
+    """
+    'Subset ensembles' tab: OR ensembles of 1 (the subsets alone), 2, 3 ... subsets of a model, sharing the scoring
+    strategy and threshold type, from the files of src/ensemble_subsets.py. Its filters are its own.
+    """
+    st.caption('This tab has its own filters: the filters of the sidebar do not apply here. Members of an ensemble '
+               'share the scoring strategy and the threshold type; each subset keeps its own threshold, top-k, '
+               'likelihood windows and imputation. A timestamp is flagged when any member flags it (OR).')
+    available = {name: ENSEMBLE_DIR / file for name, file in ENSEMBLE_SOURCES.items() if (ENSEMBLE_DIR / file).exists()}
+    if not available:
+        st.info(f'No ensemble file in `{os.path.relpath(ENSEMBLE_DIR, PROJECT_ROOT)}/`: write the preview locally with '
+                '`python src/ensemble_subsets.py --select-only`, the exact results on the HPC server with '
+                '`sbatch slurm_script_ensemble_subsets.sh`.')
+        return
+    source = st.segmented_control('Results', list(available), default=next(iter(available)), required=True,
+                                  key='ensemble_source',
+                                  help='Exact: NAB / F1 of the OR of the saved test predictions (HPC). Preview: from '
+                                       'the merged table alone, detected windows exact (union of those of the '
+                                       'members), false positives only bounded (max .. sum of those of the members).')
+    path = available[source]
+    combos = load_ensemble_file(str(path), os.path.getmtime(path))
+    combos = combos.assign(model=combos['model_folder'].map(short_model_name),
+                           model_family=combos['model_folder'].map(model_family),
+                           scoring=[ensemble_scoring_label(s, t) for s, t in
+                                    zip(combos['post_processing_strategy'], combos['threshold_type'])])
+    st.caption(f':material/description: `{os.path.relpath(path, PROJECT_ROOT)}`: {len(combos):,} combinations, '
+               f'modified {datetime.fromtimestamp(os.path.getmtime(path)):%Y-%m-%d %H:%M}')
+
+    col_model, col_select, col_norm = st.columns(3)
+    folders = sorted(combos['model_folder'].unique(), key=model_order_key)
+    chosen_folders = col_model.multiselect('Models', folders, default=folders, format_func=short_model_name,
+                                           key='ensemble_models')
+    selections = [s for s in ENSEMBLE_SELECTIONS if s in set(combos['selection'])]
+    selection = col_select.selectbox('Setting of each subset chosen on', selections, format_func=ENSEMBLE_SELECTIONS.get,
+                                     key='ensemble_selection',
+                                     help='Best grid-search setting of each subset within the scoring strategy and '
+                                          'threshold type. On the test split, the results are an oracle.')
+    normalizations = sorted(combos['score_normalization'].unique())
+    normalization = col_norm.segmented_control('Score normalization', normalizations, default=normalizations[0],
+                                               required=True, key='ensemble_normalization')
+    col_scoring, col_window, col_size, col_measure = st.columns(4)
+    scorings = sorted(combos['scoring'].unique())
+    default_scorings = [s for s in scorings if s.startswith(f'{STRATEGY_SHORT_NAMES["likelihood"]} ·')] or scorings[:1]
+    chosen_scorings = col_scoring.multiselect('Scoring · threshold type', scorings, default=default_scorings,
+                                              key='ensemble_scorings')
+    windows = sorted(combos['window'].unique())
+    chosen_windows = col_window.multiselect('Windows', windows, default=windows, key='ensemble_windows')
+    sizes = sorted(combos['size'].unique())
+    chosen_sizes = col_size.multiselect('Subsets per ensemble', sizes, default=sizes, key='ensemble_sizes')
+    measures = ENSEMBLE_MEASURES[path.name]
+    measure = col_measure.selectbox('Measure', list(measures), key=f'ensemble_measure_{path.name}')
+    column, title, fmt = measures[measure]
+
+    shown = combos[combos['model_folder'].isin(chosen_folders) & (combos['selection'] == selection)
+                   & (combos['score_normalization'] == normalization) & combos['scoring'].isin(chosen_scorings)
+                   & combos['window'].isin(chosen_windows) & combos['size'].isin(chosen_sizes)]
+    if shown.empty:
+        st.info('No combination matches these filters.')
+        return
+
+    st.subheader(f'{measure} against the number of subsets', divider='gray')
+    st.caption('Dots: every combination of subsets; tick: the best one of each size. One subset: the subsets alone, '
+               'their best tick is the best single subset.' +
+               (' False positives on a symlog scale.' if column in ENSEMBLE_COUNT_COLUMNS else ''))
+    chart = ensemble_size_chart(shown, column, title, fmt, family_scale)
+    st.altair_chart(chart, width='content')
+    export_buttons(chart, f'subset_ensembles_{column}_{selection}_{normalization}', 'ensemble_sizes')
+
+    # Best combination of each size against the best subset alone (same model, scoring, window)
+    keys = ['model', 'scoring', 'window']
+    best = shown.loc[shown.groupby(keys + ['size'])[column].idxmax()]
+    singles = combos[(combos['size'] == 1) & (combos['selection'] == selection)
+                     & (combos['score_normalization'] == normalization)]
+    best_single = singles.groupby(['model_folder', 'scoring', 'window'])[column].max().rename('best_single')
+    best = best.join(best_single, on=['model_folder', 'scoring', 'window'])
+    best['gain'] = best[column] - best['best_single']
+    st.subheader('Best combination of each size', divider='gray')
+    st.caption(f'Gain: {measure} of the best combination minus that of the best subset alone (same model, scoring '
+               'and window).' + (' Higher false positives are worse.' if column in ENSEMBLE_COUNT_COLUMNS else ''))
+    # The gain of one subset is 0 by definition: its value is shown instead, the reference of the gains
+    gains = best[best['size'] > 1].pivot_table(index=keys, columns='size', values='gain')
+    gains.columns = [f'+{s} subsets' for s in gains.columns]
+    gains.insert(0, 'Best subset alone', best.groupby(keys)['best_single'].first())
+    st.dataframe(gains.reset_index(), hide_index=True,
+                 column_config={'Best subset alone': st.column_config.NumberColumn(format=f'%{fmt}'),
+                                **{c: st.column_config.NumberColumn(format=f'%+{fmt}' if fmt != 'd' else '%+d')
+                                   for c in gains.columns if c != 'Best subset alone'}})
+    table_columns = [*keys, 'size', 'combination', column, 'best_single', 'gain',
+                     *[c for c, _, _ in measures.values() if c != column],
+                     *[c for c in ('precision', 'recall', 'detected_window_ids') if c in best.columns]]
+    with st.expander('Best combinations'):
+        st.dataframe(best[table_columns].sort_values(keys + ['size']), hide_index=True,
+                     column_config={column: st.column_config.NumberColumn(measure, format=f'%{fmt}'),
+                                    'best_single': st.column_config.NumberColumn('Best subset alone', format=f'%{fmt}'),
+                                    'gain': st.column_config.NumberColumn('Gain', format=f'%+{fmt}')})
+
+    st.subheader('All combinations', divider='gray')
+    ordered = shown.sort_values(column, ascending=column in ENSEMBLE_COUNT_COLUMNS)
+    all_columns = ['model', 'scoring', 'window', 'size', 'combination',
+                   *[c for c, _, _ in measures.values()],
+                   *[c for c in ('precision', 'recall', 'num_windows', 'detected_window_ids', 'check_diff')
+                     if c in shown.columns]]
+    st.dataframe(ordered[all_columns], hide_index=True, height=400)
+    st.download_button('Download as CSV', ordered[all_columns].to_csv(index=False), icon=':material/download:',
+                       file_name=f'subset_ensembles_{selection}_{normalization}.csv', mime='text/csv')
+
+    selected_path = ENSEMBLE_DIR / 'selected_configs.csv'
+    if selected_path.exists():
+        with st.expander('Setting chosen for each subset'):
+            configs = load_ensemble_file(str(selected_path), os.path.getmtime(selected_path))
+            configs = configs.assign(model=configs['model_folder'].map(short_model_name),
+                                     scoring=[ensemble_scoring_label(s, t) for s, t in
+                                              zip(configs['post_processing_strategy'], configs['threshold_type'])])
+            configs = configs[configs['model_folder'].isin(chosen_folders) & (configs['selection'] == selection)
+                              & (configs['score_normalization'] == normalization)
+                              & configs['scoring'].isin(chosen_scorings) & configs['window'].isin(chosen_windows)]
+            st.dataframe(configs[['model', 'scoring', 'window', 'subset', 'fill_nan', 'topk', 'long_window',
+                                  'short_window', 'anomaly_threshold', 'train_valid_reward_fn_normalized',
+                                  'reward_fn_normalized', 'standard_normalized', 'f1', 'detected_window_ids', 'nab_fp']]
+                         .sort_values(['model', 'scoring', 'window', 'subset']), hide_index=True,
+                         column_config={'train_valid_reward_fn_normalized': st.column_config.NumberColumn(
+                             f'Train + valid {NAB_LOW_FN}', format='%.2f'),
+                             'reward_fn_normalized': st.column_config.NumberColumn(f'Test {NAB_LOW_FN}', format='%.2f'),
+                             'standard_normalized': st.column_config.NumberColumn(f'Test {NAB_STANDARD}', format='%.2f')})
 
 
 def render_explorer(results):
@@ -1360,9 +2079,10 @@ def render_explorer(results):
     # Nothing chosen: the whole table (millions of rows) would be filtered and charted on every rerun
     filtered = filter_rows(results, options, selected) if any(selected.values()) else None
 
-    tab_overview, tab_compare, tab_target, tab_windows, tab_rows, tab_table, tab_bubbles, tab_cost = st.tabs(
+    (tab_overview, tab_compare, tab_target, tab_windows, tab_rows, tab_table, tab_bubbles, tab_cost,
+     tab_ensembles) = st.tabs(
         ['Overview', 'Compare', 'Target model', 'Strategies by window', 'All settings', 'Results table',
-         'Likelihood windows', 'Deployment cost'])
+         'Likelihood windows', 'Deployment cost', 'Subset ensembles'])
 
     # ── Results table and likelihood windows: their own filters, shown whatever the sidebar filters ──
     with tab_table:
@@ -1371,6 +2091,8 @@ def render_explorer(results):
         render_likelihood_windows(results, options, family_scale)
     with tab_cost:
         render_deployment_cost(results, family_scale)
+    with tab_ensembles:
+        render_subset_ensembles(family_scale)
 
     if filtered is None or filtered.empty:
         for tab in (tab_overview, tab_compare, tab_target, tab_windows, tab_rows):
@@ -1828,16 +2550,16 @@ def panel_width(columns, axis_space=PANEL_AXIS_SPACE):
             - axis_space)
 
 
-def paper_style(chart):
-    """The text sizes (src/figure_style.py, plus FONT_SIZE_INCREASE) and frames of a figure of the paper."""
+def paper_style(chart, increase=FONT_SIZE_INCREASE):
+    """The text sizes (src/figure_style.py, plus increase points) and frames of a figure of the paper."""
     return (chart.configure_view(stroke=CHART_BORDER, strokeWidth=1)   # a border around each plot
-            .configure_axis(labelFontSize=TICK_FONT_SIZE + FONT_SIZE_INCREASE,
-                            titleFontSize=AXIS_LABEL_FONT_SIZE + FONT_SIZE_INCREASE)
-            .configure_axisY(labelFontSize=TICK_FONT_SIZE + FONT_SIZE_INCREASE - Y_TICK_FONT_SIZE_DECREASE)
-            .configure_legend(labelFontSize=LEGEND_FONT_SIZE + FONT_SIZE_INCREASE,
-                              titleFontSize=LEGEND_FONT_SIZE + FONT_SIZE_INCREASE,
+            .configure_axis(labelFontSize=TICK_FONT_SIZE + increase,
+                            titleFontSize=AXIS_LABEL_FONT_SIZE + increase)
+            .configure_axisY(labelFontSize=TICK_FONT_SIZE + increase - Y_TICK_FONT_SIZE_DECREASE)
+            .configure_legend(labelFontSize=LEGEND_FONT_SIZE + increase,
+                              titleFontSize=LEGEND_FONT_SIZE + increase,
                               strokeColor=CHART_BORDER, padding=LEGEND_PADDING)   # a frame around each legend
-            .configure_header(labelFontSize=AXIS_LABEL_FONT_SIZE + FONT_SIZE_INCREASE,   # the panel titles
+            .configure_header(labelFontSize=AXIS_LABEL_FONT_SIZE + increase,   # the panel titles
                               labelPadding=2))
 
 
