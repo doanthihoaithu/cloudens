@@ -2,7 +2,8 @@
 Ensembles of the subsets (<http_code>_<aggregation>) of the ClouDens models with null padding, from the merged
 grid-search table (merged_results/hpc.csv.gz): for every model folder, sliding window and score normalisation,
 each subset contributes the test predictions of one grid-search setting, and a combination of subsets flags a
-timestamp when any of them does (OR vote), evaluated as the single models (NAB standard / reward_fn, point metrics).
+timestamp when any of them does (vote 'any', OR) or more than half of them do (vote 'majority'), evaluated as
+the single models (NAB standard / reward_fn, point metrics).
 
 Two steps:
   select    (hpc.csv.gz only, no other file needed): the setting of every subset, chosen
@@ -20,14 +21,15 @@ Two steps:
             reward_fn score is checked against the grid-search one (check_diff column).
 
 The files of --out-dir are updated, not replaced: the rows computed by a run replace those with the same keys
-(selection, strategy, threshold type, model folder, window, normalisation and subset / combination), the others
-are kept, e.g. a run of other sizes or windows adds to the earlier ones; ensemble_summary.csv summarises all of
-them. --overwrite replaces the files.
+(selection, strategy, threshold type, model folder, window, normalisation, vote and subset / combination), the
+others are kept, e.g. a run of other sizes, windows or votes adds to the earlier ones (rows of files written
+before the votes: vote 'any'); ensemble_summary.csv summarises all of them. --overwrite replaces the files.
 
 From the project root:
     python src/ensemble_subsets.py --select-only                         # selection + preview, locally
     python src/ensemble_subsets.py --workers 8                           # selection + exact evaluation (HPC)
     python src/ensemble_subsets.py --sizes 2 3 8 --windows 12 --normalizations global
+    python src/ensemble_subsets.py --workers 8 --votes majority --sizes 2 3 4 8   # majority votes only
 """
 import argparse
 import ast
@@ -45,6 +47,9 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # ClouDens-A3T* and ClouDens-BigST-ctx* (context graph as the prior of the learned graph)
 DEFAULT_MODELS = ('A3TGCN_null_padding_feature', 'BigST_null_padding_feature_spatial')
 DEFAULT_SIZES = (1, 2, 3, 8)
+# Votes of n members flagging a timestamp for the ensemble to flag it: 'any' (OR), 'majority' (more than half);
+# one subset alone is evaluated with 'any' only (the same for both)
+VOTES = {'any': lambda n: 1, 'majority': lambda n: n // 2 + 1}
 STRATEGIES = ('likelihood', 'likelihood_mahalanobis', 'mean_reconstruction_errors')
 THRESHOLD_TYPES = ('absolute', 'percentile')
 # The members of an ensemble share the scoring strategy and the threshold type; each subset has its own
@@ -201,34 +206,42 @@ def evaluate_prediction(prediction, test_index, labels, anomaly_windows_test):
 
 def evaluate_group(task):
     """Metrics of every combination of one (model folder, window, normalisation)."""
-    group_key, group_selected, sizes, anomaly_windows_test = task
+    group_key, group_selected, sizes, votes, anomaly_windows_test = task
     predictions, (test_index, labels) = _group_inputs(group_selected)
     records = []
     for (selection, strategy, threshold_type), part in group_selected.groupby(['selection'] + ENSEMBLE_KEY, sort=True):
         by_subset = part.set_index('subset')
         for combo in combinations_of(by_subset.index, sizes):
-            ensemble = np.zeros(len(labels), dtype=np.int8)
+            counts = np.zeros(len(labels), dtype=np.int16)   # members flagging each timestamp
             for subset in combo:
-                ensemble |= predictions[(selection, strategy, threshold_type, subset)]
-            record = dict(selection=selection, post_processing_strategy=strategy, threshold_type=threshold_type,
-                          **dict(zip(GROUP_KEY, group_key)),
-                          size=len(combo), combination='+'.join(map(short_subset, combo)),
-                          **evaluate_prediction(ensemble, test_index, labels, anomaly_windows_test))
-            if len(combo) == 1:   # the subset itself: must reproduce its grid-search score
-                record['check_diff'] = record['reward_fn_normalized'] - by_subset.loc[combo[0], 'reward_fn_normalized']
-            records.append(record)
+                counts += predictions[(selection, strategy, threshold_type, subset)]
+            for vote in votes:
+                if len(combo) == 1 and vote != 'any':
+                    continue
+                min_votes = VOTES[vote](len(combo))
+                ensemble = (counts >= min_votes).astype(np.int8)
+                record = dict(selection=selection, post_processing_strategy=strategy, threshold_type=threshold_type,
+                              **dict(zip(GROUP_KEY, group_key)), vote=vote, min_votes=min_votes,
+                              size=len(combo), combination='+'.join(map(short_subset, combo)),
+                              **evaluate_prediction(ensemble, test_index, labels, anomaly_windows_test))
+                if len(combo) == 1:   # the subset itself: must reproduce its grid-search score
+                    record['check_diff'] = (record['reward_fn_normalized']
+                                            - by_subset.loc[combo[0], 'reward_fn_normalized'])
+                records.append(record)
     print(f'Evaluated {group_key}: {len(records)} combinations', flush=True)
     return records
 
 
 def summarize(results):
-    """Per group, selection, strategy group and size: the best / median combination against the best single subset."""
+    """Per group, selection, strategy, threshold type, vote and size: the best / median combination against the best
+    single subset."""
     keys = ['selection'] + ENSEMBLE_KEY + GROUP_KEY
+    # The subsets alone (vote 'any' only), the reference of every vote
     singles = results[results['size'] == 1].groupby(keys)['reward_fn_normalized'].max().rename('best_single_reward_fn')
     records = []
-    for key, part in results.groupby(keys + ['size'], sort=True):
+    for key, part in results.groupby(keys + ['vote', 'size'], sort=True):
         best = part.loc[part['reward_fn_normalized'].idxmax()]
-        records.append(dict(zip(keys + ['size'], key), num_combinations=len(part),
+        records.append(dict(zip(keys + ['vote', 'size'], key), num_combinations=len(part),
                             best_combination=best['combination'], best_reward_fn=best['reward_fn_normalized'],
                             best_standard=best['standard_normalized'], best_f1=best['f1'],
                             best_windows_detected=best['windows_detected'], best_nab_fp=best['nab_fp'],
@@ -237,19 +250,22 @@ def summarize(results):
     summary = pd.DataFrame(records).join(singles, on=keys)
     beating = results.join(singles, on=keys)
     beating = beating[beating['reward_fn_normalized'] > beating['best_single_reward_fn']]
-    summary = summary.join(beating.groupby(keys + ['size']).size().rename('num_beating_best_single'), on=keys + ['size'])
+    summary = summary.join(beating.groupby(keys + ['vote', 'size']).size().rename('num_beating_best_single'),
+                           on=keys + ['vote', 'size'])
     summary['num_beating_best_single'] = summary['num_beating_best_single'].fillna(0).astype(int)
     return summary
 
 
-def update_csv(new, path, keys, overwrite=False):
+def update_csv(new, path, keys, overwrite=False, defaults=None):
     """
     Write new to path, keeping the rows of an earlier file there whose keys new has not (its rows replace those
-    with the same keys); with overwrite, or an earlier file without the key columns, new alone. Returns what was
-    written.
+    with the same keys); with overwrite, or an earlier file without the key columns, new alone. defaults:
+    {column: value} of the earlier rows without that column (e.g. the vote of the files written before it).
+    Returns what was written.
     """
     if not overwrite and os.path.exists(path):
         old = pd.read_csv(path)
+        old = old.assign(**{c: v for c, v in (defaults or {}).items() if c not in old.columns})
         if set(keys) <= set(old.columns):
             replaced = pd.MultiIndex.from_frame(old[keys]).isin(pd.MultiIndex.from_frame(new[keys]))
             new = pd.concat([old[~replaced], new], ignore_index=True)
@@ -278,12 +294,17 @@ def main():
     parser.add_argument('--select-only', action='store_true', help='Selection and window-union preview only')
     parser.add_argument('--workers', type=int, default=1, help='Processes evaluating the groups in parallel')
     parser.add_argument('--config', default=os.path.join(PROJECT_ROOT, 'conf', 'config.yaml'))
+    parser.add_argument('--votes', nargs='+', default=list(VOTES), choices=list(VOTES),
+                        help="Votes of the members for the ensemble to flag a timestamp: 'any' (OR, at least one), "
+                             "'majority' (more than half); default: both")
     parser.add_argument('--overwrite', action='store_true',
                         help='Replace the files of --out-dir; by default they are updated: the rows computed now '
                              'replace those with the same keys, the other rows (e.g. other windows or sizes) are kept')
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
-    combination_keys = ['selection'] + ENSEMBLE_KEY + GROUP_KEY + ['combination']
+    # The files written before the votes hold OR ensembles only: vote 'any'
+    combination_keys = ['selection'] + ENSEMBLE_KEY + GROUP_KEY + ['vote', 'combination']
+    vote_default = {'vote': 'any', 'min_votes': 1}
 
     rows = load_hpc_rows(args.hpc_csv, args.models, args.windows, args.normalizations)
     print(f'{len(rows)} grid-search rows of {", ".join(args.models)}', flush=True)
@@ -291,9 +312,10 @@ def main():
     selected_file = os.path.join(args.out_dir, 'selected_configs.csv')
     update_csv(selected, selected_file, ['selection'] + ENSEMBLE_KEY + GROUP_KEY + ['subset'], args.overwrite)
     print(f'Selected settings ({len(selected)}) saved to {selected_file}', flush=True)
-    preview = union_preview(selected, args.sizes)
+    # The union of the detected windows is the OR ensemble's: no preview of the other votes
+    preview = union_preview(selected, args.sizes).assign(**vote_default)
     preview_file = os.path.join(args.out_dir, 'window_union_preview.csv')
-    update_csv(preview, preview_file, combination_keys, args.overwrite)
+    update_csv(preview, preview_file, combination_keys, args.overwrite, vote_default)
     print(f'Window-union preview ({len(preview)} combinations) saved to {preview_file}', flush=True)
     if args.select_only:
         return
@@ -301,11 +323,12 @@ def main():
     from omegaconf import OmegaConf
     from rerun_grid_search import load_anomaly_windows
     anomaly_windows_test = load_anomaly_windows(OmegaConf.load(args.config))[1]
-    tasks = [(key, part, args.sizes, anomaly_windows_test) for key, part in selected.groupby(GROUP_KEY, sort=True)]
+    tasks = [(key, part, args.sizes, args.votes, anomaly_windows_test)
+             for key, part in selected.groupby(GROUP_KEY, sort=True)]
     with Pool(args.workers) as pool:
         results = pd.DataFrame([r for records in pool.imap(evaluate_group, tasks) for r in records])
     results_file = os.path.join(args.out_dir, 'ensemble_results.csv')
-    all_results = update_csv(results, results_file, combination_keys, args.overwrite)
+    all_results = update_csv(results, results_file, combination_keys, args.overwrite, vote_default)
     print(f'Ensemble results ({len(results)} combinations) saved to {results_file}', flush=True)
     checks = results['check_diff'].dropna().abs() if 'check_diff' in results else pd.Series(dtype=float)
     if len(checks):

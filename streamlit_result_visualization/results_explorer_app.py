@@ -1858,6 +1858,7 @@ ENSEMBLE_DIR = MERGED_DIR / 'ensemble_subsets'
 ENSEMBLE_SOURCES = {'Exact (ensemble_results.csv)': 'ensemble_results.csv',
                     'Preview (window_union_preview.csv)': 'window_union_preview.csv'}
 ENSEMBLE_SELECTIONS = {'train_valid': 'Train + valid NAB Low FN (no test label)', 'test': 'Test NAB Low FN (oracle)'}
+ENSEMBLE_VOTES = {'any': 'Any (OR)', 'majority': 'Majority'}   # src/ensemble_subsets.py VOTES
 ENSEMBLE_KEY = ['post_processing_strategy', 'threshold_type']
 # Measures of each source: name -> (column, axis title, number format)
 ENSEMBLE_MEASURES = {
@@ -1923,7 +1924,8 @@ def render_subset_ensembles(family_scale):
     """
     st.caption('This tab has its own filters: the filters of the sidebar do not apply here. Members of an ensemble '
                'share the scoring strategy and the threshold type; each subset keeps its own threshold, top-k, '
-               'likelihood windows and imputation. A timestamp is flagged when any member flags it (OR).')
+               'likelihood windows and imputation. A timestamp is flagged when any member flags it (OR), or more '
+               'than half of them (majority vote).')
     available = {name: ENSEMBLE_DIR / file for name, file in ENSEMBLE_SOURCES.items() if (ENSEMBLE_DIR / file).exists()}
     if not available:
         st.info(f'No ensemble file in `{os.path.relpath(ENSEMBLE_DIR, PROJECT_ROOT)}/`: write the preview locally with '
@@ -1937,6 +1939,8 @@ def render_subset_ensembles(family_scale):
                                        'members), false positives only bounded (max .. sum of those of the members).')
     path = available[source]
     combos = load_ensemble_file(str(path), os.path.getmtime(path))
+    if 'vote' not in combos:   # written before the votes: OR ensembles only
+        combos = combos.assign(vote='any', min_votes=1)
     combos = combos.assign(model=combos['model_folder'].map(short_model_name),
                            model_family=combos['model_folder'].map(model_family),
                            scoring=[ensemble_scoring_label(s, t) for s, t in
@@ -1944,7 +1948,7 @@ def render_subset_ensembles(family_scale):
     st.caption(f':material/description: `{os.path.relpath(path, PROJECT_ROOT)}`: {len(combos):,} combinations, '
                f'modified {datetime.fromtimestamp(os.path.getmtime(path)):%Y-%m-%d %H:%M}')
 
-    col_model, col_select, col_norm = st.columns(3)
+    col_model, col_select, col_norm, col_vote = st.columns(4)
     folders = sorted(combos['model_folder'].unique(), key=model_order_key)
     chosen_folders = col_model.multiselect('Models', folders, default=folders, format_func=short_model_name,
                                            key='ensemble_models')
@@ -1956,6 +1960,12 @@ def render_subset_ensembles(family_scale):
     normalizations = sorted(combos['score_normalization'].unique())
     normalization = col_norm.segmented_control('Score normalization', normalizations, default=normalizations[0],
                                                required=True, key='ensemble_normalization')
+    votes = [v for v in ENSEMBLE_VOTES if v in set(combos['vote'])]
+    vote = col_vote.segmented_control('Vote', votes, default=votes[0], required=True, format_func=ENSEMBLE_VOTES.get,
+                                      key='ensemble_vote',
+                                      help='Members flagging a timestamp for the ensemble to flag it: at least one '
+                                           '(OR), or more than half (2 of 2, 2 of 3, 3 of 4, 5 of 8). One subset '
+                                           'alone is the same for both.')
     col_scoring, col_window, col_size, col_measure = st.columns(4)
     scorings = sorted(combos['scoring'].unique())
     default_scorings = [s for s in scorings if s.startswith(f'{STRATEGY_SHORT_NAMES["likelihood"]} ·')] or scorings[:1]
@@ -1971,7 +1981,8 @@ def render_subset_ensembles(family_scale):
 
     shown = combos[combos['model_folder'].isin(chosen_folders) & (combos['selection'] == selection)
                    & (combos['score_normalization'] == normalization) & combos['scoring'].isin(chosen_scorings)
-                   & combos['window'].isin(chosen_windows) & combos['size'].isin(chosen_sizes)]
+                   & combos['window'].isin(chosen_windows) & combos['size'].isin(chosen_sizes)
+                   & ((combos['vote'] == vote) | (combos['size'] == 1))]   # the subsets alone: the reference
     if shown.empty:
         st.info('No combination matches these filters.')
         return
@@ -1982,7 +1993,7 @@ def render_subset_ensembles(family_scale):
                (' False positives on a symlog scale.' if column in ENSEMBLE_COUNT_COLUMNS else ''))
     chart = ensemble_size_chart(shown, column, title, fmt, family_scale)
     st.altair_chart(chart, width='content')
-    export_buttons(chart, f'subset_ensembles_{column}_{selection}_{normalization}', 'ensemble_sizes')
+    export_buttons(chart, f'subset_ensembles_{column}_{selection}_{normalization}_{vote}', 'ensemble_sizes')
 
     # Best combination of each size against the best subset alone (same model, scoring, window)
     keys = ['model', 'scoring', 'window']
@@ -2003,7 +2014,7 @@ def render_subset_ensembles(family_scale):
                  column_config={'Best subset alone': st.column_config.NumberColumn(format=f'%{fmt}'),
                                 **{c: st.column_config.NumberColumn(format=f'%+{fmt}' if fmt != 'd' else '%+d')
                                    for c in gains.columns if c != 'Best subset alone'}})
-    table_columns = [*keys, 'size', 'combination', column, 'best_single', 'gain',
+    table_columns = [*keys, 'size', 'min_votes', 'combination', column, 'best_single', 'gain',
                      *[c for c, _, _ in measures.values() if c != column],
                      *[c for c in ('precision', 'recall', 'detected_window_ids') if c in best.columns]]
     with st.expander('Best combinations'):
@@ -2014,13 +2025,13 @@ def render_subset_ensembles(family_scale):
 
     st.subheader('All combinations', divider='gray')
     ordered = shown.sort_values(column, ascending=column in ENSEMBLE_COUNT_COLUMNS)
-    all_columns = ['model', 'scoring', 'window', 'size', 'combination',
+    all_columns = ['model', 'scoring', 'window', 'size', 'min_votes', 'combination',
                    *[c for c, _, _ in measures.values()],
                    *[c for c in ('precision', 'recall', 'num_windows', 'detected_window_ids', 'check_diff')
                      if c in shown.columns]]
     st.dataframe(ordered[all_columns], hide_index=True, height=400)
     st.download_button('Download as CSV', ordered[all_columns].to_csv(index=False), icon=':material/download:',
-                       file_name=f'subset_ensembles_{selection}_{normalization}.csv', mime='text/csv')
+                       file_name=f'subset_ensembles_{selection}_{normalization}_{vote}.csv', mime='text/csv')
 
     selected_path = ENSEMBLE_DIR / 'selected_configs.csv'
     if selected_path.exists():
