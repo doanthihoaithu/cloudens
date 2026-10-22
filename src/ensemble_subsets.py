@@ -19,6 +19,11 @@ Two steps:
             and ensemble_summary.csv. Combinations of size 1 are the subsets themselves: their recomputed
             reward_fn score is checked against the grid-search one (check_diff column).
 
+The files of --out-dir are updated, not replaced: the rows computed by a run replace those with the same keys
+(selection, strategy, threshold type, model folder, window, normalisation and subset / combination), the others
+are kept, e.g. a run of other sizes or windows adds to the earlier ones; ensemble_summary.csv summarises all of
+them. --overwrite replaces the files.
+
 From the project root:
     python src/ensemble_subsets.py --select-only                         # selection + preview, locally
     python src/ensemble_subsets.py --workers 8                           # selection + exact evaluation (HPC)
@@ -237,6 +242,25 @@ def summarize(results):
     return summary
 
 
+def update_csv(new, path, keys, overwrite=False):
+    """
+    Write new to path, keeping the rows of an earlier file there whose keys new has not (its rows replace those
+    with the same keys); with overwrite, or an earlier file without the key columns, new alone. Returns what was
+    written.
+    """
+    if not overwrite and os.path.exists(path):
+        old = pd.read_csv(path)
+        if set(keys) <= set(old.columns):
+            replaced = pd.MultiIndex.from_frame(old[keys]).isin(pd.MultiIndex.from_frame(new[keys]))
+            new = pd.concat([old[~replaced], new], ignore_index=True)
+            print(f'{path}: {int((~replaced).sum())} earlier rows kept, {int(replaced.sum())} replaced', flush=True)
+        else:
+            print(f'{path}: earlier file without the columns {sorted(set(keys) - set(old.columns))}, overwritten',
+                  flush=True)
+    new.to_csv(path, index=False)
+    return new
+
+
 def main():
     parser = argparse.ArgumentParser(description='OR ensembles of the subsets of the ClouDens models with null padding.')
     parser.add_argument('--hpc-csv', default=os.path.join(PROJECT_ROOT, 'merged_results', 'hpc.csv.gz'))
@@ -254,18 +278,22 @@ def main():
     parser.add_argument('--select-only', action='store_true', help='Selection and window-union preview only')
     parser.add_argument('--workers', type=int, default=1, help='Processes evaluating the groups in parallel')
     parser.add_argument('--config', default=os.path.join(PROJECT_ROOT, 'conf', 'config.yaml'))
+    parser.add_argument('--overwrite', action='store_true',
+                        help='Replace the files of --out-dir; by default they are updated: the rows computed now '
+                             'replace those with the same keys, the other rows (e.g. other windows or sizes) are kept')
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
+    combination_keys = ['selection'] + ENSEMBLE_KEY + GROUP_KEY + ['combination']
 
     rows = load_hpc_rows(args.hpc_csv, args.models, args.windows, args.normalizations)
     print(f'{len(rows)} grid-search rows of {", ".join(args.models)}', flush=True)
     selected = select_configs(rows, args.selections, args.strategies, args.threshold_types)
     selected_file = os.path.join(args.out_dir, 'selected_configs.csv')
-    selected.to_csv(selected_file, index=False)
+    update_csv(selected, selected_file, ['selection'] + ENSEMBLE_KEY + GROUP_KEY + ['subset'], args.overwrite)
     print(f'Selected settings ({len(selected)}) saved to {selected_file}', flush=True)
     preview = union_preview(selected, args.sizes)
     preview_file = os.path.join(args.out_dir, 'window_union_preview.csv')
-    preview.to_csv(preview_file, index=False)
+    update_csv(preview, preview_file, combination_keys, args.overwrite)
     print(f'Window-union preview ({len(preview)} combinations) saved to {preview_file}', flush=True)
     if args.select_only:
         return
@@ -277,14 +305,14 @@ def main():
     with Pool(args.workers) as pool:
         results = pd.DataFrame([r for records in pool.imap(evaluate_group, tasks) for r in records])
     results_file = os.path.join(args.out_dir, 'ensemble_results.csv')
-    results.to_csv(results_file, index=False)
+    all_results = update_csv(results, results_file, combination_keys, args.overwrite)
     print(f'Ensemble results ({len(results)} combinations) saved to {results_file}', flush=True)
     checks = results['check_diff'].dropna().abs() if 'check_diff' in results else pd.Series(dtype=float)
     if len(checks):
         print(f'Single subsets reproduced: {int((checks < 1e-6).sum())} / {len(checks)} '
               f'(max |difference| {checks.max():.3g})', flush=True)
     summary_file = os.path.join(args.out_dir, 'ensemble_summary.csv')
-    summarize(results).to_csv(summary_file, index=False)
+    summarize(all_results).to_csv(summary_file, index=False)   # of every result in the file, earlier ones too
     print(f'Summary saved to {summary_file}', flush=True)
 
 
