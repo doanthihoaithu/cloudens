@@ -9,6 +9,7 @@ Per-model outputs on all data splits (train / valid / test):
     (CSVs written by earlier versions are still read, and replaced by the parquet file when rewritten):
         timestamp, split, is_anomaly, is_clean_window,
         anomaly_score_postprocessed_by_mean_reconstruction_errors,
+        anomaly_score_before_likelihood_with_top_{k}   (input of the likelihood: AUC-PR / VUS-PR of the likelihood),
         anomaly_score_postprocessed_by_likelihood_with_top_{k},
         anomaly_score_postprocessed_by_likelihood_with_mahalanobis,
         anomaly_score_postprocessed_by_mahalanobis
@@ -110,6 +111,32 @@ def mahalanobis_likelihood_column(long_window, short_window, with_windows=False)
     if with_windows:
         name += f'_long_{long_window}_short_{short_window}'
     return name
+
+
+def likelihood_input_column(topk):
+    """Score column of the input of the likelihood with this top-k: the normalised sensor errors aggregated over the
+    top-k sensors (all of them when topk is None), before the likelihood of its windows (W, W')."""
+    return f'anomaly_score_before_likelihood_with_top_{"mean" if topk is None else topk}'
+
+
+def likelihood_input_score_column(strategy, topk):
+    """Column of the score a likelihood strategy computes its likelihood on: its AUC-PR / VUS-PR are those of this
+    score, whatever the windows and the threshold (the scaled Mahalanobis distance for likelihood_mahalanobis)."""
+    return likelihood_input_column(topk) if strategy == 'likelihood' else MAHALANOBIS_COLUMN
+
+
+def normalized_errors(outputs, data_loader, normalization):
+    """Errors of every split normalised per sensor ({split: [T_split, N·F]}) with the median / IQR of the train
+    windows without anomalies: the sensor scores the likelihood aggregates over its top-k sensors."""
+    reference_errors = _clean_split(outputs, data_loader, 'train', 'error')
+    return {s: get_full_err_scores(outputs[s]['error'], normalization, reference_errors=reference_errors)
+            .reshape(len(outputs[s]['error']), -1) for s in SPLITS}
+
+
+def likelihood_input_columns(z, topks):
+    """Score columns of the inputs of the likelihood of every top-k, concatenated over SPLITS."""
+    return {likelihood_input_column(topk): np.concatenate([aggregate_sensor_scores(z[s], topk) for s in SPLITS])
+            for topk in topks}
 
 
 def likelihood_window_pairs(experiment_config):
@@ -307,7 +334,6 @@ def compute_anomaly_scores(outputs, data_loader, experiment_config, scorer_args,
     normalization = normalization or score_normalizations(experiment_config)[0]
     topks = [parse_topk(t) for t in experiment_config.topks]
     window_pairs, with_windows = likelihood_window_pairs(experiment_config)
-    reference_errors = _clean_split(outputs, data_loader, 'train', 'error')
 
     frames = []
     for split in SPLITS:
@@ -321,10 +347,9 @@ def compute_anomaly_scores(outputs, data_loader, experiment_config, scorer_args,
     scores = pd.concat(frames, ignore_index=True)
 
     # Per-node error normalisation (statistics of the reference errors), once per split for every top-k
-    z = {s: get_full_err_scores(outputs[s]['error'], normalization, reference_errors=reference_errors)
-            .reshape(len(outputs[s]['error']), -1) for s in SPLITS}
+    z = normalized_errors(outputs, data_loader, normalization)
     # Score columns are collected and joined at once: adding them one by one fragments the DataFrame
-    score_columns = {}
+    score_columns = likelihood_input_columns(z, topks)
     likelihood_contributions = {}
     for topk in topks:
         per_split = _segment_likelihoods({s: aggregate_sensor_scores(z[s], topk) for s in SPLITS}, window_pairs)

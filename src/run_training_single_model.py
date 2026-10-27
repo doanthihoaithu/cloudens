@@ -41,7 +41,7 @@ from model_outputs import (predict_all_splits, save_predictions, predictions_exi
                            compute_anomaly_scores, compute_mahalanobis_scores, save_anomaly_scores, label_from_scores,
                            write_predictions_for_assembles,
                            likelihood_window_pairs, parse_topk, MAHALANOBIS_COLUMN, MAHALANOBIS_REFERENCES,
-                           LIKELIHOOD_THRESHOLD_MODES, LIKELIHOOD_STRATEGIES)
+                           LIKELIHOOD_THRESHOLD_MODES, LIKELIHOOD_STRATEGIES, likelihood_input_score_column)
 from nab_scoring import calculate_nab_score_with_window_based_tp_fn, merge_overlapping_windows
 from utils import clear_folder, get_project_root, get_full_err_scores, set_random_seed, calculate_mahalanobis_distance, has_is_nan_mask, MahalanobisScorer, scoring_result_file_name, results_root_dir, score_normalizations, \
     calculate_mahalanobis_distance_with_is_nan_mask, refine_reconstruction_error_with_is_nan_mask
@@ -564,9 +564,10 @@ EVALUATION_SPLITS = {'train': ('train',), 'valid': ('valid',), 'train_valid': ('
                      'test': ('test',)}   # name: splits concatenated
 # best_f1 / f1_optimal_threshold: best F1 of the setting's score over all thresholds on the split and the
 # threshold reaching it (in the units of the score; depends on the score only, not on anomaly_threshold).
-# auc_pr / vus_pr / best_f1 / f1_optimal_threshold are empty (NaN) for the likelihood strategies: a
-# precision-recall curve over the thresholds of a likelihood does not apply, only for the scores
-# themselves (mean reconstruction errors, Mahalanobis distance)
+# auc_pr / vus_pr of the likelihood strategies: those of the score their likelihood is computed on (the normalised
+# errors aggregated over the top-k sensors, the scaled Mahalanobis distance), before the likelihood of the windows
+# W, W': the same for every window pair and threshold. best_f1 / f1_optimal_threshold are empty (NaN) for them, a
+# threshold of that score being none of the likelihood's
 SPLIT_METRICS = ('precision', 'recall', 'f1', 'accuracy', 'auc_pr', 'vus_pr', 'best_f1', 'f1_optimal_threshold')
 # Score strategies (mahalanobis, mean_reconstruction_errors) with score_threshold_mode 'absolute' (or a list with it): their
 # thresholds are the score_absolute_num_thresholds thresholds with the highest F1 on F1_OPTIMAL_SPLIT (no test
@@ -616,6 +617,23 @@ def _split_anomaly_windows(data_loader, split_scores):
                                              (windows['anomaly_window_end'] <= timestamps.max())])
 
 
+_MISSING_SCORE_COLUMNS = set()   # score columns missing from the scores, already reported
+
+
+def _likelihood_pr_metrics(split_scores, strategy, topk, labels):
+    """AUC-PR / VUS-PR of a likelihood strategy: of the score its likelihood is computed on (see SPLIT_METRICS);
+    NaN when the scores have no such column (written before it was saved)."""
+    column = likelihood_input_score_column(strategy, topk)
+    if column not in split_scores:
+        if column not in _MISSING_SCORE_COLUMNS:
+            _MISSING_SCORE_COLUMNS.add(column)
+            log.warning(f'No {column} in the scores: no AUC-PR / VUS-PR for {strategy} (see rerun_grid_search.py '
+                        f'--likelihood-pr)')
+        return dict.fromkeys(PR_METRIC_KEYS, float('nan'))
+    return {**_pr_metrics_from_scores(split_scores[column].to_numpy(), labels),
+            'BEST_F1': float('nan'), 'F1_OPTIMAL_THRESHOLD': float('nan')}
+
+
 def _split_metrics(split_scores, strategy, topk, anomaly_threshold, long_window, short_window, with_windows, pr_cache,
                    likelihood_threshold_mode='absolute', anomaly_windows=None, score_threshold_mode='percentile'):
     """
@@ -628,10 +646,14 @@ def _split_metrics(split_scores, strategy, topk, anomaly_threshold, long_window,
     is_anomalies, score = label_from_scores(split_scores, strategy, topk, anomaly_threshold, long_window, short_window,
                                             with_windows, likelihood_threshold_mode, score_threshold_mode)
     precision, recall, f1, accuracy, _, _ = evaluate_performance(labels, is_anomalies)
-    key = (strategy, topk, long_window, short_window)
-    if key not in pr_cache:
-        pr_cache[key] = (dict.fromkeys(PR_METRIC_KEYS, float('nan')) if strategy in LIKELIHOOD_STRATEGIES
-                         else _pr_metrics_from_scores(score, labels))
+    if strategy in LIKELIHOOD_STRATEGIES:
+        key = (strategy, topk)   # of the input of the likelihood: whatever the windows
+        if key not in pr_cache:
+            pr_cache[key] = _likelihood_pr_metrics(split_scores, strategy, topk, labels)
+    else:
+        key = (strategy, topk, long_window, short_window)
+        if key not in pr_cache:
+            pr_cache[key] = _pr_metrics_from_scores(score, labels)
     metrics = {'precision': precision, 'recall': recall, 'f1': f1, 'accuracy': accuracy,
                'auc_pr': pr_cache[key]['AUC_PR'], 'vus_pr': pr_cache[key]['VUS_PR'],
                'best_f1': pr_cache[key]['BEST_F1'], 'f1_optimal_threshold': pr_cache[key]['F1_OPTIMAL_THRESHOLD']}

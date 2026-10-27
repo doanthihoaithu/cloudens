@@ -1889,9 +1889,10 @@ def ensemble_scoring_label(strategy, threshold_type):
 
 def ensemble_size_chart(combos, column, title, fmt, family_scale):
     """Every combination (dots) and the best one of each size (tick) against the number of subsets ensembled,
-    one panel per scoring (row) and window (column), the models side by side."""
-    data = combos.assign(size=combos['size'].astype(str))
+    one panel per scoring (row) and window (column), the models and votes side by side (color: model, shape: vote)."""
+    data = combos.assign(size=combos['size'].astype(str), vote_name=combos['vote'].map(ENSEMBLE_VOTES))
     sizes = [str(s) for s in sorted(combos['size'].unique())]
+    votes = [v for v in ENSEMBLE_VOTES.values() if v in set(data['vote_name'])]
     y_scale = alt.Scale(type='symlog') if column in ENSEMBLE_COUNT_COLUMNS else alt.Scale(zero=False, nice=False, padding=6)
     # x title once, in the column header: repeated under every panel, the titles overlapped
     x = alt.X('size:O', title=None, sort=sizes, axis=alt.Axis(labelAngle=0, tickSize=3))
@@ -1901,20 +1902,119 @@ def ensemble_size_chart(combos, column, title, fmt, family_scale):
     color = alt.Color('model:N', title='Model', sort=models, scale=alt.Scale(
         domain=models, range=[colors.get(family_of[m], NO_FAMILY_COLOR) for m in models]),
                       legend=alt.Legend(orient='top', labelLimit=0, strokeColor='transparent', symbolOpacity=1))
-    base = alt.Chart().encode(x=x, xOffset=alt.XOffset('model:N', sort=models), color=color)
-    dots = base.mark_circle(size=14, opacity=0.35).encode(
+    # One slot per model and vote within a size, the votes of a model next to each other
+    data['series'] = data['model'] + ' · ' + data['vote_name']
+    series = [f'{m} · {v}' for m in models for v in votes]
+    base = alt.Chart().encode(x=x, xOffset=alt.XOffset('series:N', sort=series, scale=alt.Scale(domain=series)),
+                              color=color)
+    dots = base.mark_point(size=16, opacity=0.4, filled=True).encode(
         y=alt.Y(f'{column}:Q', title=title, scale=y_scale, axis=alt.Axis(tickSize=3, labelPadding=2, domain=False)),
-        tooltip=['model', 'scoring', 'window', 'size', 'combination',
+        shape=alt.Shape('vote_name:N', title='Vote', sort=votes, scale=alt.Scale(
+            domain=votes, range=['circle', 'triangle-up'][:len(votes)]),
+                        legend=alt.Legend(orient='top', labelLimit=0, strokeColor='transparent', symbolOpacity=1,
+                                          symbolFillColor=LEGEND_SYMBOL_COLOR, symbolStrokeColor=LEGEND_SYMBOL_COLOR)),
+        tooltip=['model', 'vote_name', 'scoring', 'window', 'size', 'combination',
                  alt.Tooltip(f'{column}:Q', title=title, format=fmt)])
-    best = base.transform_aggregate(best=f'max({column})', groupby=['model', 'model_family', 'scoring', 'window', 'size']
-                                    ).mark_tick(thickness=2, size=10).encode(
-        y=alt.Y('best:Q', scale=y_scale), tooltip=['model', 'scoring', 'window', 'size',
+    best = base.transform_aggregate(best=f'max({column})',
+                                    groupby=['model', 'model_family', 'vote_name', 'series', 'scoring', 'window', 'size']
+                                    ).mark_tick(thickness=2, size=8).encode(
+        y=alt.Y('best:Q', scale=y_scale), tooltip=['model', 'vote_name', 'scoring', 'window', 'size',
                                                    alt.Tooltip('best:Q', title=f'Best {title}', format=fmt)])
-    panel_width = max(70, 13 * len(sizes) * len(models))
-    chart = alt.layer(dots, best, data=data).properties(width=panel_width, height=150).facet(
+    # Dashed lines between the numbers of subsets: at the start of the band of every size but the first
+    separators = alt.Chart().transform_aggregate(groupby=['scoring', 'window', 'size']).transform_filter(
+        alt.datum.size != sizes[0]).mark_rule(strokeDash=[4, 3], color=CHART_BORDER, strokeWidth=0.8).encode(
+        x=alt.X('size:O', sort=sizes, bandPosition=0, axis=None))   # its axis would shift the ticks of the dots'
+    panel_width = max(70, 11 * len(sizes) * len(series))
+    # Independent x axes: the separators' (none) apart from the dots' (shared, the axis was dropped or shifted)
+    chart = alt.layer(separators, alt.layer(dots, best), data=data).resolve_axis(x='independent').properties(width=panel_width, height=150).facet(
         row=alt.Row('scoring:N', title=None, header=alt.Header(labelAngle=0, labelAlign='left')),
         column=alt.Column('window:O', title='Sliding window (x: subsets in the ensemble)'), spacing=PANEL_SPACING)
     return paper_style(chart)
+
+
+ALONE = 'Subset alone'   # the vote shown for the combinations of one subset (the same for every vote)
+# Short vote names of the detected anomalies against NAB figure: its two legends side by side fit its width
+DETECTION_VOTE_NAMES = {ALONE: 'Single', 'any': 'OR', 'majority': 'Majority'}
+VOTE_SHAPES = {'Single': 'square', 'OR': 'circle', 'Majority': 'triangle-up'}
+DETECTION_JITTER = 0.5   # width of the random spread of the dots around their (integer) number of detections
+# One fixed, clearly distinct color per number of subsets (Okabe-Ito, colorblind-safe), the same whatever is
+# filtered out; one subset (the reference) in grey
+DETECTION_FIGURE_WIDTH_INCHES = 6.5   # the detected anomalies against NAB figure, whatever its number of panels
+DETECTION_X_TITLE = 'Detected anomaly windows'
+DETECTION_FONT_SIZE_INCREASE = FONT_SIZE_INCREASE + 3   # its text larger than in the other figures
+DETECTION_TITLE_SPACE = 51   # its y title (of the rows) on the left, measured
+DETECTION_TICK_SPACE = 3     # the y ticks of each panel (marks and padding), measured, plus
+DETECTION_CHAR = 0.55        # their labels (the longest), a character this many font sizes wide
+DETECTION_LEGEND_PADDING = 4   # between the entries of its legends (default 10): both side by side fit its width
+SIZE_COLORS = {1: '#7f7f7f', 2: '#0072B2', 3: '#E69F00', 4: '#009E73', 5: '#CC79A7', 6: '#56B4E9', 7: '#000000',
+               8: '#D55E00'}
+
+
+def ensemble_detection_chart(combos, column, title, fmt):
+    """
+    NAB score of every combination against its detected anomaly windows, colored by its number of subsets and
+    shaped by its vote, one panel per model (column) and scoring · window (row); the best combination of each
+    size and vote joined by a line in the order of the sizes.
+    """
+    data = combos.assign(vote_name=combos['vote'].map(DETECTION_VOTE_NAMES),
+                         row=combos['scoring'] + ' · w=' + combos['window'].astype(str))
+    data['vote_line'] = data['vote_name']   # dash of the best lines: a field of its own, not merged into the shape legend
+    sizes = sorted(data['size'].unique())
+    votes = [v for v in VOTE_SHAPES if v in set(data['vote_name'])]
+    models = list(dict.fromkeys(data.sort_values('model_folder', key=lambda s: s.map(model_order_key))['model']))
+    # The integer detections spread apart (random, the same on every render), not stacked on each other
+    data['detected_jitter'] = data['windows_detected'] + DETECTION_JITTER * (
+        pd.util.hash_pandas_object(data['combination'] + data['vote'], index=False) % 1000 / 1000 - 0.5)
+    color = alt.Color('size:O', title='Subsets', sort=sizes, scale=alt.Scale(
+        domain=sizes, range=[SIZE_COLORS.get(s, NO_FAMILY_COLOR) for s in sizes]),
+                      legend=alt.Legend(orient='top', strokeColor='transparent', symbolOpacity=1,
+                                        columnPadding=DETECTION_LEGEND_PADDING))
+    shape = alt.Shape('vote_name:N', title='Vote', sort=votes, scale=alt.Scale(
+        domain=votes, range=[VOTE_SHAPES[v] for v in votes]),
+                      legend=alt.Legend(orient='top', labelLimit=0, strokeColor='transparent', symbolOpacity=1,
+                                        symbolFillColor=LEGEND_SYMBOL_COLOR, symbolStrokeColor=LEGEND_SYMBOL_COLOR,
+                                        symbolDash=[1, 0], symbolStrokeWidth=0,   # not the dash of the best lines
+                                        columnPadding=DETECTION_LEGEND_PADDING))
+    y = alt.Y(f'{column}:Q', title=None, scale=alt.Scale(zero=False, nice=False, padding=6),   # title: of the rows
+              axis=alt.Axis(tickSize=3, labelPadding=2, domain=False))
+    dots = alt.Chart().mark_point(size=22, opacity=0.5, filled=True).encode(
+        x=alt.X('detected_jitter:Q', title=None, scale=alt.Scale(nice=False, padding=6),   # title: below the figure
+                axis=alt.Axis(tickMinStep=1, format='d', tickSize=3, labelPadding=2, domain=False)),
+        y=y, color=color, shape=shape,
+        tooltip=['model', 'scoring', 'window', 'vote_name', 'size', 'combination',
+                 alt.Tooltip('windows_detected:Q', title='Detected anomaly windows'),
+                 alt.Tooltip('nab_fp:Q', title='NAB false positives'), alt.Tooltip(f'{column}:Q', title=title, format=fmt)])
+    # Best combination of each size and vote, joined in the order of the sizes (one line per vote)
+    best = alt.Chart().transform_window(
+        rank='row_number()', sort=[alt.SortField(column, order='descending')],
+        groupby=['model', 'row', 'vote_name', 'size']).transform_filter(alt.datum.rank == 1)
+    best_line = best.mark_line(color=LEGEND_SYMBOL_COLOR, strokeWidth=1, opacity=0.7).encode(
+        x='windows_detected:Q', y=f'{column}:Q', order='size:O', detail='vote_name:N',
+        strokeDash=alt.StrokeDash('vote_line:N', sort=votes, legend=None,
+                                  scale=alt.Scale(domain=votes, range=[[1, 0], [1, 0], [4, 2]][:len(votes)])))
+    best_dots = best.mark_point(size=60, filled=True, opacity=1, stroke='black', strokeWidth=0.8).encode(
+        x='windows_detected:Q', y=f'{column}:Q', color=color, shape=shape,
+        tooltip=['model', 'scoring', 'window', 'vote_name', 'size', 'combination',
+                 alt.Tooltip('windows_detected:Q', title='Detected anomaly windows'),
+                 alt.Tooltip('nab_fp:Q', title='NAB false positives'), alt.Tooltip(f'{column}:Q', title=title, format=fmt)])
+    rows = list(dict.fromkeys(data.sort_values(['scoring', 'window'])['row']))
+    # Panels sized for a figure DETECTION_FIGURE_WIDTH_INCHES wide: the y title on the left and the y ticks of
+    # every panel taken out, those estimated from their longest label
+    tick_chars = max(len(f'{v:,.0f}') for v in (data[column].min(), data[column].max()))
+    tick_space = DETECTION_TICK_SPACE + DETECTION_CHAR * (
+        TICK_FONT_SIZE + DETECTION_FONT_SIZE_INCREASE - Y_TICK_FONT_SIZE_DECREASE) * tick_chars
+    width = (DETECTION_FIGURE_WIDTH_INCHES * POINTS_PER_INCH - DETECTION_TITLE_SPACE
+             - PANEL_SPACING * (len(models) - 1)) / len(models) - tick_space
+    # Rows (scoring · window) without labels, in the order of the filters (scoring, then window). The axis titles
+    # once for all the panels (repeated on each, they overlapped): y as the title of the rows, x below the figure
+    chart = alt.layer(dots, best_line, best_dots, data=data).properties(width=width, height=width * 0.75).facet(
+        row=alt.Row('row:N', title=title, sort=rows, header=alt.Header(labels=False, titleFontWeight='bold',
+                                                                        titleFontSize=AXIS_LABEL_FONT_SIZE + DETECTION_FONT_SIZE_INCREASE)),
+        column=alt.Column('model:N', title=None, sort=models), spacing=PANEL_SPACING).properties(
+        title=alt.TitleParams(DETECTION_X_TITLE, orient='bottom', anchor='middle',
+                              fontSize=AXIS_LABEL_FONT_SIZE + DETECTION_FONT_SIZE_INCREASE)
+    ).resolve_axis(y='independent')   # y ticks on every panel, its scale shared by all of them
+    return paper_style(chart, increase=DETECTION_FONT_SIZE_INCREASE)
 
 
 def render_subset_ensembles(family_scale):
@@ -1961,16 +2061,20 @@ def render_subset_ensembles(family_scale):
     normalization = col_norm.segmented_control('Score normalization', normalizations, default=normalizations[0],
                                                required=True, key='ensemble_normalization')
     votes = [v for v in ENSEMBLE_VOTES if v in set(combos['vote'])]
-    vote = col_vote.segmented_control('Vote', votes, default=votes[0], required=True, format_func=ENSEMBLE_VOTES.get,
-                                      key='ensemble_vote',
-                                      help='Members flagging a timestamp for the ensemble to flag it: at least one '
-                                           '(OR), or more than half (2 of 2, 2 of 3, 3 of 4, 5 of 8). One subset '
-                                           'alone is the same for both.')
-    col_scoring, col_window, col_size, col_measure = st.columns(4)
-    scorings = sorted(combos['scoring'].unique())
-    default_scorings = [s for s in scorings if s.startswith(f'{STRATEGY_SHORT_NAMES["likelihood"]} ·')] or scorings[:1]
-    chosen_scorings = col_scoring.multiselect('Scoring · threshold type', scorings, default=default_scorings,
-                                              key='ensemble_scorings')
+    chosen_votes = col_vote.segmented_control(
+        'Votes', votes, default=votes, selection_mode='multi', format_func=ENSEMBLE_VOTES.get, key='ensemble_votes',
+        help='Members flagging a timestamp for the ensemble to flag it: at least one (OR), or more than half (2 of 2, '
+             '2 of 3, 3 of 4, 5 of 8). One subset alone is the same for both: the reference of each.') or votes[:1]
+    col_strategy, col_threshold, col_window, col_size, col_measure = st.columns(5)
+    strategies = sorted(combos['post_processing_strategy'].unique())
+    chosen_strategies = col_strategy.multiselect(
+        'Scoring strategy', strategies, default=[s for s in strategies if s == 'likelihood'] or strategies[:1],
+        format_func=lambda s: STRATEGY_SHORT_NAMES.get(s, s), key='ensemble_strategies')
+    threshold_types = sorted(combos['threshold_type'].unique())
+    chosen_thresholds = col_threshold.segmented_control(
+        'Threshold type', threshold_types, default=threshold_types, selection_mode='multi',
+        key='ensemble_threshold_types') or threshold_types
+    chosen_scorings = [ensemble_scoring_label(s, t) for s in chosen_strategies for t in chosen_thresholds]
     windows = sorted(combos['window'].unique())
     chosen_windows = col_window.multiselect('Windows', windows, default=windows, key='ensemble_windows')
     sizes = sorted(combos['size'].unique())
@@ -1981,8 +2085,11 @@ def render_subset_ensembles(family_scale):
 
     shown = combos[combos['model_folder'].isin(chosen_folders) & (combos['selection'] == selection)
                    & (combos['score_normalization'] == normalization) & combos['scoring'].isin(chosen_scorings)
-                   & combos['window'].isin(chosen_windows) & combos['size'].isin(chosen_sizes)
-                   & ((combos['vote'] == vote) | (combos['size'] == 1))]   # the subsets alone: the reference
+                   & combos['window'].isin(chosen_windows) & combos['size'].isin(chosen_sizes)]
+    # The subsets alone (written with vote 'any' only): the reference of every vote, repeated for each
+    alone = shown[shown['size'] == 1]
+    shown = pd.concat([shown[(shown['size'] > 1) & shown['vote'].isin(chosen_votes)],
+                       *[alone.assign(vote=v) for v in chosen_votes]], ignore_index=True)
     if shown.empty:
         st.info('No combination matches these filters.')
         return
@@ -1993,10 +2100,30 @@ def render_subset_ensembles(family_scale):
                (' False positives on a symlog scale.' if column in ENSEMBLE_COUNT_COLUMNS else ''))
     chart = ensemble_size_chart(shown, column, title, fmt, family_scale)
     st.altair_chart(chart, width='content')
-    export_buttons(chart, f'subset_ensembles_{column}_{selection}_{normalization}_{vote}', 'ensemble_sizes')
+    votes_tag = '+'.join(chosen_votes)
+    export_buttons(chart, f'subset_ensembles_{column}_{selection}_{normalization}_{votes_tag}', 'ensemble_sizes')
 
-    # Best combination of each size against the best subset alone (same model, scoring, window)
-    keys = ['model', 'scoring', 'window']
+    st.subheader('Detected anomalies against NAB', divider='gray')
+    if {'windows_detected', 'reward_fn_normalized'} <= set(shown.columns):
+        nab_column = column if column in NAB_COLUMNS.values() else NAB_COLUMNS['reward_fn']
+        nab_measure = MEASURE_NAMES[nab_column]
+        st.caption(f'Every combination: detected anomaly windows (x, spread a little around its integer value) '
+                   f'against {nab_measure} (y; the measure chosen above when it is a NAB score), colored by its '
+                   'number of subsets. Outlined dots joined by a line: the best combination of each number of '
+                   'subsets (dashed: majority vote). Up and right: more anomalies detected and a better NAB score. '
+                   'Rows: the scoring strategies · threshold types (and windows) in the order of the filters, '
+                   'e.g. LF · absolute above LF · percentile.')
+        detection_chart = ensemble_detection_chart(pd.concat([shown[shown['size'] > 1], alone.assign(vote=ALONE)]),
+                                                   nab_column, f'{nab_measure} (normalized)', '.2f')
+        st.altair_chart(detection_chart, width='content')
+        export_buttons(detection_chart, f'subset_ensembles_detected_vs_{nab_column}_{selection}_{normalization}_'
+                                        f'{votes_tag}', 'ensemble_detections',
+                       width_inches=DETECTION_FIGURE_WIDTH_INCHES)
+    else:
+        st.caption('No NAB score in the preview (window_union_preview.csv): choose the exact results.')
+
+    # Best combination of each size and vote against the best subset alone (same model, scoring, window)
+    keys = ['model', 'scoring', 'window', 'vote']
     best = shown.loc[shown.groupby(keys + ['size'])[column].idxmax()]
     singles = combos[(combos['size'] == 1) & (combos['selection'] == selection)
                      & (combos['score_normalization'] == normalization)]
@@ -2005,7 +2132,8 @@ def render_subset_ensembles(family_scale):
     best['gain'] = best[column] - best['best_single']
     st.subheader('Best combination of each size', divider='gray')
     st.caption(f'Gain: {measure} of the best combination minus that of the best subset alone (same model, scoring '
-               'and window).' + (' Higher false positives are worse.' if column in ENSEMBLE_COUNT_COLUMNS else ''))
+               'and window), for each vote.' +
+               (' Higher false positives are worse.' if column in ENSEMBLE_COUNT_COLUMNS else ''))
     # The gain of one subset is 0 by definition: its value is shown instead, the reference of the gains
     gains = best[best['size'] > 1].pivot_table(index=keys, columns='size', values='gain')
     gains.columns = [f'+{s} subsets' for s in gains.columns]
@@ -2024,14 +2152,16 @@ def render_subset_ensembles(family_scale):
                                     'gain': st.column_config.NumberColumn('Gain', format=f'%+{fmt}')})
 
     st.subheader('All combinations', divider='gray')
-    ordered = shown.sort_values(column, ascending=column in ENSEMBLE_COUNT_COLUMNS)
-    all_columns = ['model', 'scoring', 'window', 'size', 'min_votes', 'combination',
+    # The subsets alone once, without a vote
+    listed = pd.concat([shown[shown['size'] > 1], alone.assign(vote='—')], ignore_index=True)
+    ordered = listed.sort_values(column, ascending=column in ENSEMBLE_COUNT_COLUMNS)
+    all_columns = ['model', 'scoring', 'window', 'vote', 'size', 'min_votes', 'combination',
                    *[c for c, _, _ in measures.values()],
                    *[c for c in ('precision', 'recall', 'num_windows', 'detected_window_ids', 'check_diff')
                      if c in shown.columns]]
     st.dataframe(ordered[all_columns], hide_index=True, height=400)
     st.download_button('Download as CSV', ordered[all_columns].to_csv(index=False), icon=':material/download:',
-                       file_name=f'subset_ensembles_{selection}_{normalization}_{vote}.csv', mime='text/csv')
+                       file_name=f'subset_ensembles_{selection}_{normalization}_{votes_tag}.csv', mime='text/csv')
 
     selected_path = ENSEMBLE_DIR / 'selected_configs.csv'
     if selected_path.exists():
@@ -2098,6 +2228,7 @@ def render_explorer(results):
     # ── Results table and likelihood windows: their own filters, shown whatever the sidebar filters ──
     with tab_table:
         render_results_table(results, family_scale, options)
+        render_comparison_table(results, options)
     with tab_bubbles:
         render_likelihood_windows(results, options, family_scale)
     with tab_cost:
@@ -2545,19 +2676,39 @@ def _latex_text(value):
 PANEL_TITLE_SIZE = AXIS_LABEL_FONT_SIZE + FONT_SIZE_INCREASE   # the measure on the left of the panels
 # Plots of a one-column figure: the y axis (labels and the measure as title, estimated) on their left
 COLUMN_PLOT_HEIGHT = 110   # the plots of a one-column figure side by side, one per measure
+# The charts by window size of the results table, whatever their layout (one chart, panels, or the measures side by
+# side)
+WINDOW_FIGURE_WIDTH_INCHES = 6.5
+WINDOW_FIGURE_WIDTH = WINDOW_FIGURE_WIDTH_INCHES * POINTS_PER_INCH
+WINDOW_AXIS_SPACE = 29   # their y axes (labels, measured), each panel / plot its own
+WINDOW_MARKER_SIZE = 60   # area of their points (px²)
+WINDOW_LEGEND_APART = ('BigST',)   # families of their legend in a column of their own
+WINDOW_FONT_SIZE_INCREASE = FONT_SIZE_INCREASE + 2   # their text larger than in the other figures
+WINDOW_TITLE_SIZE = PANEL_TITLE_SIZE + 2   # the measure, left of their panels / above their plots
+WINDOW_LEGEND_SYMBOL_SIZE = 700   # the symbols of their series legend (a line and a point): long enough for a dash
+# Legend symbols of a line and a point shape on its middle (Vega symbol paths, in [-1, 1])
+LEGEND_MARKER_PATHS = {
+    'circle': 'M -1 0 L 1 0 M 0.32 0 A 0.32 0.32 0 1 1 -0.32 0 A 0.32 0.32 0 1 1 0.32 0 Z',
+    'square': 'M -1 0 L 1 0 M -0.28 -0.28 L 0.28 -0.28 L 0.28 0.28 L -0.28 0.28 Z',
+    'triangle-up': 'M -1 0 L 1 0 M 0 -0.36 L 0.34 0.26 L -0.34 0.26 Z',
+    'diamond': 'M -1 0 L 1 0 M 0 -0.38 L 0.3 0 L 0 0.38 L -0.3 0 Z',
+    'cross': ('M -1 0 L 1 0 M -0.1 -0.32 L 0.1 -0.32 L 0.1 -0.1 L 0.32 -0.1 L 0.32 0.1 L 0.1 0.1 L 0.1 0.32 '
+              'L -0.1 0.32 L -0.1 0.1 L -0.32 0.1 L -0.32 -0.1 L -0.1 -0.1 Z'),
+    'triangle-down': 'M -1 0 L 1 0 M 0 0.36 L 0.34 -0.26 L -0.34 -0.26 Z',
+}
 
 
-def column_plot_width(columns):
-    """Width of the plots of a one-column figure with `columns` plots side by side, each its y axis (estimated)
-    on its left and its measure as title above."""
-    return ((COLUMN_FIGURE_WIDTH_INCHES * POINTS_PER_INCH - PANEL_SPACING * (columns - 1)) / columns
-            - PANEL_AXIS_SPACE)
+def column_plot_width(columns, width_inches=COLUMN_FIGURE_WIDTH_INCHES, axis_space=PANEL_AXIS_SPACE):
+    """Width of the plots of a one-column figure (width_inches wide) with `columns` plots side by side, each its
+    y axis axis_space wide (estimated) on its left and its measure as title above."""
+    return ((width_inches * POINTS_PER_INCH - PANEL_SPACING * (columns - 1)) / columns
+            - axis_space)
 
 
-def panel_width(columns, axis_space=PANEL_AXIS_SPACE):
-    """Width of the panels of a figure FIGURE_WIDTH wide with `columns` panels per row, the measure on their left
+def panel_width(columns, axis_space=PANEL_AXIS_SPACE, figure_width=FIGURE_WIDTH):
+    """Width of the panels of a figure figure_width wide with `columns` panels per row, the measure on their left
     and a y axis axis_space wide (estimated) on the left of each."""
-    return ((FIGURE_WIDTH - PANEL_TITLE_SIZE - PANEL_TITLE_OFFSET - PANEL_SPACING * (columns - 1)) / columns
+    return ((figure_width - PANEL_TITLE_SIZE - PANEL_TITLE_OFFSET - PANEL_SPACING * (columns - 1)) / columns
             - axis_space)
 
 
@@ -2602,15 +2753,17 @@ def chart_png(chart, width_inches=FIGURE_WIDTH_INCHES):
     return buffer.getvalue()
 
 
-def family_legend_layout(series, families):
+def family_legend_layout(series, families, apart=None):
     """
-    Legend entries (domain) of series laid out in columns: one per model family with several series, the other
-    series together in the first one. Vega-Lite fills a legend row by row: the columns are laid out with blank
-    entries (no label, no symbol, whatever the scales give them). Returns (domain, number of columns).
+    Legend entries (domain) of series laid out in columns: one per model family with several series (or, with
+    apart, one per family of apart only), the other series together in the first one. Vega-Lite fills a legend
+    row by row: the columns are laid out with blank entries (no label, no symbol, whatever the scales give them).
+    Returns (domain, number of columns).
     """
     family_series = pd.Series(list(series)).groupby(list(families), sort=False).agg(list)
-    singles = [s for f in family_series if len(f) == 1 for s in f]
-    columns = [singles] * bool(singles) + [f for f in family_series if len(f) > 1]
+    own_column = (lambda f: f in apart) if apart is not None else (lambda f: len(family_series[f]) > 1)
+    singles = [s for f in family_series.index if not own_column(f) for s in family_series[f]]
+    columns = [singles] * bool(singles) + [family_series[f] for f in family_series.index if own_column(f)]
     n_rows = max(map(len, columns))
     blanks = iter('\u200b' * (i + 1) for i in range(n_rows * len(columns)))
     return [column[row] if row < len(column) else next(blanks) for row in range(n_rows) for column in columns], \
@@ -2636,6 +2789,9 @@ def window_line_charts(values, measures, series_dims, facet_dims, family_scale, 
     dashed = (data['model_folder'].map(lambda f: short_model_name(f).startswith(PROPOSED_MODEL_PREFIX)
                                        and not NULL_PADDING_SUFFIX.search(str(f)))
               if 'model_folder' in data else pd.Series(False, index=data.index))
+    # The context-graph variants (e.g. ClouDens-BigST-ctx): the first point shape of their family
+    context = (data['model_folder'].map(lambda f: NULL_PADDING_SUFFIX.sub('', str(f)).endswith(CONTEXT_GRAPH_SUFFIX))
+               if 'model_folder' in data else pd.Series(False, index=data.index))
     combined = (data['subset'].map(lambda s: bool(component_subsets(str(s))))
                 if 'subset' in data else pd.Series(False, index=data.index))
     if short_names and 'model_folder' in data:
@@ -2650,13 +2806,17 @@ def window_line_charts(values, measures, series_dims, facet_dims, family_scale, 
     windows = sorted(data['window'].unique(), key=float)
     # Series in the order of the table, each in its family's color and its model's dash
     data['_dash'] = [COMBINED_SUBSET_DASH if c else LINE_DASHES[d] for d, c in zip(dashed, combined)]
-    first = data.assign(_order=order_key, _family=family, _dashed=dashed).sort_values(['_order', 'series'],
-                                                                                      kind='stable')
+    first = data.assign(_order=order_key, _family=family, _dashed=dashed, _context=context).sort_values(
+        ['_order', 'series'], kind='stable')
     first = first.drop_duplicates('series')
     colors = family_colors(family_scale)
     series = first['series'].tolist()
-    rank = first.groupby(['_family', '_dashed']).cumcount()
-    legend_domain, legend_columns = family_legend_layout(first['series'], first['_family'])
+    # The series sharing a color are told apart by their dash; when the dash tells the groups apart instead (all
+    # the groups in one chart), by their point shape
+    rank = (first.sort_values('_context', ascending=False, kind='stable')   # the context-graph variants first
+            .groupby(['_family'] if overlay_dims else ['_family', '_dashed']).cumcount().reindex(first.index))
+    # Two columns: the BigST variants, every other model (e.g. Anomaly Transformer, GRU, A3TGCN) in the first
+    legend_domain, legend_columns = family_legend_layout(first['series'], first['_family'], WINDOW_LEGEND_APART)
     color_of = dict(zip(series, [colors.get(f, NO_FAMILY_COLOR) for f in first['_family']]))
     dash_of = dict(zip(series, first['_dash']))
     # The subset among the series: the dash of each series (in its legend); otherwise (the subset in the panels /
@@ -2681,9 +2841,20 @@ def window_line_charts(values, measures, series_dims, facet_dims, family_scale, 
         legend.titleOrient = 'top'
         legend.strokeColor = 'transparent'   # no frame (paper_style frames the legends)
     title = ' · '.join(DIMENSIONS[d] for d in series_dims) or None
-    shape = alt.Shape('series:N', scale=alt.Scale(domain=legend_domain,
-                                                  range=[shape_of.get(s, 'circle') for s in legend_domain]),
-                      title=title, legend=legend)
+    # One series legend, each entry a line in the series' color and dash (its own; solid when the dash tells the
+    # groups / lines apart) with its point shape on it (LEGEND_MARKER_PATHS). It is drawn by an invisible layer of
+    # points (Vega-Lite has no legend symbol of a line and a point); the lines and points of the chart have none
+    series_dash = not overlay_dims and not dash_by_line
+    symbol_legend = legend.copy()
+    symbol_legend.symbolSize = WINDOW_LEGEND_SYMBOL_SIZE
+    symbol_legend.symbolStrokeWidth = 2
+    symbol_legend.symbolOpacity = 1
+    legend_shape = alt.Shape('series:N', title=title, legend=symbol_legend, scale=alt.Scale(
+        domain=legend_domain, range=[LEGEND_MARKER_PATHS[shape_of.get(s, 'circle')] for s in legend_domain]))
+    # The points: one layer per shape, of its series (a shape channel would share the scale of the legend's paths)
+    series_of_shape = {}
+    for s, shape in shape_of.items():
+        series_of_shape.setdefault(shape, []).append(s)
     tooltip = ['series', 'group' if overlay_dims else 'panel', 'window']
     if overlay_dims:
         # The dash tells apart the groups, the same for every series (the series by their color and point shape):
@@ -2710,7 +2881,8 @@ def window_line_charts(values, measures, series_dims, facet_dims, family_scale, 
             y=alt.Y('value:Q', title=None if facet_dims or overlay_dims else m,
                     scale=alt.Scale(zero=False, nice=False, padding=8),
                     axis=alt.Axis(tickSize=3, labelPadding=2, domain=False)),   # the border as axis line
-            color=alt.Color('series:N', scale=color_scale, title=title, legend=legend),
+            # No legend property: the series legend is the invisible layer's (legend=None here would remove it)
+            color=alt.Color('series:N', scale=color_scale, title=title),
             tooltip=[*tooltip, alt.Tooltip('value:Q', title=m, format=fmt)])
         if overlay_dims:
             stroke_dash = group_dash
@@ -2718,34 +2890,47 @@ def window_line_charts(values, measures, series_dims, facet_dims, family_scale, 
             stroke_dash = alt.StrokeDash('panel_line:N', legend=None, scale=alt.Scale(
                 domain=list(line_dash_of), range=list(line_dash_of.values())))
         else:
-            stroke_dash = alt.StrokeDash('series:N', scale=dash_scale, title=title, legend=legend)
+            stroke_dash = alt.StrokeDash('series:N', scale=dash_scale, title=title)
+        # Its fill (the point) and its stroke (the line) both in the series' color: one legend of the same field
+        legend_encodings = dict(color=alt.Color('series:N', scale=color_scale, title=title, legend=symbol_legend),
+                                stroke=alt.Stroke('series:N', scale=color_scale, title=title, legend=symbol_legend),
+                                shape=legend_shape, x=encodings['x'], y=encodings['y'])
+        if series_dash:
+            legend_encodings['strokeDash'] = alt.StrokeDash('series:N', scale=dash_scale, title=title,
+                                                            legend=symbol_legend)
         layers = alt.layer(
             alt.Chart().mark_line(strokeWidth=1.5).encode(strokeDash=stroke_dash, detail='line:N', **encodings),
-            alt.Chart().mark_point(filled=True, size=20).encode(shape=shape, **encodings),
+            *[alt.Chart().mark_point(filled=True, size=WINDOW_MARKER_SIZE, shape=shape).encode(**encodings)
+              .transform_filter(alt.FieldOneOfPredicate(field='series', oneOf=members))
+              for shape, members in series_of_shape.items()],
+            alt.Chart().mark_point(filled=True, opacity=0).encode(**legend_encodings),   # the legend only
             data=long[long['measure'] == m])
-        # FIGURE_WIDTH wide in all: a single chart fits it exactly, the panels share it (their axes estimated)
+        # WINDOW_FIGURE_WIDTH wide in all: a single chart fits it exactly, the panels / the charts of the measures
+        # side by side share it (their axes estimated)
         if facet_dims:
             columns = min(PANEL_COLUMNS, len(panels))
-            width = panel_width(columns)
+            width = panel_width(columns, WINDOW_AXIS_SPACE, WINDOW_FIGURE_WIDTH)
             chart = layers.properties(width=width, height=width * PANEL_ASPECT).facet(
                 facet=alt.Facet('panel:N', sort=panels, title=None), columns=columns, spacing=PANEL_SPACING
             ).resolve_scale(y='independent').properties(   # each panel its own y range
-                title=alt.TitleParams(m, orient='left', anchor='middle', fontSize=PANEL_TITLE_SIZE,
+                title=alt.TitleParams(m, orient='left', anchor='middle', fontSize=WINDOW_TITLE_SIZE,
                                       fontWeight='bold', offset=PANEL_TITLE_OFFSET))
         elif overlay_dims:   # side by side in one figure: concatenated charts cannot fit a width (autosize)
-            chart = layers.properties(width=column_plot_width(len(measures)), height=COLUMN_PLOT_HEIGHT,
-                                      title=alt.TitleParams(m, fontSize=PANEL_TITLE_SIZE, fontWeight='bold',
+            chart = layers.properties(width=column_plot_width(len(measures), WINDOW_FIGURE_WIDTH_INCHES,
+                                                              WINDOW_AXIS_SPACE),
+                                      height=COLUMN_PLOT_HEIGHT,
+                                      title=alt.TitleParams(m, fontSize=WINDOW_TITLE_SIZE, fontWeight='bold',
                                                             offset=PANEL_TITLE_OFFSET))
         else:
-            chart = layers.properties(width=FIGURE_WIDTH, height=FIGURE_WIDTH * CHART_ASPECT,
+            chart = layers.properties(width=WINDOW_FIGURE_WIDTH, height=WINDOW_FIGURE_WIDTH * CHART_ASPECT,
                                       autosize=alt.AutoSizeParams(type='fit-x', contains='padding'))
         charts.append(chart)
     if overlay_dims:   # one figure, one chart per measure side by side, their legends shared (same scales)
         figure = alt.hconcat(*charts, spacing=PANEL_SPACING).resolve_scale(
             y='independent', color='shared', strokeDash='shared', shape='shared'
         ).resolve_legend(color='shared', strokeDash='shared', shape='shared')
-        return [paper_style(figure)]
-    return [paper_style(chart) for chart in charts]
+        return [paper_style(figure, WINDOW_FONT_SIZE_INCREASE)]
+    return [paper_style(chart, WINDOW_FONT_SIZE_INCREASE) for chart in charts]
 
 
 def latex_tabular(row_headers, header, cells, rule_before=()):
@@ -2772,6 +2957,213 @@ def latex_tabular(row_headers, header, cells, rule_before=()):
         lines.append(' & '.join(map(str, row)) + ' \\\\')
     lines += ['\\bottomrule', '\\end{tabular}']
     return '\n'.join(lines) + '\n'
+
+
+# Comparison table of the models on one configuration (Table IV of the paper): the strategies by their full names
+# and the symbols of their parameters (column of the grid search), as in the paper
+STRATEGY_FULL_NAMES = {'likelihood': 'Likelihood Function', 'mahalanobis': 'Mahalanobis Distance',
+                       'likelihood_mahalanobis': 'Likelihood Function (Mahalanobis)',
+                       'mean_reconstruction_errors': 'Mean Reconstruction Errors'}
+LIKELIHOOD_PARAMETERS = [('W', 'W', 'long_window'), ('W′', "W'", 'short_window'), ('Lt', 'L_t', 'anomaly_threshold')]
+STRATEGY_PARAMETERS = {'likelihood': LIKELIHOOD_PARAMETERS, 'likelihood_mahalanobis': LIKELIHOOD_PARAMETERS}
+THRESHOLD_PARAMETER = [('ϵ', '\\epsilon', 'anomaly_threshold')]   # the other strategies (score thresholds)
+# Threshold type of the paper for each strategy (likelihood: absolute, e.g. 0.99975; the others: a percentile, e.g.
+# 99.8): the other type is named next to the strategy
+PAPER_THRESHOLD_TYPES = {'likelihood': 'absolute', 'likelihood_mahalanobis': 'absolute'}
+SOURCE_HEADERS = {name: name.title() for name in ANOMALY_SOURCE_NAMES.values()}   # Issue tracker -> Issue Tracker
+COMPARISON_GROUPS = [('Confusion Matrix', ['TP', 'TN', 'FP', 'FN']),
+                     ('NAB Score', ['Standard Profile', 'Low FN Profile']),
+                     ('Detected Anomalies', list(ANOMALY_SOURCE_NAMES.values()))]
+COMPARISON_DEFAULT_STRATEGIES = ['likelihood', 'mean_reconstruction_errors']
+
+
+def _parameter_value(value):
+    """A parameter as in the paper: 30, 0.99975, 99.8."""
+    return f'{float(value):g}' if pd.notna(value) else '-'
+
+
+def comparison_cells(row):
+    """Cells of a row of the comparison table: the strategy and its parameters (text, LaTeX), the point-based
+    confusion matrix, the NAB scores and, per anomaly source, detected / total with the ids of the detected ones."""
+    strategy = row['post_processing_strategy']
+    parameters = STRATEGY_PARAMETERS.get(strategy, THRESHOLD_PARAMETER)
+    values = [_parameter_value(row[column]) for _, _, column in parameters]
+    name = STRATEGY_FULL_NAMES.get(strategy, strategy)
+    if pd.notna(row['threshold_type']) and row['threshold_type'] != PAPER_THRESHOLD_TYPES.get(strategy, 'percentile'):
+        name += f' ({row["threshold_type"]} threshold)'
+    cells = {'strategy': f'{name}<br>{{{", ".join(s for s, _, _ in parameters)}}} = {{{", ".join(values)}}}',
+             'strategy_tex': f'\\makecell{{{_latex_text(name)}\\\\$\\{{{", ".join(s for _, s, _ in parameters)}\\}} = '
+                             f'\\{{{", ".join(values)}\\}}$}}'}
+    try:
+        tn, fp, fn, tp = ast.literal_eval(row['confusion_matrix'])
+        cells.update(TP=int(tp), TN=int(tn), FP=int(fp), FN=int(fn))
+    except (ValueError, SyntaxError, TypeError):
+        cells.update(TP=None, TN=None, FP=None, FN=None)
+    cells['Standard Profile'], cells['Low FN Profile'] = row['standard_normalized'], row['reward_fn_normalized']
+    counters = _parse_counters(row['detection_counters']) if pd.notna(row['detection_counters']) else {}
+    for source, name in ANOMALY_SOURCE_NAMES.items():
+        ids = sorted(counters.get(f'{source}_detected_ids', []))
+        count = f'{len(ids)}/{len(counters.get(f"gt_{source}_ids", []))}'
+        listed = f'[{", ".join(map(str, ids))}]' if ids else '–'
+        cells[name] = f'{count}<br>{listed}'
+        # \\{} : a [ right after \\ would be read as its optional spacing
+        cells[f'{name}_tex'] = f'\\makecell{{{count}\\\\{{}}{listed if ids else "--"}}}'
+    return cells
+
+
+def comparison_latex(table, caption):
+    """booktabs tabular of the comparison table, its header as in Table IV of the paper."""
+    n_numbers = sum(len(c) for g, c in COMPARISON_GROUPS if g != 'Detected Anomalies')
+    n_sources = len(ANOMALY_SOURCE_NAMES)
+    spans, rules, start = [], [], 3
+    for group, columns in COMPARISON_GROUPS:
+        spans.append(f'\\multicolumn{{{len(columns)}}}{{c}}{{{group}}}')
+        rules.append(f'\\cmidrule(lr){{{start}-{start + len(columns) - 1}}}')
+        start += len(columns)
+    inner = ['\\makecell{' + c.replace(' Profile', '\\\\Profile') + '}' if c.endswith('Profile') else c
+             for _, columns in COMPARISON_GROUPS for c in columns]
+    inner = [SOURCE_HEADERS.get(c, c) for c in inner]
+    lines = [f'% {caption}', '% \\usepackage{booktabs, makecell, multirow}',
+             '\\begin{tabular}{ll' + 'r' * n_numbers + 'c' * n_sources + '}', '\\toprule',
+             ' & '.join(['\\multirow{2}{*}{\\makecell{Scoring\\\\Strategy}}', '\\multirow{2}{*}{Model}', *spans]) + ' \\\\',
+             ' '.join(rules), ' & '.join(['', '', *inner]) + ' \\\\', '\\midrule']
+    previous = None
+    for _, row in table.iterrows():
+        if previous is not None and row['model'] != previous:   # a rule between the models
+            lines.append('\\midrule')
+        previous = row['model']
+        numbers = [str(row[c]) if pd.notna(row[c]) else '--' for c in ('TP', 'TN', 'FP', 'FN')]
+        numbers += [f'{row[c]:.2f}' if pd.notna(row[c]) else '--' for c in ('Standard Profile', 'Low FN Profile')]
+        lines.append(' & '.join([row['strategy_tex'], _latex_text(row['model']), *numbers,
+                                 *(row[f'{s}_tex'] for s in ANOMALY_SOURCE_NAMES.values())]) + ' \\\\')
+    lines += ['\\bottomrule', '\\end{tabular}']
+    return '\n'.join(lines) + '\n'
+
+
+BEST_BY_METRIC = 'Best by metric'
+# Parameters of a setting that can be fixed (percentile thresholds), with their symbols in the app
+FIXED_PARAMETERS = {'anomaly_threshold': None, 'long_window': 'W', 'short_window': 'W′', 'topk': 'Top-k'}
+
+
+def fixed_percentile_settings(part, strategies):
+    """Percentile thresholds: for the threshold of each strategy (default 99.8, as in the paper) and the
+    parameters taking several values (e.g. W, W' of the likelihood), a fixed value or the best by the metric.
+    Returns the rows of the fixed values and the fixed values as text (caption of the table)."""
+    st.markdown('**Fixed parameters** (percentile thresholds): the same setting for every model; '
+                f'*{BEST_BY_METRIC}*: each model its own best value.')
+    texts = []
+    for strategy in strategies:
+        rows = part[part['post_processing_strategy'] == strategy]
+        if rows.empty:
+            continue
+        threshold_symbol = 'Lt' if strategy in STRATEGY_PARAMETERS else 'ϵ'
+        parameters = [c for c in FIXED_PARAMETERS if c == 'anomaly_threshold' or rows[c].nunique() > 1]
+        columns = st.columns([2] + [1] * len(FIXED_PARAMETERS))
+        columns[0].markdown(f'*{STRATEGY_FULL_NAMES.get(strategy, strategy)}*')
+        fixed = []
+        for column, container in zip(parameters, columns[1:]):
+            values = sorted(rows[column].dropna().unique().tolist(), key=lambda v: (str(type(v)), v))
+            label = FIXED_PARAMETERS[column] or f'{threshold_symbol} (percentile)'
+            default = values.index(99.8) + 1 if column == 'anomaly_threshold' and 99.8 in values else 0
+            choice = container.selectbox(label, [BEST_BY_METRIC, *values], index=default,
+                                         key=f'comparison_fixed_{strategy}_{column}',
+                                         format_func=lambda v: v if v == BEST_BY_METRIC else str(v))
+            if choice != BEST_BY_METRIC:
+                part = part[(part['post_processing_strategy'] != strategy) | (part[column] == choice)]
+                fixed.append(f'{label.split(" ")[0]} = {_parameter_value(choice) if column != "topk" else choice}')
+        if fixed:
+            texts.append(f'{STRATEGY_FULL_NAMES.get(strategy, strategy)} with {", ".join(fixed)}')
+    return part, '; '.join(texts)
+
+
+def render_comparison_table(results, options):
+    """Comparison of the models on one configuration (a window size, subset and fill NaN), one row per model and
+    scoring strategy, its setting the best one by a selection metric: Table IV of the paper, and its LaTeX. Its
+    filters are its own: neither the sidebar filters nor those of the results table apply."""
+    st.subheader('Comparison on one configuration (Table IV)', divider='gray')
+    st.caption('This section has its own filters: those of the table above do not apply here.')
+
+    def default_index(values, value):
+        return values.index(value) if value in values else 0
+
+    col_window, col_subset, col_fill, col_normalization, col_threshold = st.columns(5)
+    windows, subsets, fills = (options[c][0] for c in ('window', 'subset', 'fill_nan'))
+    window = col_window.selectbox('Window size', windows, key='comparison_window', index=default_index(windows, 6))
+    subset = col_subset.selectbox('Subset', subsets, key='comparison_subset', format_func=short_subset_name,
+                                  index=default_index(subsets, 'no_group_5xx_count'))
+    fill = col_fill.selectbox('Fill NaN', fills, key='comparison_fill', index=default_index(fills, 'zero'))
+    normalizations = col_normalization.multiselect('Score normalization', options['score_normalization'][0],
+                                                   key='comparison_normalization', placeholder='All')
+    threshold_types = col_threshold.multiselect('Threshold type', options['threshold_type'][0],
+                                                key='comparison_threshold_type', placeholder='All')
+    part = results[(results['window'] == window) & (results['subset'] == subset) & (results['fill_nan'] == fill)]
+    if normalizations:
+        part = part[part['score_normalization'].isin(normalizations)]
+    if threshold_types:
+        part = part[part['threshold_type'].isin(threshold_types)]
+    if part.empty:
+        st.info('No grid-search row for this configuration.')
+        return
+
+    col_models, col_strategies, col_select, col_short = st.columns([3, 2, 2, 1])
+    short_names = col_short.toggle('Short names', value=True, key='comparison_short_names')
+    models = sorted(part['model_folder'].dropna().unique(), key=model_order_key)
+    chosen_models = col_models.multiselect('Models', models, default=models, key='comparison_models',
+                                           format_func=short_model_name if short_names else str)
+    strategies = sorted(part['post_processing_strategy'].dropna().unique())
+    chosen_strategies = col_strategies.multiselect(
+        'Scoring strategies', strategies, key='comparison_strategies',
+        default=[s for s in COMPARISON_DEFAULT_STRATEGIES if s in strategies] or strategies,
+        format_func=lambda s: STRATEGY_FULL_NAMES.get(s, s))
+    available_metrics = [m for m in SELECTION_METRICS if m in part.columns and part[m].notna().any()]
+    select_by = col_select.selectbox(
+        'Setting picked by', available_metrics, key='comparison_select_by',
+        index=default_index(available_metrics, 'train_valid_f1'),
+        help='For each model and strategy, the setting (thresholds, windows of the likelihood, ...) with the highest '
+             'value of this metric. train_valid_* / valid_* select without the test labels.')
+    part = part[part['model_folder'].isin(chosen_models) & part['post_processing_strategy'].isin(chosen_strategies)]
+    fixed = threshold_types == ['percentile'] and not part.empty
+    if fixed:
+        part, fixed_text = fixed_percentile_settings(part, chosen_strategies)
+    keys = ['model_folder', 'post_processing_strategy']
+    # e.g. *_vus_pr / *_auc_pr: empty for the likelihood of grid searches older than rerun_grid_search.py --likelihood-pr; no matter when the
+    # parameters left a single setting per model
+    has_choice = part.groupby(keys).size().gt(1).groupby(level='post_processing_strategy').any()
+    missing = [s for s in chosen_strategies if has_choice.get(s, False)
+               and part.loc[part['post_processing_strategy'] == s, select_by].isna().all()]
+    if missing:
+        st.warning(f'`{select_by}` has no value for {", ".join(STRATEGY_FULL_NAMES.get(s, s) for s in missing)}: '
+                   'its first setting is shown. Pick the settings by another metric, e.g. `train_valid_f1`' +
+                   (', or fix all its parameters.' if fixed else '.'))
+    picked = best_per_group(part.assign(_by=part[select_by].fillna(-math.inf)), keys, '_by')
+    if picked.empty:
+        st.info('No setting for this configuration.')
+        return
+    # One row per model and strategy: the models in their usual order, the strategies as chosen
+    picked = picked.assign(_model=picked['model_folder'].map(model_order_key),
+                           _strategy=picked['post_processing_strategy'].map(chosen_strategies.index))
+    picked = picked.sort_values(['_model', '_strategy'], kind='stable')
+    table = pd.DataFrame([comparison_cells(row) for _, row in picked.iterrows()])
+    table['model'] = [short_model_name(m) if short_names else m for m in picked['model_folder']]
+    caption = (f'Comparison of the models on the {short_subset_name(subset)} subset with a sliding window size of '
+               f'{window} ({fill} imputation), ' +
+               (f'{fixed_text}; the other parameters of each row picked by {select_by}.' if fixed and fixed_text else
+                f'the setting of each row picked by {select_by}.'))
+    shown = table.set_index(['strategy', 'model'])[[c for _, columns in COMPARISON_GROUPS for c in columns]]
+    shown.index.names = ['Scoring Strategy', 'Model']
+    shown.columns = pd.MultiIndex.from_tuples([(g, SOURCE_HEADERS.get(c, c)) for g, columns in COMPARISON_GROUPS
+                                               for c in columns])
+    styler = shown.style.format('{:.2f}', subset=[('NAB Score', c) for c in COMPARISON_GROUPS[1][1]], na_rep='–')
+    styler = styler.format('{:.0f}', subset=[('Confusion Matrix', c) for c in COMPARISON_GROUPS[0][1]], na_rep='–')
+    st.caption(caption + ' Confusion matrix: point-based. A ground-truth anomaly is detected if at least one TP '
+                         'falls within its window; [ids] of the detected ones.')
+    st.html(MERGED_TABLE_CSS + '<div class="merged-table">' +
+            styler.set_table_attributes('class="merged-table"').to_html() + '</div>')
+    latex = comparison_latex(table, caption)
+    st.download_button('Download as LaTeX', latex.encode(), file_name=f'comparison_w{window}_{subset}_{fill}.tex',
+                       mime='text/plain', icon=':material/download:', key='comparison_download')
+    with st.expander('LaTeX', icon=':material/code:'):
+        st.code(latex, language='latex')
 
 
 def render_results_table(results, family_scale, options):
@@ -2951,7 +3343,7 @@ def render_results_table(results, family_scale, options):
                'Max': 'highest value over the settings of each cell (measure by measure)'}[statistic]
     st.caption(f'{len(rows):,} settings, {len(table)} rows: {caption}.' +
                (f' Dark / light: top 1 / top 2, {TABLE_HIGHLIGHT[highlight]}.' if TABLE_HIGHLIGHT[highlight] else '') +
-               ' –: no value (e.g. AUC-PR / VUS-PR, computed for the score strategies only).' +
+               ' –: no value (e.g. AUC-PR / VUS-PR of the likelihood in grid searches not updated by rerun_grid_search.py --likelihood-pr).' +
                (' *: graph model with null padding.' if short_names and 'model_folder' in row_dims else ''))
     if merge_cells:
         # Static HTML table: the row columns as a (sparsified) index, so equal consecutive values, e.g. a
@@ -2995,10 +3387,11 @@ def render_results_table(results, family_scale, options):
                                     overlay_dims)
         if overlay_dims:   # one figure of all the measures, one column of the paper wide
             st.altair_chart(charts[0], width='content')
-            export_buttons(charts[0], 'results_by_window', 'all_measures', COLUMN_FIGURE_WIDTH_INCHES)
+            export_buttons(charts[0], 'results_by_window', 'all_measures', WINDOW_FIGURE_WIDTH_INCHES)
         for measure, chart in zip(measures, [] if overlay_dims else charts):
             st.altair_chart(chart, width='content')   # the widths set in window_line_charts, not the page width
-            export_buttons(chart, f'results_by_window_{measure}'.replace(' ', '_'), measure)
+            export_buttons(chart, f'results_by_window_{measure}'.replace(' ', '_'), measure,
+                           WINDOW_FIGURE_WIDTH_INCHES)
     else:
         st.caption('Line charts along the window size: put *Window size* in the Columns.')
 
@@ -3038,6 +3431,7 @@ def render_results_table(results, family_scale, options):
             shown = [c for c in dict.fromkeys(shown) if c in picked.columns]
             st.dataframe(picked[shown].sort_values(keys), hide_index=True,
                          column_config={**measure_column_config(measures), **DETECTION_COLUMN_CONFIG})
+
 
 
 

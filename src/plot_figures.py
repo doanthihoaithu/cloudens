@@ -11,18 +11,26 @@ from omegaconf import DictConfig
 
 from analysis_results import text_subset_wrapper_latex, text_subset_wrapper, SCORING_STRATEGY_DISPLAY_FULL_NAME_MAP, \
     MODEL_DISPLAY_NAME_MAP
+from figure_style import AXIS_LABEL_FONT_SIZE, LEGEND_FONT_SIZE, TICK_FONT_SIZE
 from ibm_dataset_loader import IBMDatasetLoader
 from model_outputs import (PREDICTION_FILES, MEAN_ERROR_COLUMN, parse_topk, likelihood_column,
                            label_from_scores, load_anomaly_scores, existing_anomaly_scores_path)
 from utils import get_project_root, scoring_result_file_name, results_root_dir, score_normalizations
 
 FONT_SIZE = 12
+NARROW_FONT_SIZE_INCREASE = 2   # points added to the font sizes of the paper (src/figure_style.py) in the narrow figures
 
 _ANOMALY_SOURCE_COLORS = {
     1: ('green',  'Issue Tracker'),
     2: ('orange', 'Instant Messenger'),
     3: ('violet', 'Test Log'),
 }
+
+
+def _raw_test_values(dataloader):
+    """The test telemetry in its original units: the scaling undone, and the log1p too when the loader applied it."""
+    X = dataloader.scaler.inverse_transform(dataloader.X_test_scaled)
+    return np.expm1(X) if getattr(dataloader, 'log_transform', False) else X
 
 
 def _plot_source_spans(ax, anomaly_windows_test, alpha=0.15):
@@ -138,7 +146,7 @@ def plot_reconstruction_errors(dataloader, results_dir, model_name,
     # ── Resolve node time series for each requested node ─────────────────────
     node_ids_list = list(node_ids)
     # Inverse-transform the full scaled matrix once to get raw values [timestamps, N*F]
-    X_test_raw = dataloader.scaler.inverse_transform(dataloader.X_test_scaled)
+    X_test_raw = _raw_test_values(dataloader)
 
     valid_nodes = []   # list of (node_name, series [n, F])
     for node_name in (shown_nodes or []):
@@ -239,7 +247,7 @@ def plot_only_node_series(dataloader, shown_node, out_dir=None,
     F = len(feat_names)
     ni = node_ids_list.index(shown_node)
 
-    X_test_raw = dataloader.scaler.inverse_transform(dataloader.X_test_scaled)
+    X_test_raw = _raw_test_values(dataloader)
     test_index = np.array(dataloader.test_index)
     test_labels = np.array(dataloader.test_labels).ravel()
 
@@ -353,7 +361,7 @@ def plot_only_multiple_node_series_zoom_in(dataloader, shown_nodes, out_dir=None
     node_ids_list = list(node_ids)
     F = len(feat_names)
 
-    X_test_raw  = dataloader.scaler.inverse_transform(dataloader.X_test_scaled)
+    X_test_raw  = _raw_test_values(dataloader)
     test_index  = np.array(dataloader.test_index)
     test_labels = np.array(dataloader.test_labels).ravel()
 
@@ -461,8 +469,11 @@ def plot_only_multiple_node_series_zoom_in(dataloader, shown_nodes, out_dir=None
 
 
 def plot_only_time_series(dataloader, out_dir=None,
-                          zoom_periods=None
+                          zoom_periods=None,
+                          width=None
                           ):
+    """width: figure width (inches), its text at the font sizes of the paper (src/figure_style.py) to be included
+    at that width, saved as time_series_<http>_<agg>_<width>in.png; None: the 12 in wide figure."""
     anomaly_windows_test = dataloader.anomaly_windows_test.copy()
     anomaly_windows_test['anomaly_window_start'] = pd.to_datetime(
         anomaly_windows_test['anomaly_window_start'])
@@ -470,7 +481,7 @@ def plot_only_time_series(dataloader, out_dir=None,
         anomaly_windows_test['anomaly_window_end'])
     index = dataloader.test_index
 
-    X_raw = dataloader.scaler.inverse_transform(dataloader.X_test_scaled)
+    X_raw = _raw_test_values(dataloader)
     mean_series = X_raw.mean(axis=1)
     _ms_min, _ms_max = mean_series.min(), mean_series.max()
     mean_series = (mean_series - _ms_min) / max(_ms_max - _ms_min, 1e-8)
@@ -483,7 +494,13 @@ def plot_only_time_series(dataloader, out_dir=None,
     n_anomalous = int((test_labels == 1).sum())
     print(f'Number of anomalous timestamps in testing data: {n_anomalous} / {T0}')
 
-    fig, ax = plt.subplots(figsize=(12, 2.5), constrained_layout=True)
+    if width is None:
+        figsize, label_size, tick_size, legend_size = (12, 2.5), FONT_SIZE, FONT_SIZE - 1, FONT_SIZE - 1
+    else:
+        figsize = (width, 2.0)
+        label_size, tick_size, legend_size = (size + NARROW_FONT_SIZE_INCREASE for size in
+                                              (AXIS_LABEL_FONT_SIZE, TICK_FONT_SIZE, LEGEND_FONT_SIZE))
+    fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
 
     ax.plot(plot_index, plot_series, color='steelblue', linewidth=0.8)
     _plot_source_spans(ax, anomaly_windows_test, alpha=0.3)
@@ -492,13 +509,13 @@ def plot_only_time_series(dataloader, out_dir=None,
     http_codes_used = ', '.join(filt.http_codes)
     agg_used = ', '.join(filt.aggregations)
 
-    ax.set_xlabel('Timestamp', fontsize=FONT_SIZE)
-    ax.set_ylabel(f'Normalized $\\mathtt{{count}}$ [0,1]', fontsize=FONT_SIZE)
+    ax.set_xlabel('Timestamp', fontsize=label_size)
+    ax.set_ylabel(f'Normalized $\\mathtt{{count}}$ [0,1]', fontsize=label_size)
     # ax.set_title(f'Sum of ${http_codes_used}\,{agg_used}$ subset accross all dimensions',
     #              fontsize=FONT_SIZE)
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
-    ax.tick_params(axis='x', rotation=30, labelsize=FONT_SIZE - 1)
-    ax.tick_params(axis='y', labelsize=FONT_SIZE - 1)
+    ax.tick_params(axis='x', rotation=30, labelsize=tick_size)
+    ax.tick_params(axis='y', labelsize=tick_size)
     ax.grid(True, linestyle='--', linewidth=0.4, alpha=0.6)
 
     # zoom_periods: list of (start, end) tuples
@@ -522,9 +539,10 @@ def plot_only_time_series(dataloader, out_dir=None,
             annotation,
             xy=(mid, 0.02),
             xycoords=('data', 'axes fraction'),
-            xytext=(mid, 0.22),
+            # the narrow figure: every other annotation higher, so that close periods (e.g. 03-07, 03-19) do not overlap
+            xytext=(mid, 0.22 if width is None or period_i % 2 == 0 else 0.42),
             textcoords=('data', 'axes fraction'),
-            fontsize=FONT_SIZE - 2,
+            fontsize=tick_size - 1,
             color='red',
             ha='center',
             arrowprops=dict(arrowstyle='->', color='red', lw=1.0),
@@ -532,13 +550,14 @@ def plot_only_time_series(dataloader, out_dir=None,
 
     fig.legend(handles=_source_legend_handles(), loc='upper right',
                bbox_to_anchor=(1.0, 1.15), ncol=len(_ANOMALY_SOURCE_COLORS),
-               fontsize=FONT_SIZE - 1, frameon=True)
+               fontsize=legend_size, frameon=True)
 
     save_dir = out_dir or '.'
     os.makedirs(save_dir, exist_ok=True)
     safe_http = http_codes_used.replace(',', '').replace(' ', '_')
     safe_agg = agg_used.replace(',', '').replace(' ', '_')
-    out_path = os.path.join(save_dir, f'time_series_{safe_http}_{safe_agg}.png')
+    safe_width = '' if width is None else f'_{width:g}in'
+    out_path = os.path.join(save_dir, f'time_series_{safe_http}_{safe_agg}{safe_width}.png')
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f'Saved time series plot to {out_path}')
@@ -558,7 +577,7 @@ def plot_detected_anomalies(dataloader, results_dir, models, imputation_strategi
     labels = np.array(dataloader.test_labels).ravel()
     anomaly_windows_test = dataloader.anomaly_windows_test
 
-    X_raw = dataloader.scaler.inverse_transform(dataloader.X_test_scaled)
+    X_raw = _raw_test_values(dataloader)
     mean_series = X_raw.mean(axis=1)
     _ms_min, _ms_max = mean_series.min(), mean_series.max()
     mean_series = (mean_series - _ms_min) / max(_ms_max - _ms_min, 1e-8)
@@ -1089,7 +1108,7 @@ def plot_detected_anomalies_for_specific_periods(
     labels = np.array(dataloader.test_labels).ravel()
     anomaly_windows_test = dataloader.anomaly_windows_test
 
-    X_raw = dataloader.scaler.inverse_transform(dataloader.X_test_scaled)
+    X_raw = _raw_test_values(dataloader)
     mean_series = X_raw.mean(axis=1)
     _ms_min, _ms_max = mean_series.min(), mean_series.max()
     mean_series = (mean_series - _ms_min) / max(_ms_max - _ms_min, 1e-8)
@@ -1490,6 +1509,7 @@ def main(cfg: DictConfig):
 
 
     plot_only_time_series(dataloader, output_dir, zoom_periods=zoom_in_periods)
+    plot_only_time_series(dataloader, output_dir, zoom_periods=zoom_in_periods, width=6.5)
     plot_detected_anomalies_for_specific_periods(dataloader, results_dir,
                                                  shown_models,
                                                  missing_imputation_stategies,

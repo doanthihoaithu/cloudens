@@ -16,6 +16,12 @@ From the project root:
     python src/rerun_grid_search.py trained_models_log1p --models BigST A3TGCN     # only these model folders
     python src/rerun_grid_search.py trained_models_log1p --strategies mahalanobis mean_reconstruction_errors
     python src/rerun_grid_search.py trained_models_log1p --recompute-mahalanobis      # new Mahalanobis settings
+    python src/rerun_grid_search.py trained_models_log1p --likelihood-pr              # AUC-PR / VUS-PR of the likelihood
+
+With --likelihood-pr, no grid search: the inputs of the likelihood (the normalised errors aggregated over the top-k
+sensors) are computed from the saved forecasting errors and added to the score files, and the AUC-PR / VUS-PR columns
+of the likelihood rows of the grid-search CSVs filled with those of these inputs (likelihood_mahalanobis: of the
+scaled Mahalanobis distance), the same for every window pair and threshold; the other columns are kept.
 """
 import argparse
 import os
@@ -30,11 +36,12 @@ from omegaconf import OmegaConf
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ibm_dataset_loader import IBMDatasetLoader
-from model_outputs import (IS_NAN_FILES, MAHALANOBIS_COLUMN, MEAN_ERROR_COLUMN, PREDICTION_FILES, SCORE_INFO_COLUMNS,
-                           SPLITS, compute_mahalanobis_scores, existing_anomaly_scores_path, likelihood_window_pairs,
-                           load_predictions, mahalanobis_likelihood_column, mahalanobis_score_columns,
+from model_outputs import (IS_NAN_FILES, LIKELIHOOD_STRATEGIES, MAHALANOBIS_COLUMN, MEAN_ERROR_COLUMN, PREDICTION_FILES,
+                           SCORE_INFO_COLUMNS, SPLITS, compute_mahalanobis_scores, existing_anomaly_scores_path,
+                           likelihood_input_columns, likelihood_window_pairs, load_predictions,
+                           mahalanobis_likelihood_column, mahalanobis_score_columns, normalized_errors, parse_topk,
                            read_anomaly_scores_file, save_anomaly_scores)
-from run_training_single_model import EVALUATION_SPLITS, SCORE_STRATEGIES, grid_search_new
+from run_training_single_model import EVALUATION_SPLITS, SCORE_STRATEGIES, _likelihood_pr_metrics, grid_search_new
 from utils import get_project_root, scoring_result_file_name
 
 SCORE_FILE_PATTERN = re.compile(r'^(?P<model>.+)_anomaly_scores_(?P<normalization>global|per_node)\.(parquet|csv)$')
@@ -84,16 +91,12 @@ def scorer_args_of(experiment_config):
                 pca_quantile=experiment_config.get('mahalanobis_pca_quantile', 0.99))
 
 
-def recompute_mahalanobis(model_dir, model, normalizations, experiment_config):
-    """
-    Mahalanobis distances computed again from the saved forecasting errors of model_dir, with the config's
-    reference split and scorer, written into the score files of the normalizations (their other columns kept).
-    The splits and the windows without anomalies are those of the saved scores (timestamp, split,
-    is_clean_window columns), as the data loader made them.
-    """
+def saved_outputs(model_dir, model, normalization):
+    """(outputs, data loader) of the saved forecasting errors of model_dir: the splits and the windows without
+    anomalies are those of the saved scores (timestamp, split, is_clean_window columns), as the data loader made them."""
     if not all((model_dir / f).exists() for f in PREDICTION_FILES.values()):
         raise FileNotFoundError(f'no saved predictions ({", ".join(PREDICTION_FILES.values())})')
-    scores = read_anomaly_scores_file(existing_anomaly_scores_path(str(model_dir), model, normalizations[0]))
+    scores = read_anomaly_scores_file(existing_anomaly_scores_path(str(model_dir), model, normalization))
     split_of = {s: scores[scores['split'] == s] for s in SPLITS}
     num_columns = pd.read_parquet(model_dir / PREDICTION_FILES['error']).shape[1]
     is_nan_file = model_dir / IS_NAN_FILES['predicted']
@@ -104,7 +107,15 @@ def recompute_mahalanobis(model_dir, model, normalizations, experiment_config):
         train_clean_mask=split_of['train']['is_clean_window'].to_numpy() == 1,
         valid_clean_mask=split_of['valid']['is_clean_window'].to_numpy() == 1,
         num_nodes=num_nodes, num_node_features=num_columns // num_nodes)
-    outputs = load_predictions(data_loader, str(model_dir))
+    return load_predictions(data_loader, str(model_dir)), data_loader
+
+
+def recompute_mahalanobis(model_dir, model, normalizations, experiment_config):
+    """
+    Mahalanobis distances computed again from the saved forecasting errors of model_dir, with the config's
+    reference split and scorer, written into the score files of the normalizations (their other columns kept).
+    """
+    outputs, data_loader = saved_outputs(model_dir, model, normalizations[0])
     scorer_args = scorer_args_of(experiment_config)
     distances, reference_distances, _ = compute_mahalanobis_scores(outputs, data_loader, experiment_config, scorer_args)
     window_pairs, with_windows = likelihood_window_pairs(experiment_config)
@@ -114,6 +125,41 @@ def recompute_mahalanobis(model_dir, model, normalizations, experiment_config):
         updated = scores[list(SCORE_INFO_COLUMNS)].assign(**columns)
         save_anomaly_scores(updated, str(model_dir), model, experiment_config, scorer_args,
                             predictions_recomputed=False, normalization=normalization)
+
+
+def likelihood_pr(model_dir, model, normalizations, experiment_config):
+    """
+    AUC-PR / VUS-PR of the likelihood rows of the grid-search CSVs of model_dir: the inputs of the likelihood of
+    their top-k values computed from the saved forecasting errors and written into the score files (their other
+    columns kept), then the auc_pr / vus_pr columns of every evaluation split filled (see --likelihood-pr).
+    Returns {grid-search file: updated table}.
+    """
+    outputs, data_loader = saved_outputs(model_dir, model, normalizations[0])
+    scorer_args = scorer_args_of(experiment_config)
+    updated = {}
+    for normalization in normalizations:
+        grid_file = model_dir / scoring_result_file_name(model, 'grid_search', normalization)
+        if not grid_file.exists():
+            continue
+        grid = pd.read_csv(grid_file, low_memory=False, float_precision='round_trip')   # other values written back as read
+        rows = grid[grid['post_processing_strategy'].isin(LIKELIHOOD_STRATEGIES)]
+        # topk as text ('1', 'None'): the CSV mixes ints, floats and missing values
+        topk_keys = rows['topk'].map(lambda t: str(parse_topk(t)))
+        topks = {parse_topk(t) for t in topk_keys[rows['post_processing_strategy'] == 'likelihood']}
+        columns = likelihood_input_columns(normalized_errors(outputs, data_loader, normalization), sorted(topks, key=str))
+        scores = read_anomaly_scores_file(existing_anomaly_scores_path(str(model_dir), model, normalization))
+        scores = scores[list(SCORE_INFO_COLUMNS)].assign(**columns, **{MAHALANOBIS_COLUMN: scores[MAHALANOBIS_COLUMN]})
+        save_anomaly_scores(scores, str(model_dir), model, experiment_config, scorer_args,
+                            predictions_recomputed=False, normalization=normalization)
+        for split, splits in EVALUATION_SPLITS.items():
+            split_scores = scores[scores['split'].isin(splits)].reset_index(drop=True)
+            labels = split_scores['is_anomaly'].to_numpy().astype(int)
+            for (strategy, topk), group in rows.groupby([rows['post_processing_strategy'], topk_keys]):
+                metrics = _likelihood_pr_metrics(split_scores, strategy, parse_topk(topk), labels)
+                grid.loc[group.index, f'{split}_auc_pr'] = metrics['AUC_PR']
+                grid.loc[group.index, f'{split}_vus_pr'] = metrics['VUS_PR']
+        updated[grid_file] = grid
+    return updated
 
 
 def rerun(model_dir, model, normalization, strategies, cfg, anomaly_windows):
@@ -154,6 +200,9 @@ def main():
                         help='Compute the Mahalanobis distances again from the saved forecasting errors with the '
                              'mahalanobis_reference / mahalanobis_covariance of the config (then grid search of '
                              'mahalanobis and likelihood_mahalanobis)')
+    parser.add_argument('--likelihood-pr', action='store_true',
+                        help='No grid search: add the inputs of the likelihood to the score files and fill the '
+                             'AUC-PR / VUS-PR of the likelihood rows of the grid-search CSVs with theirs')
     parser.add_argument('--models', nargs='+', help='Only the model folders starting with these names')
     parser.add_argument('--config', default=os.path.join(get_project_root(), 'conf', 'config.yaml'))
     parser.add_argument('--dry-run', action='store_true', help='Only list the score files')
@@ -171,6 +220,26 @@ def main():
     anomaly_windows = load_anomaly_windows(cfg)
 
     failed, total = [], len(files)
+    if args.likelihood_pr:
+        folders = {}
+        for model_dir, model, normalization in files:
+            folders.setdefault((model_dir, model), []).append(normalization)
+        for i, ((model_dir, model), normalizations) in enumerate(folders.items(), 1):
+            try:
+                tables = likelihood_pr(model_dir, model, normalizations,
+                                       experiment_config_of(cfg, model_dir, model, LIKELIHOOD_STRATEGIES))
+                for grid_file, grid in tables.items():
+                    tmp_file = grid_file.with_name(grid_file.name + '.tmp')
+                    grid.to_csv(tmp_file, index=False)
+                    os.replace(tmp_file, grid_file)
+                print(f'[{i}/{len(folders)}] likelihood AUC-PR / VUS-PR: {model_dir} ({len(tables)} files)', flush=True)
+            except Exception as e:
+                failed += [(model_dir, n, f'{type(e).__name__}: {e}') for n in normalizations]
+                print(f'[{i}/{len(folders)}] FAILED {model_dir}: {failed[-1][2]}', flush=True)
+        print(f'Updated {total - len(failed)} / {total} score files')
+        for model_dir, normalization, error in failed:
+            print(f'Not updated: {model_dir} ({normalization}): {error}')
+        return
     if args.recompute_mahalanobis:
         # Once per model folder for all its score normalisations (the distances do not depend on them)
         folders = {}
