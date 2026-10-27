@@ -41,7 +41,7 @@ from model_outputs import (IS_NAN_FILES, LIKELIHOOD_STRATEGIES, MAHALANOBIS_COLU
                            likelihood_input_columns, likelihood_window_pairs, load_predictions,
                            mahalanobis_likelihood_column, mahalanobis_score_columns, normalized_errors, parse_topk,
                            read_anomaly_scores_file, save_anomaly_scores)
-from run_training_single_model import EVALUATION_SPLITS, SCORE_STRATEGIES, _likelihood_pr_metrics, grid_search_new
+from run_training_single_model import EVALUATION_SPLITS, SCORE_STRATEGIES, _strategy_pr_metrics, grid_search_new
 from utils import get_project_root, scoring_result_file_name
 
 SCORE_FILE_PATTERN = re.compile(r'^(?P<model>.+)_anomaly_scores_(?P<normalization>global|per_node)\.(parquet|csv)$')
@@ -154,8 +154,9 @@ def likelihood_pr(model_dir, model, normalizations, experiment_config):
         for split, splits in EVALUATION_SPLITS.items():
             split_scores = scores[scores['split'].isin(splits)].reset_index(drop=True)
             labels = split_scores['is_anomaly'].to_numpy().astype(int)
+            pr_cache = {}
             for (strategy, topk), group in rows.groupby([rows['post_processing_strategy'], topk_keys]):
-                metrics = _likelihood_pr_metrics(split_scores, strategy, parse_topk(topk), labels)
+                metrics = _strategy_pr_metrics(split_scores, strategy, parse_topk(topk), labels, pr_cache)
                 grid.loc[group.index, f'{split}_auc_pr'] = metrics['AUC_PR']
                 grid.loc[group.index, f'{split}_vus_pr'] = metrics['VUS_PR']
         updated[grid_file] = grid

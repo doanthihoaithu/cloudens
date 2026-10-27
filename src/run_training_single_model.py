@@ -40,7 +40,7 @@ from anomaly_likelihood import compute_anomaly_likelihood
 from model_outputs import (predict_all_splits, save_predictions, predictions_exist, load_predictions,
                            compute_anomaly_scores, compute_mahalanobis_scores, save_anomaly_scores, label_from_scores,
                            write_predictions_for_assembles,
-                           likelihood_window_pairs, parse_topk, MAHALANOBIS_COLUMN, MAHALANOBIS_REFERENCES,
+                           likelihood_window_pairs, parse_topk, MAHALANOBIS_COLUMN, MEAN_ERROR_COLUMN, MAHALANOBIS_REFERENCES,
                            LIKELIHOOD_THRESHOLD_MODES, LIKELIHOOD_STRATEGIES, likelihood_input_score_column)
 from nab_scoring import calculate_nab_score_with_window_based_tp_fn, merge_overlapping_windows
 from utils import clear_folder, get_project_root, get_full_err_scores, set_random_seed, calculate_mahalanobis_distance, has_is_nan_mask, MahalanobisScorer, scoring_result_file_name, results_root_dir, score_normalizations, \
@@ -620,18 +620,30 @@ def _split_anomaly_windows(data_loader, split_scores):
 _MISSING_SCORE_COLUMNS = set()   # score columns missing from the scores, already reported
 
 
-def _likelihood_pr_metrics(split_scores, strategy, topk, labels):
-    """AUC-PR / VUS-PR of a likelihood strategy: of the score its likelihood is computed on (see SPLIT_METRICS);
-    NaN when the scores have no such column (written before it was saved)."""
-    column = likelihood_input_score_column(strategy, topk)
-    if column not in split_scores:
-        if column not in _MISSING_SCORE_COLUMNS:
-            _MISSING_SCORE_COLUMNS.add(column)
-            log.warning(f'No {column} in the scores: no AUC-PR / VUS-PR for {strategy} (see rerun_grid_search.py '
-                        f'--likelihood-pr)')
-        return dict.fromkeys(PR_METRIC_KEYS, float('nan'))
-    return {**_pr_metrics_from_scores(split_scores[column].to_numpy(), labels),
-            'BEST_F1': float('nan'), 'F1_OPTIMAL_THRESHOLD': float('nan')}
+def _column_pr_metrics(split_scores, column, labels, pr_cache):
+    """PR metrics (_pr_metrics_from_scores) of a score column of the split, computed once per column (pr_cache): the
+    strategies scoring the same series share them, e.g. mahalanobis and likelihood_mahalanobis, and every window pair
+    and threshold of a likelihood. NaN when the scores have no such column (written before it was saved)."""
+    if column not in pr_cache:
+        if column in split_scores:
+            pr_cache[column] = _pr_metrics_from_scores(split_scores[column].to_numpy(), labels)
+        else:
+            if column not in _MISSING_SCORE_COLUMNS:
+                _MISSING_SCORE_COLUMNS.add(column)
+                log.warning(f'No {column} in the scores: no AUC-PR / VUS-PR on it (see rerun_grid_search.py '
+                            f'--likelihood-pr)')
+            pr_cache[column] = dict.fromkeys(PR_METRIC_KEYS, float('nan'))
+    return pr_cache[column]
+
+
+def _strategy_pr_metrics(split_scores, strategy, topk, labels, pr_cache):
+    """PR metrics of a strategy on the split: of its score (mahalanobis, mean_reconstruction_errors), or of the score
+    a likelihood strategy computes its likelihood on, without its best F1 (see SPLIT_METRICS)."""
+    if strategy in LIKELIHOOD_STRATEGIES:
+        return {**_column_pr_metrics(split_scores, likelihood_input_score_column(strategy, topk), labels, pr_cache),
+                'BEST_F1': float('nan'), 'F1_OPTIMAL_THRESHOLD': float('nan')}
+    column = MAHALANOBIS_COLUMN if strategy == 'mahalanobis' else MEAN_ERROR_COLUMN
+    return _column_pr_metrics(split_scores, column, labels, pr_cache)
 
 
 def _split_metrics(split_scores, strategy, topk, anomaly_threshold, long_window, short_window, with_windows, pr_cache,
@@ -639,24 +651,18 @@ def _split_metrics(split_scores, strategy, topk, anomaly_threshold, long_window,
     """
     Point metrics of one post-processing setting on one split (all its windows, labels included);
     percentile thresholds use the percentiles of this split's own scores, as on the test split.
-    AUC-PR / VUS-PR depend on the score only, not on the threshold: cached in pr_cache.
+    AUC-PR / VUS-PR depend on the score only, not on the threshold nor the likelihood windows: cached in pr_cache
+    by score column.
     With anomaly_windows (the split's ground-truth windows), the NAB scores of the same predictions too.
     """
     labels = split_scores['is_anomaly'].to_numpy().astype(int)
-    is_anomalies, score = label_from_scores(split_scores, strategy, topk, anomaly_threshold, long_window, short_window,
+    is_anomalies, _ = label_from_scores(split_scores, strategy, topk, anomaly_threshold, long_window, short_window,
                                             with_windows, likelihood_threshold_mode, score_threshold_mode)
     precision, recall, f1, accuracy, _, _ = evaluate_performance(labels, is_anomalies)
-    if strategy in LIKELIHOOD_STRATEGIES:
-        key = (strategy, topk)   # of the input of the likelihood: whatever the windows
-        if key not in pr_cache:
-            pr_cache[key] = _likelihood_pr_metrics(split_scores, strategy, topk, labels)
-    else:
-        key = (strategy, topk, long_window, short_window)
-        if key not in pr_cache:
-            pr_cache[key] = _pr_metrics_from_scores(score, labels)
+    pr = _strategy_pr_metrics(split_scores, strategy, topk, labels, pr_cache)
     metrics = {'precision': precision, 'recall': recall, 'f1': f1, 'accuracy': accuracy,
-               'auc_pr': pr_cache[key]['AUC_PR'], 'vus_pr': pr_cache[key]['VUS_PR'],
-               'best_f1': pr_cache[key]['BEST_F1'], 'f1_optimal_threshold': pr_cache[key]['F1_OPTIMAL_THRESHOLD']}
+               'auc_pr': pr['AUC_PR'], 'vus_pr': pr['VUS_PR'],
+               'best_f1': pr['BEST_F1'], 'f1_optimal_threshold': pr['F1_OPTIMAL_THRESHOLD']}
     if anomaly_windows is not None:
         nab_df = pd.DataFrame({'true_anomaly': labels, 'predicted_anomaly': is_anomalies},
                               index=pd.DatetimeIndex(split_scores['timestamp']))
