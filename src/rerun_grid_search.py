@@ -17,6 +17,7 @@ From the project root:
     python src/rerun_grid_search.py trained_models_log1p --strategies mahalanobis mean_reconstruction_errors
     python src/rerun_grid_search.py trained_models_log1p --recompute-mahalanobis      # new Mahalanobis settings
     python src/rerun_grid_search.py trained_models_log1p --likelihood-pr              # AUC-PR / VUS-PR of the likelihood
+    python src/rerun_grid_search.py trained_models_log1p --likelihood-pr --subsets 'no_group_*xx_*xx_*'   # combined subsets only
 
 With --likelihood-pr, no grid search: the inputs of the likelihood (the normalised errors aggregated over the top-k
 sensors) are computed from the saved forecasting errors and added to the score files, and the AUC-PR / VUS-PR columns
@@ -24,6 +25,7 @@ of the likelihood rows of the grid-search CSVs filled with those of these inputs
 scaled Mahalanobis distance), the same for every window pair and threshold; the other columns are kept.
 """
 import argparse
+import fnmatch
 import os
 import re
 import sys
@@ -52,12 +54,13 @@ MAHALANOBIS_STRATEGIES = ('mahalanobis', 'likelihood_mahalanobis')
 NULL_PADDING = re.compile(r'_null_padding_(feature|target|both)')
 
 
-def find_score_files(root, models=None):
+def find_score_files(root, models=None, subsets=None):
     """(model folder, model, normalization) of every anomaly score file under root, the parquet preferred."""
     found = {}
     for path in sorted(Path(root).glob('window_*/*/fill_nan_with_*/*/*_anomaly_scores_*')):
         match = SCORE_FILE_PATTERN.match(path.name)
-        if match and (not models or any(path.parent.name.startswith(m) for m in models)):
+        if (match and (not models or any(path.parent.name.startswith(m) for m in models))
+                and (not subsets or any(fnmatch.fnmatch(path.parents[2].name, s) for s in subsets))):
             found[(path.parent, match['model'], match['normalization'])] = True
     return list(found)
 
@@ -205,11 +208,13 @@ def main():
                         help='No grid search: add the inputs of the likelihood to the score files and fill the '
                              'AUC-PR / VUS-PR of the likelihood rows of the grid-search CSVs with theirs')
     parser.add_argument('--models', nargs='+', help='Only the model folders starting with these names')
+    parser.add_argument('--subsets', nargs='+',
+                        help="Only the subset folders matching these patterns, e.g. 'no_group_*xx_*xx_*' (combined subsets)")
     parser.add_argument('--config', default=os.path.join(get_project_root(), 'conf', 'config.yaml'))
     parser.add_argument('--dry-run', action='store_true', help='Only list the score files')
     args = parser.parse_args()
 
-    files = find_score_files(args.root, args.models)
+    files = find_score_files(args.root, args.models, args.subsets)
     strategies = list(dict.fromkeys(args.strategies + (list(MAHALANOBIS_STRATEGIES) if args.recompute_mahalanobis else [])))
     print(f'{len(files)} anomaly score files under {args.root}, strategies: {", ".join(strategies)}' +
           (', Mahalanobis distances recomputed' if args.recompute_mahalanobis else ''))

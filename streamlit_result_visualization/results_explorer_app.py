@@ -2017,6 +2017,120 @@ def ensemble_detection_chart(combos, column, title, fmt):
     return paper_style(chart, increase=DETECTION_FONT_SIZE_INCREASE)
 
 
+# Combination of each row: the best of the reference model (the same for every model, by strategy and number of
+# subsets) or of each row, by a NAB score; or one chosen combination
+BEST_COMBINATION = {f'{scope}:{column}': f'Best of {"the reference" if scope == "reference" else "each row"} by '
+                                         f'{MEASURE_NAMES[column]}'
+                    for scope in ('reference', 'row') for column in ('reward_fn_normalized', 'standard_normalized')}
+REFERENCE_MODEL = 'A3TGCN_null_padding_feature'   # ClouDens-A3T*: its best combinations applied to every model
+
+
+def ensemble_entry(row, sources, n_subsets):
+    """Row of the comparison table of an ensemble of subsets (see comparison_cells): its subsets, e.g. 5xx count +
+    4xx count ('All' when it has all the n_subsets subsets), and its detected test anomalies by source (sources:
+    {anomaly id: source name})."""
+    every = row['size'] == n_subsets
+    subsets = ['All'] if every else row['combination'].replace('_', ' ').split('+')
+    ids = set(ast.literal_eval(row['detected_window_ids'])) if isinstance(row['detected_window_ids'], str) else set()
+    return {'model_folder': row['model_folder'], 'post_processing_strategy': row['post_processing_strategy'],
+            'compared_with': (row['post_processing_strategy'], row['size']), 'details': ' + '.join(subsets),
+            'group': f'{row["size"]} (alone)' if row['size'] == 1 else f'{row["size"]} (all)' if every else str(row['size']), 'details_tex': 'All' if every else ' + '.join(f'\\texttt{{{s}}}' for s in subsets),
+            'confusion_matrix': row['confusion_matrix'], 'standard': row['standard_normalized'],
+            'low_fn': row['reward_fn_normalized'],
+            'ids': {name: {i for i in ids if sources.get(i) == name} for name in ANOMALY_SOURCE_NAMES.values()},
+            'totals': {name: sum(s == name for s in sources.values()) for name in ANOMALY_SOURCE_NAMES.values()}}
+
+
+def render_ensemble_comparison(combos, sources):
+    """Comparison of the models on one ensemble configuration (a window, vote and threshold type): one row per
+    model, scoring strategy and chosen number of subsets, its ensemble a chosen combination of subsets or the best
+    one by a NAB score, as Table IV of the paper, and its LaTeX. Its filters are its own."""
+    st.subheader('Comparison on one configuration (Table IV)', divider='gray')
+    st.caption('This section has its own filters: those above do not apply here.')
+
+    def default_index(values, value):
+        return values.index(value) if value in values else 0
+
+    col_selection, col_normalization, col_window, col_threshold, col_vote = st.columns(5)
+    selections = [s for s in ENSEMBLE_SELECTIONS if s in set(combos['selection'])]
+    selection = col_selection.selectbox('Setting of each subset chosen on', selections,
+                                        format_func=ENSEMBLE_SELECTIONS.get, key='ensemble_cmp_selection')
+    normalizations = sorted(combos['score_normalization'].unique())
+    normalization = col_normalization.selectbox('Score normalization', normalizations, key='ensemble_cmp_normalization',
+                                                index=default_index(normalizations, 'global'))
+    windows = sorted(combos['window'].unique())
+    window = col_window.selectbox('Window size', windows, key='ensemble_cmp_window', index=default_index(windows, 6))
+    threshold_types = sorted(combos['threshold_type'].unique())
+    threshold_type = col_threshold.selectbox('Threshold type', threshold_types, key='ensemble_cmp_threshold',
+                                             index=default_index(threshold_types, 'percentile'))
+    votes = [v for v in ENSEMBLE_VOTES if v in set(combos['vote'])]
+    vote = col_vote.selectbox('Vote', votes, format_func=ENSEMBLE_VOTES.get, key='ensemble_cmp_vote')
+    part = combos[(combos['selection'] == selection) & (combos['score_normalization'] == normalization)
+                  & (combos['window'] == window) & (combos['threshold_type'] == threshold_type)]
+    if part.empty:
+        st.info('No ensemble for this configuration.')
+        return
+
+    col_models, col_strategies, col_size, col_combination, col_reference = st.columns([3, 2, 1, 2, 2])
+    models = sorted(part['model_folder'].unique(), key=model_order_key)
+    chosen_models = col_models.multiselect('Models', models, default=models, format_func=short_model_name,
+                                           key='ensemble_cmp_models')
+    strategies = sorted(part['post_processing_strategy'].unique())
+    chosen_strategies = col_strategies.multiselect(
+        'Scoring strategies', strategies, key='ensemble_cmp_strategies',
+        default=[s for s in COMPARISON_DEFAULT_STRATEGIES if s in strategies] or strategies,
+        format_func=lambda s: STRATEGY_FULL_NAMES.get(s, s))
+    sizes = sorted(part['size'].unique())
+    chosen_sizes = sorted(col_size.multiselect(
+        'Subsets', sizes, default=[s for s in sizes if s == 2] or sizes[:1], key='ensemble_cmp_sizes',
+        help='Subsets per ensemble, one row each; 1: the subsets alone (the same for every vote).'))
+    # The subsets alone are written with the OR vote only, the same for every vote
+    part = part[part['size'].isin(chosen_sizes) & part['vote'].eq(part['size'].gt(1).map({True: vote, False: 'any'}))
+                & part['post_processing_strategy'].isin(chosen_strategies)]
+    combinations = sorted(part['combination'].unique())
+    combination = col_combination.selectbox(
+        'Combination', [*BEST_COMBINATION, *combinations], key='ensemble_cmp_combination',
+        format_func=lambda c: BEST_COMBINATION.get(c, c.replace('_', ' ').replace('+', ' + ')),
+        help='Best of the reference: for each strategy and number of subsets, the combination with the best NAB '
+             'score of the reference model, the same for every model. Best of each row: its own best combination. '
+             'Or one combination for every row (its number of subsets only). On the test split: an oracle.')
+    by_reference = combination.startswith('reference:')
+    reference = col_reference.selectbox('Reference model', models, index=default_index(models, REFERENCE_MODEL),
+                                        format_func=short_model_name, key='ensemble_cmp_reference',
+                                        disabled=not by_reference)
+    keys = ['post_processing_strategy', 'size']
+    if by_reference:
+        metric = combination.split(':')[1]
+        reference_rows = part[part['model_folder'] == reference]
+        best = reference_rows.loc[reference_rows.groupby(keys)[metric].idxmax(), keys + ['combination']]
+        part = part.merge(best, on=keys + ['combination'])   # the reference's combination for every model
+    elif combination in BEST_COMBINATION:
+        part = part.loc[part.groupby(['model_folder', *keys])[combination.split(':')[1]].idxmax()]
+    else:
+        part = part[part['combination'] == combination]
+    part = part[part['model_folder'].isin(chosen_models)]
+    if part.empty:
+        st.info('No ensemble for this configuration.')
+        return
+    part = part.assign(_model=part['model_folder'].map(model_order_key),
+                       _strategy=part['post_processing_strategy'].map(chosen_strategies.index))
+    part = part.sort_values(['size', '_model', '_strategy'], kind='stable')   # grouped by the number of subsets
+    shown_sizes = sorted(part['size'].unique())
+    vote_text = ', '.join('the subsets alone' if n == 1 else f'{ENSEMBLE_VOTES[vote].lower()} vote of {n} subsets'
+                          for n in shown_sizes)
+    caption = (f'Comparison of the models on ensembles ({vote_text}) with a sliding window size of {window}, '
+               f'{threshold_type} thresholds, {normalization} score normalization, the setting of each subset chosen '
+               f'on {ENSEMBLE_SELECTIONS[selection]}; ' +
+               (f'the combination of each strategy and number of subsets the best of {short_model_name(reference)} '
+                f'by {MEASURE_NAMES[combination.split(":")[1]]}, the same for every model.' if by_reference else
+                f'the combination of each row the best by {MEASURE_NAMES[combination.split(":")[1]]}.'
+                if combination in BEST_COMBINATION else 'the same combination for every row.'))
+    n_subsets = combos.loc[combos['size'] == 1, 'combination'].nunique()   # the subsets alone: all of them
+    show_comparison_table([ensemble_entry(row, sources, n_subsets) for _, row in part.iterrows()], True, caption,
+                          f'ensemble_comparison_w{window}_{vote}_{"-".join(map(str, shown_sizes))}.tex', 'ensemble_cmp',
+                          compared_with_text='strategy and number of subsets', group_title='Subsets')
+
+
 def render_subset_ensembles(family_scale):
     """
     'Subset ensembles' tab: OR ensembles of 1 (the subsets alone), 2, 3 ... subsets of a model, sharing the scoring
@@ -2165,8 +2279,10 @@ def render_subset_ensembles(family_scale):
 
     selected_path = ENSEMBLE_DIR / 'selected_configs.csv'
     if selected_path.exists():
+        # Its detection counters: the source of every test anomaly
+        configs_all = load_ensemble_file(str(selected_path), os.path.getmtime(selected_path))
         with st.expander('Setting chosen for each subset'):
-            configs = load_ensemble_file(str(selected_path), os.path.getmtime(selected_path))
+            configs = configs_all
             configs = configs.assign(model=configs['model_folder'].map(short_model_name),
                                      scoring=[ensemble_scoring_label(s, t) for s, t in
                                               zip(configs['post_processing_strategy'], configs['threshold_type'])])
@@ -2181,6 +2297,11 @@ def render_subset_ensembles(family_scale):
                              f'Train + valid {NAB_LOW_FN}', format='%.2f'),
                              'reward_fn_normalized': st.column_config.NumberColumn(f'Test {NAB_LOW_FN}', format='%.2f'),
                              'standard_normalized': st.column_config.NumberColumn(f'Test {NAB_STANDARD}', format='%.2f')})
+
+    if path.name == 'ensemble_results.csv' and selected_path.exists():
+        render_ensemble_comparison(combos, anomaly_sources(configs_all))
+    elif path.name != 'ensemble_results.csv':
+        st.caption('Comparison table (Table IV): choose the exact results (ensemble_results.csv).')
 
 
 def render_explorer(results):
@@ -2967,14 +3088,14 @@ STRATEGY_FULL_NAMES = {'likelihood': 'Likelihood Function', 'mahalanobis': 'Maha
 LIKELIHOOD_PARAMETERS = [('W', 'W', 'long_window'), ('W′', "W'", 'short_window'), ('Lt', 'L_t', 'anomaly_threshold')]
 STRATEGY_PARAMETERS = {'likelihood': LIKELIHOOD_PARAMETERS, 'likelihood_mahalanobis': LIKELIHOOD_PARAMETERS}
 THRESHOLD_PARAMETER = [('ϵ', '\\epsilon', 'anomaly_threshold')]   # the other strategies (score thresholds)
-# Threshold type of the paper for each strategy (likelihood: absolute, e.g. 0.99975; the others: a percentile, e.g.
-# 99.8): the other type is named next to the strategy
-PAPER_THRESHOLD_TYPES = {'likelihood': 'absolute', 'likelihood_mahalanobis': 'absolute'}
 SOURCE_HEADERS = {name: name.title() for name in ANOMALY_SOURCE_NAMES.values()}   # Issue tracker -> Issue Tracker
 COMPARISON_GROUPS = [('Confusion Matrix', ['TP', 'TN', 'FP', 'FN']),
                      ('NAB Score', ['Standard Profile', 'Low FN Profile']),
                      ('Detected Anomalies', list(ANOMALY_SOURCE_NAMES.values()))]
 COMPARISON_DEFAULT_STRATEGIES = ['likelihood', 'mean_reconstruction_errors']
+COMPARISON_BASELINES = {'GRU', 'AnomalyTransformer'}   # model families the detected anomalies are compared with
+NAB_COLUMNS_SHOWN = COMPARISON_GROUPS[1][1]   # Standard / Low FN Profile: top 1 bold, top 2 underlined
+RANK_TEXT_STYLES = {0: '', 1: 'font-weight: bold', 2: 'text-decoration: underline'}
 
 
 def _parameter_value(value):
@@ -2982,40 +3103,106 @@ def _parameter_value(value):
     return f'{float(value):g}' if pd.notna(value) else '-'
 
 
-def comparison_cells(row):
-    """Cells of a row of the comparison table: the strategy and its parameters (text, LaTeX), the point-based
-    confusion matrix, the NAB scores and, per anomaly source, detected / total with the ids of the detected ones."""
+def setting_entry(row):
+    """Row of the comparison table of a grid-search setting (see comparison_cells): its strategy parameters, e.g.
+    {W, W', Lt} = {30, 2, 0.99975}, and its detected test anomalies by source."""
     strategy = row['post_processing_strategy']
     parameters = STRATEGY_PARAMETERS.get(strategy, THRESHOLD_PARAMETER)
-    values = [_parameter_value(row[column]) for _, _, column in parameters]
-    name = STRATEGY_FULL_NAMES.get(strategy, strategy)
-    if pd.notna(row['threshold_type']) and row['threshold_type'] != PAPER_THRESHOLD_TYPES.get(strategy, 'percentile'):
-        name += f' ({row["threshold_type"]} threshold)'
-    cells = {'strategy': f'{name}<br>{{{", ".join(s for s, _, _ in parameters)}}} = {{{", ".join(values)}}}',
-             'strategy_tex': f'\\makecell{{{_latex_text(name)}\\\\$\\{{{", ".join(s for _, s, _ in parameters)}\\}} = '
-                             f'\\{{{", ".join(values)}\\}}$}}'}
+    values = ', '.join(_parameter_value(row[column]) for _, _, column in parameters)
+    counters = _parse_counters(row['detection_counters']) if pd.notna(row['detection_counters']) else {}
+    return {'model_folder': row['model_folder'], 'post_processing_strategy': strategy, 'compared_with': strategy,
+            'details': f'{{{", ".join(s for s, _, _ in parameters)}}} = {{{values}}}',
+            'details_tex': f'$\\{{{", ".join(s for _, s, _ in parameters)}\\}} = \\{{{values}\\}}$',
+            'confusion_matrix': row['confusion_matrix'], 'standard': row['standard_normalized'],
+            'low_fn': row['reward_fn_normalized'],
+            'ids': {name: set(counters.get(f'{source}_detected_ids', [])) for source, name in ANOMALY_SOURCE_NAMES.items()},
+            'totals': {name: len(counters.get(f'gt_{source}_ids', [])) for source, name in ANOMALY_SOURCE_NAMES.items()}}
+
+
+def comparison_cells(entry, baseline_ids=None):
+    """Cells of a row of the comparison table: the strategy and its details (text, LaTeX), the point-based
+    confusion matrix, the NAB scores and, per anomaly source, detected / total with the ids of the detected ones;
+    baseline_ids ({source name: ids}): those detected by the baselines, the other ids of the row in bold."""
+    name = STRATEGY_FULL_NAMES.get(entry['post_processing_strategy'], entry['post_processing_strategy'])
+    cells = {'strategy': f'{name}<br>{entry["details"]}',
+             'strategy_tex': f'\\makecell{{{_latex_text(name)}\\\\{entry["details_tex"]}}}'}
     try:
-        tn, fp, fn, tp = ast.literal_eval(row['confusion_matrix'])
+        tn, fp, fn, tp = ast.literal_eval(entry['confusion_matrix'])
         cells.update(TP=int(tp), TN=int(tn), FP=int(fp), FN=int(fn))
     except (ValueError, SyntaxError, TypeError):
         cells.update(TP=None, TN=None, FP=None, FN=None)
-    cells['Standard Profile'], cells['Low FN Profile'] = row['standard_normalized'], row['reward_fn_normalized']
-    counters = _parse_counters(row['detection_counters']) if pd.notna(row['detection_counters']) else {}
-    for source, name in ANOMALY_SOURCE_NAMES.items():
-        ids = sorted(counters.get(f'{source}_detected_ids', []))
-        count = f'{len(ids)}/{len(counters.get(f"gt_{source}_ids", []))}'
-        listed = f'[{", ".join(map(str, ids))}]' if ids else '–'
-        cells[name] = f'{count}<br>{listed}'
+    cells['Standard Profile'], cells['Low FN Profile'] = entry['standard'], entry['low_fn']
+    for name in ANOMALY_SOURCE_NAMES.values():
+        ids = sorted(entry['ids'][name])
+        count = f'{len(ids)}/{entry["totals"][name]}'
+        distinct = set() if baseline_ids is None else set(ids) - baseline_ids[name]
+        listed = ', '.join(f'<b>{i}</b>' if i in distinct else str(i) for i in ids)
+        listed_tex = ', '.join(f'\\textbf{{{i}}}' if i in distinct else str(i) for i in ids)
+        cells[name] = f'{count}<br>[{listed}]' if ids else f'{count}<br>–'
         # \\{} : a [ right after \\ would be read as its optional spacing
-        cells[f'{name}_tex'] = f'\\makecell{{{count}\\\\{{}}{listed if ids else "--"}}}'
+        cells[f'{name}_tex'] = f'\\makecell{{{count}\\\\{{}}{f"[{listed_tex}]" if ids else "--"}}}'
     return cells
 
 
-def comparison_latex(table, caption):
-    """booktabs tabular of the comparison table, its header as in Table IV of the paper."""
+def show_comparison_table(entries, short_names, caption, file_name, key, compared_with_text='strategy',
+                          group_title=None):
+    """
+    Comparison table of the entries (setting_entry, ensemble_entry), one row each in their order, as Table IV of
+    the paper, and its LaTeX: the top 1 / top 2 NAB scores bold / underlined, and in the rows of the proposed models
+    the detected anomalies none of the baselines (COMPARISON_BASELINES) detects in bold, compared within the same
+    'compared_with' of the entries (the strategy, or the strategy and number of subsets of an ensemble).
+    group_title: the rows grouped by the 'group' of the entries (consecutive), e.g. the number of subsets, in a
+    leading merged cell, the NAB scores ranked within each group.
+    """
+    is_baseline = [model_family(e['model_folder']) in COMPARISON_BASELINES for e in entries]
+    baseline_ids = {}
+    for entry, baseline in zip(entries, is_baseline):
+        if baseline:
+            ids = baseline_ids.setdefault(entry['compared_with'], {s: set() for s in ANOMALY_SOURCE_NAMES.values()})
+            for source, found in entry['ids'].items():
+                ids[source] |= found
+    table = pd.DataFrame([comparison_cells(e, None if baseline else baseline_ids.get(e['compared_with']))
+                          for e, baseline in zip(entries, is_baseline)])
+    table['model'] = [short_model_name(e['model_folder']) if short_names else e['model_folder'] for e in entries]
+    if group_title:
+        table['group'] = [e['group'] for e in entries]
+    for column in NAB_COLUMNS_SHOWN:   # 1 / 2: highest / second highest (ties share a rank), else 0
+        ranks = (table.groupby('group', sort=False)[column] if group_title else table[column]).rank(
+            method='dense', ascending=False)
+        table[f'{column}_rank'] = ranks.where(ranks <= 2, 0).astype(int)
+    index = ['group', 'strategy', 'model'] if group_title else ['strategy', 'model']
+    shown = table.set_index(index)[[c for _, columns in COMPARISON_GROUPS for c in columns]]
+    shown.index.names = [group_title, 'Scoring Strategy', 'Model'] if group_title else ['Scoring Strategy', 'Model']
+    shown.columns = pd.MultiIndex.from_tuples([(g, SOURCE_HEADERS.get(c, c)) for g, columns in COMPARISON_GROUPS
+                                               for c in columns])
+    styler = shown.style.format('{:.2f}', subset=[('NAB Score', c) for c in COMPARISON_GROUPS[1][1]], na_rep='–')
+    styler = styler.format('{:.0f}', subset=[('Confusion Matrix', c) for c in COMPARISON_GROUPS[0][1]], na_rep='–')
+    for column in NAB_COLUMNS_SHOWN:
+        styler = styler.apply(lambda _, c=column: table[f'{c}_rank'].map(RANK_TEXT_STYLES).to_numpy(),
+                              subset=[('NAB Score', column)])
+    baselines = sorted({short_model_name(e['model_folder']) for e, b in zip(entries, is_baseline) if b})
+    caption += (f' Bold / underlined NAB score: top 1 / top 2 of its column{" in each group" if group_title else ""}.' +
+                (f' Bold ids: detected anomalies none of {" and ".join(baselines)} detects with the same '
+                 f'{compared_with_text}.' if baselines else ''))
+    st.caption(caption + ' Confusion matrix: point-based. A ground-truth anomaly is detected if at least one TP '
+                         'falls within its window; [ids] of the detected ones.')
+    st.html(MERGED_TABLE_CSS + '<div class="merged-table">' +
+            styler.set_table_attributes('class="merged-table"').to_html() + '</div>')
+    latex = comparison_latex(table, caption, group_title)
+    st.download_button('Download as LaTeX', latex.encode(), file_name=file_name, mime='text/plain',
+                       icon=':material/download:', key=f'{key}_download')
+    with st.expander('LaTeX', icon=':material/code:'):
+        st.code(latex, language='latex')
+
+
+def comparison_latex(table, caption, group_title=None):
+    """booktabs tabular of the comparison table, its header as in Table IV of the paper. group_title: the rows
+    grouped by the column 'group' of the table (e.g. the number of subsets), its values in a leading merged cell."""
+    lead = 1 if group_title else 0
     n_numbers = sum(len(c) for g, c in COMPARISON_GROUPS if g != 'Detected Anomalies')
     n_sources = len(ANOMALY_SOURCE_NAMES)
-    spans, rules, start = [], [], 3
+    n_columns = lead + 2 + n_numbers + n_sources
+    spans, rules, start = [], [], lead + 3
     for group, columns in COMPARISON_GROUPS:
         spans.append(f'\\multicolumn{{{len(columns)}}}{{c}}{{{group}}}')
         rules.append(f'\\cmidrule(lr){{{start}-{start + len(columns) - 1}}}')
@@ -3023,18 +3210,28 @@ def comparison_latex(table, caption):
     inner = ['\\makecell{' + c.replace(' Profile', '\\\\Profile') + '}' if c.endswith('Profile') else c
              for _, columns in COMPARISON_GROUPS for c in columns]
     inner = [SOURCE_HEADERS.get(c, c) for c in inner]
+    leading = [f'\\multirow{{2}}{{*}}{{{_latex_text(group_title)}}}'] if lead else []
     lines = [f'% {caption}', '% \\usepackage{booktabs, makecell, multirow}',
-             '\\begin{tabular}{ll' + 'r' * n_numbers + 'c' * n_sources + '}', '\\toprule',
-             ' & '.join(['\\multirow{2}{*}{\\makecell{Scoring\\\\Strategy}}', '\\multirow{2}{*}{Model}', *spans]) + ' \\\\',
-             ' '.join(rules), ' & '.join(['', '', *inner]) + ' \\\\', '\\midrule']
+             '\\begin{tabular}{' + 'l' * (lead + 2) + 'r' * n_numbers + 'c' * n_sources + '}', '\\toprule',
+             ' & '.join([*leading, '\\multirow{2}{*}{\\makecell{Scoring\\\\Strategy}}', '\\multirow{2}{*}{Model}', *spans])
+             + ' \\\\', ' '.join(rules), ' & '.join([''] * (lead + 2) + inner) + ' \\\\', '\\midrule']
+    group_sizes = table.groupby('group', sort=False).size() if lead else None
     previous = None
     for _, row in table.iterrows():
-        if previous is not None and row['model'] != previous:   # a rule between the models
-            lines.append('\\midrule')
-        previous = row['model']
+        group = row['group'] if lead else None
+        if previous is not None:
+            if group != previous[0]:   # a rule between the groups, a lighter one between their models
+                lines.append('\\midrule')
+            elif row['model'] != previous[1]:
+                lines.append(f'\\cmidrule(lr){{{lead + 1}-{n_columns}}}' if lead else '\\midrule')
+        first = previous is None or group != previous[0]
+        previous = (group, row['model'])
         numbers = [str(row[c]) if pd.notna(row[c]) else '--' for c in ('TP', 'TN', 'FP', 'FN')]
-        numbers += [f'{row[c]:.2f}' if pd.notna(row[c]) else '--' for c in ('Standard Profile', 'Low FN Profile')]
-        lines.append(' & '.join([row['strategy_tex'], _latex_text(row['model']), *numbers,
+        numbers += [LATEX_RANK_FORMATS[row[f'{c}_rank']] % f'{row[c]:.2f}' if pd.notna(row[c]) else '--'
+                    for c in NAB_COLUMNS_SHOWN]
+        group_cell = ([f'\\multirow{{{group_sizes[group]}}}{{*}}{{{_latex_text(group)}}}' if first else '']
+                      if lead else [])
+        lines.append(' & '.join([*group_cell, row['strategy_tex'], _latex_text(row['model']), *numbers,
                                  *(row[f'{s}_tex'] for s in ANOMALY_SOURCE_NAMES.values())]) + ' \\\\')
     lines += ['\\bottomrule', '\\end{tabular}']
     return '\n'.join(lines) + '\n'
@@ -3143,27 +3340,12 @@ def render_comparison_table(results, options):
     picked = picked.assign(_model=picked['model_folder'].map(model_order_key),
                            _strategy=picked['post_processing_strategy'].map(chosen_strategies.index))
     picked = picked.sort_values(['_model', '_strategy'], kind='stable')
-    table = pd.DataFrame([comparison_cells(row) for _, row in picked.iterrows()])
-    table['model'] = [short_model_name(m) if short_names else m for m in picked['model_folder']]
     caption = (f'Comparison of the models on the {short_subset_name(subset)} subset with a sliding window size of '
                f'{window} ({fill} imputation), ' +
                (f'{fixed_text}; the other parameters of each row picked by {select_by}.' if fixed and fixed_text else
                 f'the setting of each row picked by {select_by}.'))
-    shown = table.set_index(['strategy', 'model'])[[c for _, columns in COMPARISON_GROUPS for c in columns]]
-    shown.index.names = ['Scoring Strategy', 'Model']
-    shown.columns = pd.MultiIndex.from_tuples([(g, SOURCE_HEADERS.get(c, c)) for g, columns in COMPARISON_GROUPS
-                                               for c in columns])
-    styler = shown.style.format('{:.2f}', subset=[('NAB Score', c) for c in COMPARISON_GROUPS[1][1]], na_rep='–')
-    styler = styler.format('{:.0f}', subset=[('Confusion Matrix', c) for c in COMPARISON_GROUPS[0][1]], na_rep='–')
-    st.caption(caption + ' Confusion matrix: point-based. A ground-truth anomaly is detected if at least one TP '
-                         'falls within its window; [ids] of the detected ones.')
-    st.html(MERGED_TABLE_CSS + '<div class="merged-table">' +
-            styler.set_table_attributes('class="merged-table"').to_html() + '</div>')
-    latex = comparison_latex(table, caption)
-    st.download_button('Download as LaTeX', latex.encode(), file_name=f'comparison_w{window}_{subset}_{fill}.tex',
-                       mime='text/plain', icon=':material/download:', key='comparison_download')
-    with st.expander('LaTeX', icon=':material/code:'):
-        st.code(latex, language='latex')
+    show_comparison_table([setting_entry(row) for _, row in picked.iterrows()], short_names, caption,
+                          f'comparison_w{window}_{subset}_{fill}.tex', 'comparison')
 
 
 def render_results_table(results, family_scale, options):

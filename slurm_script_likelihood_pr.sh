@@ -16,6 +16,7 @@
 # Merge the results again afterwards (slurm_script_merge_results.sh). Usage (from the project root):
 #   sbatch slurm_script_likelihood_pr.sh                                   # trained_models_log1p
 #   sbatch slurm_script_likelihood_pr.sh trained_models_log1p --models BigST A3TGCN
+#   sbatch slurm_script_likelihood_pr.sh trained_models_log1p --subsets 'no_group_*xx_*xx_*'   # combined subsets only
 ROOT=${1:-trained_models_log1p}
 shift
 
