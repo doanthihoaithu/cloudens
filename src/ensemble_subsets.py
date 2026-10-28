@@ -30,6 +30,13 @@ From the project root:
     python src/ensemble_subsets.py --workers 8                           # selection + exact evaluation (HPC)
     python src/ensemble_subsets.py --sizes 2 3 8 --windows 12 --normalizations global
     python src/ensemble_subsets.py --workers 8 --votes majority --sizes 2 3 4 8   # majority votes only
+    python src/ensemble_subsets.py --workers 8 --fixed-topk mean                # likelihood over all sensors only
+    python src/ensemble_subsets.py --workers 8 --fixed-topk mean --fixed-percentile 99.8
+
+--fixed-topk / --fixed-percentile: the settings of every subset and model are chosen among those with this top-k
+(likelihood) / this percentile threshold (percentile thresholds) only, the same evaluation setting for all of them;
+written by default to merged_results/ensemble_subsets_<fixed values> (e.g. ensemble_subsets_topk_mean), apart
+from the ensembles of free settings.
 """
 import argparse
 import ast
@@ -92,6 +99,22 @@ def load_hpc_rows(path, models, windows=None, normalizations=None):
     if missing:
         raise ValueError(f'no rows of {sorted(missing)} in {path}')
     return rows
+
+
+def fixed_setting_rows(rows, topk=None, percentile=None):
+    """Rows with the fixed top-k of the likelihood ('mean': all sensors, an empty top-k in the table) and percentile
+    threshold of the percentile thresholds; the other rows (other strategies / threshold types) are kept."""
+    if topk is not None:
+        is_topk = rows['topk'].isna() if topk == 'mean' else rows['topk'] == float(topk)
+        rows = rows[(rows['post_processing_strategy'] != 'likelihood') | is_topk]
+    if percentile is not None:
+        rows = rows[(rows['threshold_type'] != 'percentile') | np.isclose(rows['anomaly_threshold'], percentile)]
+    return rows
+
+
+def fixed_suffix(topk=None, percentile=None):
+    """Suffix of the output folder of fixed settings, e.g. '_topk_mean_p99.8'; '' when nothing is fixed."""
+    return (f'_topk_{topk}' if topk is not None else '') + (f'_p{percentile:g}' if percentile is not None else '')
 
 
 def select_configs(rows, selections, strategies, threshold_types):
@@ -290,7 +313,13 @@ def main():
                         help='Threshold types, each ensembled on its own (shared by the members)')
     parser.add_argument('--windows', nargs='+', type=int, help='Sliding windows (default: all)')
     parser.add_argument('--normalizations', nargs='+', choices=['global', 'per_node'], help='Default: both')
-    parser.add_argument('--out-dir', default=os.path.join(PROJECT_ROOT, 'merged_results', 'ensemble_subsets'))
+    parser.add_argument('--fixed-topk', help="Top-k of the likelihood of every subset and model: 'mean' (all sensors) "
+                                             "or a number; default: each subset its best one")
+    parser.add_argument('--fixed-percentile', type=float,
+                        help='Percentile threshold of every subset and model (percentile thresholds), e.g. 99.8; '
+                             'default: each subset its best one')
+    parser.add_argument('--out-dir', help='Default: merged_results/ensemble_subsets, with the fixed values as suffix '
+                                          '(e.g. ensemble_subsets_topk_mean)')
     parser.add_argument('--select-only', action='store_true', help='Selection and window-union preview only')
     parser.add_argument('--workers', type=int, default=1, help='Processes evaluating the groups in parallel')
     parser.add_argument('--config', default=os.path.join(PROJECT_ROOT, 'conf', 'config.yaml'))
@@ -301,13 +330,22 @@ def main():
                         help='Replace the files of --out-dir; by default they are updated: the rows computed now '
                              'replace those with the same keys, the other rows (e.g. other windows or sizes) are kept')
     args = parser.parse_args()
+    if args.fixed_topk is not None and args.fixed_topk != 'mean':
+        args.fixed_topk = str(int(args.fixed_topk))
+    args.out_dir = args.out_dir or os.path.join(PROJECT_ROOT, 'merged_results',
+                                                'ensemble_subsets' + fixed_suffix(args.fixed_topk, args.fixed_percentile))
     os.makedirs(args.out_dir, exist_ok=True)
+    print(f'Outputs in {args.out_dir}', flush=True)
     # The files written before the votes hold OR ensembles only: vote 'any'
     combination_keys = ['selection'] + ENSEMBLE_KEY + GROUP_KEY + ['vote', 'combination']
     vote_default = {'vote': 'any', 'min_votes': 1}
 
     rows = load_hpc_rows(args.hpc_csv, args.models, args.windows, args.normalizations)
     print(f'{len(rows)} grid-search rows of {", ".join(args.models)}', flush=True)
+    if args.fixed_topk is not None or args.fixed_percentile is not None:
+        rows = fixed_setting_rows(rows, args.fixed_topk, args.fixed_percentile)
+        print(f'{len(rows)} rows with top-k {args.fixed_topk or "free"}, percentile {args.fixed_percentile or "free"}',
+              flush=True)
     selected = select_configs(rows, args.selections, args.strategies, args.threshold_types)
     selected_file = os.path.join(args.out_dir, 'selected_configs.csv')
     update_csv(selected, selected_file, ['selection'] + ENSEMBLE_KEY + GROUP_KEY + ['subset'], args.overwrite)

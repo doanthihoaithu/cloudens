@@ -14,6 +14,8 @@
 # outputs in merged_results/ensemble_subsets. Usage (from the project root, merged_results/hpc.csv.gz present):
 #   sbatch slurm_script_ensemble_subsets.sh
 #   sbatch slurm_script_ensemble_subsets.sh --windows 12 --normalizations global
+#   sbatch slurm_script_ensemble_subsets.sh --fixed-topk mean      # -> merged_results/ensemble_subsets_topk_mean
+#   sbatch slurm_script_ensemble_subsets.sh --fixed-topk mean --fixed-percentile 99.8   # -> ..._topk_mean_p99.8
 module load python
 source torch210_new/bin/activate
 export PYTHONUNBUFFERED=1

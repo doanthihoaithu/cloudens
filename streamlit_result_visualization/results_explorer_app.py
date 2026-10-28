@@ -2140,9 +2140,21 @@ def render_subset_ensembles(family_scale):
                'share the scoring strategy and the threshold type; each subset keeps its own threshold, top-k, '
                'likelihood windows and imputation. A timestamp is flagged when any member flags it (OR), or more '
                'than half of them (majority vote).')
-    available = {name: ENSEMBLE_DIR / file for name, file in ENSEMBLE_SOURCES.items() if (ENSEMBLE_DIR / file).exists()}
+    # merged_results/ensemble_subsets: each subset its best setting; ensemble_subsets_<fixed values> (e.g.
+    # _topk_mean): the settings with that top-k / percentile threshold only (ensemble_subsets.py --fixed-*)
+    folders = sorted((d for d in MERGED_DIR.glob(ENSEMBLE_DIR.name + '*') if d.is_dir()), key=lambda d: d.name)
+    ensemble_dir = ENSEMBLE_DIR
+    if len(folders) > 1:
+        ensemble_dir = st.selectbox(
+            'Ensemble folder', folders, index=folders.index(ENSEMBLE_DIR) if ENSEMBLE_DIR in folders else 0,
+            format_func=lambda d: d.name + (' (best setting of each subset)' if d == ENSEMBLE_DIR else
+                                            ' (fixed: ' + d.name.removeprefix(ENSEMBLE_DIR.name + '_') + ')'),
+            key='ensemble_folder', help='Fixed: the settings of every subset and model chosen among those with this '
+                                        'top-k / percentile threshold only (src/ensemble_subsets.py --fixed-topk / '
+                                        '--fixed-percentile).')
+    available = {name: ensemble_dir / file for name, file in ENSEMBLE_SOURCES.items() if (ensemble_dir / file).exists()}
     if not available:
-        st.info(f'No ensemble file in `{os.path.relpath(ENSEMBLE_DIR, PROJECT_ROOT)}/`: write the preview locally with '
+        st.info(f'No ensemble file in `{os.path.relpath(ensemble_dir, PROJECT_ROOT)}/`: write the preview locally with '
                 '`python src/ensemble_subsets.py --select-only`, the exact results on the HPC server with '
                 '`sbatch slurm_script_ensemble_subsets.sh`.')
         return
@@ -2277,7 +2289,7 @@ def render_subset_ensembles(family_scale):
     st.download_button('Download as CSV', ordered[all_columns].to_csv(index=False), icon=':material/download:',
                        file_name=f'subset_ensembles_{selection}_{normalization}_{votes_tag}.csv', mime='text/csv')
 
-    selected_path = ENSEMBLE_DIR / 'selected_configs.csv'
+    selected_path = ensemble_dir / 'selected_configs.csv'
     if selected_path.exists():
         # Its detection counters: the source of every test anomaly
         configs_all = load_ensemble_file(str(selected_path), os.path.getmtime(selected_path))
@@ -3095,6 +3107,8 @@ COMPARISON_GROUPS = [('Confusion Matrix', ['TP', 'TN', 'FP', 'FN']),
 COMPARISON_DEFAULT_STRATEGIES = ['likelihood', 'mean_reconstruction_errors']
 COMPARISON_BASELINES = {'GRU', 'AnomalyTransformer'}   # model families the detected anomalies are compared with
 NAB_COLUMNS_SHOWN = COMPARISON_GROUPS[1][1]   # Standard / Low FN Profile: top 1 bold, top 2 underlined
+# Optional threshold-free measures on the test split (likelihood: of its input score, before W, W'), ranked as NAB
+PR_GROUP = ('Threshold-Free', ['AUC-PR', 'VUS-PR'])
 RANK_TEXT_STYLES = {0: '', 1: 'font-weight: bold', 2: 'text-decoration: underline'}
 
 
@@ -3114,7 +3128,7 @@ def setting_entry(row):
             'details': f'{{{", ".join(s for s, _, _ in parameters)}}} = {{{values}}}',
             'details_tex': f'$\\{{{", ".join(s for _, s, _ in parameters)}\\}} = \\{{{values}\\}}$',
             'confusion_matrix': row['confusion_matrix'], 'standard': row['standard_normalized'],
-            'low_fn': row['reward_fn_normalized'],
+            'low_fn': row['reward_fn_normalized'], 'auc_pr': row.get('test_auc_pr'), 'vus_pr': row.get('test_vus_pr'),
             'ids': {name: set(counters.get(f'{source}_detected_ids', [])) for source, name in ANOMALY_SOURCE_NAMES.items()},
             'totals': {name: len(counters.get(f'gt_{source}_ids', [])) for source, name in ANOMALY_SOURCE_NAMES.items()}}
 
@@ -3132,6 +3146,7 @@ def comparison_cells(entry, baseline_ids=None):
     except (ValueError, SyntaxError, TypeError):
         cells.update(TP=None, TN=None, FP=None, FN=None)
     cells['Standard Profile'], cells['Low FN Profile'] = entry['standard'], entry['low_fn']
+    cells['AUC-PR'], cells['VUS-PR'] = entry.get('auc_pr'), entry.get('vus_pr')
     for name in ANOMALY_SOURCE_NAMES.values():
         ids = sorted(entry['ids'][name])
         count = f'{len(ids)}/{entry["totals"][name]}'
@@ -3145,7 +3160,7 @@ def comparison_cells(entry, baseline_ids=None):
 
 
 def show_comparison_table(entries, short_names, caption, file_name, key, compared_with_text='strategy',
-                          group_title=None):
+                          group_title=None, with_pr=False):
     """
     Comparison table of the entries (setting_entry, ensemble_entry), one row each in their order, as Table IV of
     the paper, and its LaTeX: the top 1 / top 2 NAB scores bold / underlined, and in the rows of the proposed models
@@ -3153,7 +3168,10 @@ def show_comparison_table(entries, short_names, caption, file_name, key, compare
     'compared_with' of the entries (the strategy, or the strategy and number of subsets of an ensemble).
     group_title: the rows grouped by the 'group' of the entries (consecutive), e.g. the number of subsets, in a
     leading merged cell, the NAB scores ranked within each group.
+    with_pr: also the test AUC-PR / VUS-PR of the entries (PR_GROUP), ranked as the NAB scores.
     """
+    groups = [*COMPARISON_GROUPS[:2], PR_GROUP, *COMPARISON_GROUPS[2:]] if with_pr else COMPARISON_GROUPS
+    ranked = NAB_COLUMNS_SHOWN + (PR_GROUP[1] if with_pr else [])
     is_baseline = [model_family(e['model_folder']) in COMPARISON_BASELINES for e in entries]
     baseline_ids = {}
     for entry, baseline in zip(entries, is_baseline):
@@ -3166,49 +3184,57 @@ def show_comparison_table(entries, short_names, caption, file_name, key, compare
     table['model'] = [short_model_name(e['model_folder']) if short_names else e['model_folder'] for e in entries]
     if group_title:
         table['group'] = [e['group'] for e in entries]
-    for column in NAB_COLUMNS_SHOWN:   # 1 / 2: highest / second highest (ties share a rank), else 0
+    for column in ranked:   # 1 / 2: highest / second highest (ties share a rank), else 0
+        table[column] = pd.to_numeric(table[column], errors='coerce')
         ranks = (table.groupby('group', sort=False)[column] if group_title else table[column]).rank(
             method='dense', ascending=False)
         table[f'{column}_rank'] = ranks.where(ranks <= 2, 0).astype(int)
     index = ['group', 'strategy', 'model'] if group_title else ['strategy', 'model']
-    shown = table.set_index(index)[[c for _, columns in COMPARISON_GROUPS for c in columns]]
+    shown = table.set_index(index)[[c for _, columns in groups for c in columns]]
     shown.index.names = [group_title, 'Scoring Strategy', 'Model'] if group_title else ['Scoring Strategy', 'Model']
-    shown.columns = pd.MultiIndex.from_tuples([(g, SOURCE_HEADERS.get(c, c)) for g, columns in COMPARISON_GROUPS
+    shown.columns = pd.MultiIndex.from_tuples([(g, SOURCE_HEADERS.get(c, c)) for g, columns in groups
                                                for c in columns])
     styler = shown.style.format('{:.2f}', subset=[('NAB Score', c) for c in COMPARISON_GROUPS[1][1]], na_rep='–')
     styler = styler.format('{:.0f}', subset=[('Confusion Matrix', c) for c in COMPARISON_GROUPS[0][1]], na_rep='–')
-    for column in NAB_COLUMNS_SHOWN:
-        styler = styler.apply(lambda _, c=column: table[f'{c}_rank'].map(RANK_TEXT_STYLES).to_numpy(),
-                              subset=[('NAB Score', column)])
+    if with_pr:
+        styler = styler.format('{:.3f}', subset=[(PR_GROUP[0], c) for c in PR_GROUP[1]], na_rep='–')
+    for group, columns in groups:
+        for column in (c for c in columns if c in ranked):
+            styler = styler.apply(lambda _, c=column: table[f'{c}_rank'].map(RANK_TEXT_STYLES).to_numpy(),
+                                  subset=[(group, column)])
     baselines = sorted({short_model_name(e['model_folder']) for e, b in zip(entries, is_baseline) if b})
-    caption += (f' Bold / underlined NAB score: top 1 / top 2 of its column{" in each group" if group_title else ""}.' +
+    caption += (f' Bold / underlined {"NAB score, AUC-PR and VUS-PR" if with_pr else "NAB score"}: top 1 / top 2 of '
+                f'its column{" in each group" if group_title else ""}.' +
+                (' AUC-PR / VUS-PR: test split, threshold-free; for the likelihood, of its input score (before the '
+                 "windows W, W')." if with_pr else '') +
                 (f' Bold ids: detected anomalies none of {" and ".join(baselines)} detects with the same '
                  f'{compared_with_text}.' if baselines else ''))
     st.caption(caption + ' Confusion matrix: point-based. A ground-truth anomaly is detected if at least one TP '
                          'falls within its window; [ids] of the detected ones.')
     st.html(MERGED_TABLE_CSS + '<div class="merged-table">' +
             styler.set_table_attributes('class="merged-table"').to_html() + '</div>')
-    latex = comparison_latex(table, caption, group_title)
+    latex = comparison_latex(table, caption, group_title, groups, ranked)
     st.download_button('Download as LaTeX', latex.encode(), file_name=file_name, mime='text/plain',
                        icon=':material/download:', key=f'{key}_download')
     with st.expander('LaTeX', icon=':material/code:'):
         st.code(latex, language='latex')
 
 
-def comparison_latex(table, caption, group_title=None):
+def comparison_latex(table, caption, group_title=None, groups=COMPARISON_GROUPS, ranked=NAB_COLUMNS_SHOWN):
     """booktabs tabular of the comparison table, its header as in Table IV of the paper. group_title: the rows
-    grouped by the column 'group' of the table (e.g. the number of subsets), its values in a leading merged cell."""
+    grouped by the column 'group' of the table (e.g. the number of subsets), its values in a leading merged cell.
+    groups: the column groups (COMPARISON_GROUPS, possibly with PR_GROUP); ranked: the columns with top 1 / 2 marks."""
     lead = 1 if group_title else 0
-    n_numbers = sum(len(c) for g, c in COMPARISON_GROUPS if g != 'Detected Anomalies')
+    n_numbers = sum(len(c) for g, c in groups if g != 'Detected Anomalies')
     n_sources = len(ANOMALY_SOURCE_NAMES)
     n_columns = lead + 2 + n_numbers + n_sources
     spans, rules, start = [], [], lead + 3
-    for group, columns in COMPARISON_GROUPS:
+    for group, columns in groups:
         spans.append(f'\\multicolumn{{{len(columns)}}}{{c}}{{{group}}}')
         rules.append(f'\\cmidrule(lr){{{start}-{start + len(columns) - 1}}}')
         start += len(columns)
     inner = ['\\makecell{' + c.replace(' Profile', '\\\\Profile') + '}' if c.endswith('Profile') else c
-             for _, columns in COMPARISON_GROUPS for c in columns]
+             for _, columns in groups for c in columns]
     inner = [SOURCE_HEADERS.get(c, c) for c in inner]
     leading = [f'\\multirow{{2}}{{*}}{{{_latex_text(group_title)}}}'] if lead else []
     lines = [f'% {caption}', '% \\usepackage{booktabs, makecell, multirow}',
@@ -3227,8 +3253,8 @@ def comparison_latex(table, caption, group_title=None):
         first = previous is None or group != previous[0]
         previous = (group, row['model'])
         numbers = [str(row[c]) if pd.notna(row[c]) else '--' for c in ('TP', 'TN', 'FP', 'FN')]
-        numbers += [LATEX_RANK_FORMATS[row[f'{c}_rank']] % f'{row[c]:.2f}' if pd.notna(row[c]) else '--'
-                    for c in NAB_COLUMNS_SHOWN]
+        numbers += [LATEX_RANK_FORMATS[row[f'{c}_rank']] % f'{row[c]:.{2 if c in NAB_COLUMNS_SHOWN else 3}f}'
+                    if pd.notna(row[c]) else '--' for c in ranked]
         group_cell = ([f'\\multirow{{{group_sizes[group]}}}{{*}}{{{_latex_text(group)}}}' if first else '']
                       if lead else [])
         lines.append(' & '.join([*group_cell, row['strategy_tex'], _latex_text(row['model']), *numbers,
@@ -3304,6 +3330,8 @@ def render_comparison_table(results, options):
 
     col_models, col_strategies, col_select, col_short = st.columns([3, 2, 2, 1])
     short_names = col_short.toggle('Short names', value=True, key='comparison_short_names')
+    with_pr = col_short.toggle('AUC-PR / VUS-PR', value=False, key='comparison_with_pr',
+                               help='Test AUC-PR / VUS-PR of each row (likelihood: of its input score, before W, W\').')
     models = sorted(part['model_folder'].dropna().unique(), key=model_order_key)
     chosen_models = col_models.multiselect('Models', models, default=models, key='comparison_models',
                                            format_func=short_model_name if short_names else str)
@@ -3345,7 +3373,7 @@ def render_comparison_table(results, options):
                (f'{fixed_text}; the other parameters of each row picked by {select_by}.' if fixed and fixed_text else
                 f'the setting of each row picked by {select_by}.'))
     show_comparison_table([setting_entry(row) for _, row in picked.iterrows()], short_names, caption,
-                          f'comparison_w{window}_{subset}_{fill}.tex', 'comparison')
+                          f'comparison_w{window}_{subset}_{fill}.tex', 'comparison', with_pr=with_pr)
 
 
 def render_results_table(results, family_scale, options):
@@ -3359,11 +3387,28 @@ def render_results_table(results, family_scale, options):
         filter_columns = st.columns(4)
         st.caption('Empty filter: all its values. Choose at least one filter to build the table.')
         chosen = dimension_filters(lambda i: filter_columns[i % 4], options, key_prefix='table_filter_')
+        # Top-k of the likelihood ('mean': all sensors), the same for every model; the other strategies have none
+        topks = sorted((t for t in results['topk'].unique() if t != '-'), key=lambda t: (t != 'mean', len(t), t))
+        topk = filter_columns[len(DIMENSIONS) % 4].selectbox(
+            'Top-k (likelihood)', [ANY, *topks], key='table_filter_topk',
+            help=f'The same top-k for the likelihood of every model. {ANY}: each cell its own best top-k. '
+                 'The other strategies (no top-k) are kept.')
+        # Percentile of the threshold (Lt of the likelihood, ϵ of the score strategies), the same for every model
+        percentiles = sorted(results.loc[results['threshold_type'] == 'percentile', 'anomaly_threshold'].dropna().unique())
+        percentile = filter_columns[(len(DIMENSIONS) + 1) % 4].selectbox(
+            'Percentile threshold', [ANY, *percentiles], key='table_filter_percentile',
+            format_func=lambda v: v if v == ANY else f'{v:g}',
+            help=f'The same percentile threshold for every model and strategy. {ANY}: each cell its own best one. '
+                 'The rows with absolute thresholds are kept.')
     if not any(chosen.values()):   # nothing chosen: the table of the whole results would be heavy
         st.info(f'Choose at least one filter of the table (e.g. a subset and a window size): '
                 f'{len(results):,} grid-search settings in all.')
         return
     rows = filter_rows(results, options, chosen)
+    if topk != ANY:
+        rows = rows[(rows['post_processing_strategy'] != 'likelihood') | (rows['topk'] == topk)]
+    if percentile != ANY:
+        rows = rows[(rows['threshold_type'] != 'percentile') | (rows['anomaly_threshold'] == percentile)]
 
     col_rows, col_columns, col_measures = st.columns(3)
     row_dims = col_rows.multiselect('Rows', list(DIMENSIONS), default=['model_folder'], format_func=DIMENSIONS.get,
@@ -3523,7 +3568,12 @@ def render_results_table(results, family_scale, options):
     caption = {'Best setting': f'measures of the setting with the best `{select_by}` in each cell',
                'Median': 'median over the settings of each cell', 'Mean': 'mean over the settings of each cell',
                'Max': 'highest value over the settings of each cell (measure by measure)'}[statistic]
-    st.caption(f'{len(rows):,} settings, {len(table)} rows: {caption}.' +
+    st.caption(f'{len(rows):,} settings, {len(table)} rows: {caption}' +
+               ''.join(f', {text} for every model' for text, on in
+                       ((f'the likelihood with top-k = {topk}', topk != ANY),
+                        (f'the percentile thresholds at {percentile if percentile == ANY else _parameter_value(percentile)}',
+                         percentile != ANY)) if on)
+               + '.' +
                (f' Dark / light: top 1 / top 2, {TABLE_HIGHLIGHT[highlight]}.' if TABLE_HIGHLIGHT[highlight] else '') +
                ' –: no value (e.g. AUC-PR / VUS-PR of the likelihood in grid searches not updated by rerun_grid_search.py --likelihood-pr).' +
                (' *: graph model with null padding.' if short_names and 'model_folder' in row_dims else ''))
