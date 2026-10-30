@@ -1500,6 +1500,8 @@ def main(cfg: DictConfig):
     #                         output_dir,
     #                         fix_scoring_parameters=fix_scoring_parameters)
 
+    test_anomaly_ids = [7, 12, 15]
+
     zoom_in_periods = [
         (pd.Timestamp('2024-03-07 00:00:00'), pd.Timestamp('2024-03-07 12:00:00')),
         # (pd.Timestamp('2024-03-13 00:00:00'), pd.Timestamp('2024-03-13 23:00:00')),
@@ -1508,18 +1510,19 @@ def main(cfg: DictConfig):
     ]
 
 
+    test_anomaly_ids = [7, 12, 15]
     plot_only_time_series(dataloader, output_dir, zoom_periods=zoom_in_periods)
     plot_only_time_series(dataloader, output_dir, zoom_periods=zoom_in_periods, width=6.5)
-    plot_detected_anomalies_for_specific_periods(dataloader, results_dir,
-                                                 shown_models,
-                                                 missing_imputation_stategies,
-                                                 http_codes, aggregations,
-                                                null_padding_features,
-                                                null_padding_targets,
-                                                zoom_in_periods,
-                                                output_dir,
-                                                fix_scoring_parameters=fix_scoring_parameters,
-                                                score_normalization=score_normalizations(cfg.evaluation)[0])
+    # plot_detected_anomalies_for_specific_periods(dataloader, results_dir,
+    #                                              shown_models,
+    #                                              missing_imputation_stategies,
+    #                                              http_codes, aggregations,
+    #                                             null_padding_features,
+    #                                             null_padding_targets,
+    #                                             zoom_in_periods,
+    #                                             output_dir,
+    #                                             fix_scoring_parameters=fix_scoring_parameters,
+    #                                             score_normalization=score_normalizations(cfg.evaluation)[0])
 
 
 if __name__ == '__main__':

@@ -744,7 +744,7 @@ def confusion_counts(confusion_matrix):
         return None, None
 
 
-def detection_matrix(table, sources, row_order, blocks_order, strategies=None):
+def detection_matrix(table, sources, row_order, blocks_order, strategies=None, width=FIGURE_WIDTH):
     """
     (D) The test anomalies detected by each row (a model, or a model and strategy) as a matrix colored by the
     source of the anomaly, with its NAB scores (Standard, Low FN) and point-based TP / FP: Table IV of the
@@ -752,14 +752,14 @@ def detection_matrix(table, sources, row_order, blocks_order, strategies=None):
     in blocks_order. table: one row per (block, row[, strategy_shown]).
     strategies: two strategies (strategy_shown values) drawn in the same cell, split along its diagonal (the
     first one the upper-left triangle, as in the paper's detected-anomalies table), with two bars / counts per
-    row; None: one strategy per row.
+    row; None: one strategy per row. width: of the whole figure (points).
     """
     ids = sorted(sources, key=lambda i: (list(ANOMALY_SOURCE_NAMES.values()).index(sources[i]), i))
     anomalies = [f'#{i}' for i in ids]
     source_names = list(ANOMALY_SOURCE_NAMES.values())
     split = bool(strategies)
     row_height = MATRIX_ROW_HEIGHT * (1.5 if split else 1)   # room for two bars per row
-    matrix_width = FIGURE_WIDTH - MATRIX_LABEL_SPACE - 2 * NAB_BAR_WIDTH - COUNTS_WIDTH - 3 * PANEL_SPACING
+    matrix_width = width - MATRIX_LABEL_SPACE - 2 * NAB_BAR_WIDTH - COUNTS_WIDTH - 3 * PANEL_SPACING
     source_scale = alt.Scale(domain=source_names + [NOT_DETECTED],
                              range=[ANOMALY_SOURCE_COLORS[s] for s in source_names] + ['white'])
     # Short labels: the legends must not be wider than the matrix (they would push the bars away)
@@ -2131,6 +2131,40 @@ def render_ensemble_comparison(combos, sources):
                           compared_with_text='strategy and number of subsets', group_title='Subsets')
 
 
+SUBSET_DETECTIONS_MODEL = 'BigST_null_padding_feature_spatial'   # ClouDens-BigST-ctx*
+SUBSET_DETECTIONS_WIDTH_INCHES = 6.5   # the 19 anomalies need more room than FIGURE_WIDTH
+
+
+def render_subset_detections(alone, selected_path):
+    """Detection matrix of the subsets alone of one model (default ClouDens-BigST-ctx*): one row per subset, its
+    detected test anomalies colored by source, NAB scores and TP / FP; one block per scoring (and window) shown."""
+    if alone.empty or not selected_path.exists():
+        return
+    models = sorted(alone['model_folder'].unique(), key=model_order_key)
+    model = st.selectbox('Model of the detected anomalies of each subset', models, format_func=short_model_name,
+                         index=models.index(SUBSET_DETECTIONS_MODEL) if SUBSET_DETECTIONS_MODEL in models else 0,
+                         key='ensemble_subset_detections_model')
+    table = alone[alone['model_folder'] == model].copy()
+    windows = sorted(table['window'].unique())
+    table['row'] = table['combination'].str.replace('_', ' ')
+    table['block'] = table['scoring'] + (' · w=' + table['window'].astype(str) if len(windows) > 1 else '')
+    table['detected_ids'] = [ast.literal_eval(i) if isinstance(i, str) else [] for i in table['detected_window_ids']]
+    counts = [confusion_counts(c) for c in table['confusion_matrix']]
+    table['tp_fp'] = [f'{tp} / {fp}' if tp is not None else '' for tp, fp in counts]
+    configs = load_ensemble_file(str(selected_path), os.path.getmtime(selected_path))   # sources of the anomalies
+    blocks_order = list(dict.fromkeys(table.sort_values(['scoring', 'window'], kind='stable')['block']))
+    chart = detection_matrix(table, anomaly_sources(configs), sorted(table['row'].unique()), blocks_order,
+                             width=SUBSET_DETECTIONS_WIDTH_INCHES * POINTS_PER_INCH)
+    if chart is None:
+        return
+    st.caption(f'Each subset alone of {short_model_name(model)}: its detected test anomalies (colored by source, '
+               'white: missed), NAB scores and point-based TP / FP, with the setting chosen for it; one block per '
+               'scoring strategy · threshold type' + (' and window' if len(windows) > 1 else '') + ' shown above.')
+    st.altair_chart(chart, width='content')
+    export_buttons(chart, f'subset_detections_{model}', 'ensemble_subset_detections',
+                   width_inches=SUBSET_DETECTIONS_WIDTH_INCHES)
+
+
 def render_subset_ensembles(family_scale):
     """
     'Subset ensembles' tab: OR ensembles of 1 (the subsets alone), 2, 3 ... subsets of a model, sharing the scoring
@@ -2245,6 +2279,7 @@ def render_subset_ensembles(family_scale):
         export_buttons(detection_chart, f'subset_ensembles_detected_vs_{nab_column}_{selection}_{normalization}_'
                                         f'{votes_tag}', 'ensemble_detections',
                        width_inches=DETECTION_FIGURE_WIDTH_INCHES)
+        render_subset_detections(alone, ensemble_dir / 'selected_configs.csv')
     else:
         st.caption('No NAB score in the preview (window_union_preview.csv): choose the exact results.')
 
